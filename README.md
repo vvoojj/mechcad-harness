@@ -74,3 +74,56 @@ M3 keeps canonical `DesignState` revisions separate from derived evidence. After
 Invalidation records are immutable JSON files outside canonical revisions. Evidence is also immutable, remains stored after becoming stale, and binds to a dependency node, exact state revision, and exact state hash. State hashes provide provenance; dependency history provides reusable-evidence freshness. A different state hash alone does not make every evidence record stale.
 
 Freshness is fail-closed: `CURRENT` requires valid exact-revision provenance, a known configured node, complete invalidation records for every revision after the evidence revision through the current revision, and no matching later invalidation. Matching later invalidation yields `STALE`; missing/corrupt history, invalid provenance, and unknown nodes yield `UNKNOWN`. Evidence created for revision N does not consider the invalidation record that produced revision N. Unknown and stale evidence never satisfy a fresh-evidence query. Recalculation, scheduling, and orchestration are later scope.
+
+## M4 Run Control
+
+M4 adds deterministic execution control without adding an agent or execution
+runtime:
+
+```text
+Canonical State
+      -> Run
+      -> RunPlan
+      -> Task DAG
+      -> TaskExecutor boundary
+      -> immutable structured results and evidence
+      -> explicitly approved M2 change
+      -> M3 invalidation
+      -> iteration and current-evidence completion gate
+```
+
+The M4 task DAG is separate from the M3 engineering dependency graph. Task
+definitions are immutable and permanently bound to one revision/hash; mutable
+task lifecycle state is stored separately. A rerun requires a new task and
+result identity. Historical evidence may remain `CURRENT` across unrelated
+canonical revisions and can satisfy a run completion gate even though its
+original task is not rerun.
+
+Runs persist under `workspace/projects/<project_id>/runs/<run_id>/`:
+
+```text
+manifest.json
+state.json
+tasks/<task_id>/definition.json
+tasks/<task_id>/state.json
+results/<result_id>.json
+events/EVT-000001.json
+```
+
+The manifest and records are immutable exclusive-write files; run and task
+state use atomic replacement. Only explicitly approved proposals can advance
+canonical state. If M2 creates a revision and M3 invalidation persistence then
+fails, the run follows the new canonical revision, records the iteration and
+hash history, becomes `BLOCKED`, and does not guess invalidated nodes.
+
+Run statuses are `CREATED`, `PLANNED`, `RUNNING`, `BLOCKED`, `FAILED`,
+`COMPLETED`, and `CANCELLED`. Task statuses are `PENDING`, `READY`, `RUNNING`,
+`SUCCEEDED`, `FAILED`, `BLOCKED`, `STALE`, and `SKIPPED`. Completion requires
+successful required task control and `CURRENT` M3 evidence for every required
+node; missing, `STALE`, or `UNKNOWN` evidence fails closed.
+
+The M4 convergence skeleton uses exact state hashes only. Iteration counts
+accepted design-changing canonical revision advancements. It blocks on no state
+progress, repeated state hashes, or an exceeded iteration limit. No OpenCode,
+LLM, agent, CAD, FEA, optimization, or parallel execution integration exists
+in M4. `FakeTaskExecutor` tests the harness independently of an LLM.
