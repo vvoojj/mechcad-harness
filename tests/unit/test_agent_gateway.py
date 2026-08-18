@@ -42,6 +42,67 @@ def test_gateway_persists_invocation_before_adapter_and_result_separately(tmp_pa
     assert result.response_hash.startswith("sha256:")
 
 
+def test_gateway_uses_invocation_outcome_provenance(tmp_path):
+    from mechcad_harness.agents import AgentIdentity, AgentRegistry, ContextBuilder
+    from mechcad_harness.agents.gateway import AgentGateway
+    from mechcad_harness.agents.models import AgentAdapterExecutionOutcome, AgentAdapterProvenance, AgentResponsePayload
+
+    identity = AgentIdentity(agent_name="mechcad-test-agent", agent_version="1.0", role="test", protocol_version="1.0")
+    provenance = AgentAdapterProvenance(adapter_name="outcome", adapter_version="1.0", provider="test-provider", transport="test", session_id="session-1")
+
+    class OutcomeAdapter:
+        identity = type("Identity", (), {"adapter_name": "outcome", "adapter_version": "1.0"})()
+
+        def invoke(self, request):
+            assert (tmp_path / "projects" / "PRJ-1" / "runs" / run.run_id / "agents" / "invocations").exists()
+            return AgentAdapterExecutionOutcome(response=AgentResponsePayload(summary="ok"), provenance=provenance)
+
+    controller, run, task, _ = _controller(tmp_path)
+    registry = AgentRegistry()
+    registry.register(identity, OutcomeAdapter())
+    result = AgentGateway(controller, registry, ContextBuilder(controller)).invoke(run.run_id, task.task_id, identity.agent_name, identity.agent_version)
+    assert result.adapter_provenance == provenance
+
+
+def test_gateway_uses_invocation_error_provenance(tmp_path):
+    from mechcad_harness.agents import AgentIdentity, AgentRegistry, ContextBuilder
+    from mechcad_harness.agents.gateway import AgentGateway
+    from mechcad_harness.agents.models import AgentAdapterExecutionError, AgentAdapterProvenance
+
+    identity = AgentIdentity(agent_name="mechcad-test-agent", agent_version="1.0", role="test", protocol_version="1.0")
+    provenance = AgentAdapterProvenance(adapter_name="outcome", adapter_version="1.0", provider="test-provider", transport="test", session_id="session-1", message_id="message-1", request_hash="sha256:req", validation_diagnostics={"errors": []})
+
+    class ErrorAdapter:
+        identity = type("Identity", (), {"adapter_name": "outcome", "adapter_version": "1.0"})()
+
+        def invoke(self, request):
+            raise AgentAdapterExecutionError("structured output invalid", provenance=provenance)
+
+    controller, run, task, _ = _controller(tmp_path)
+    registry = AgentRegistry()
+    registry.register(identity, ErrorAdapter())
+    result = AgentGateway(controller, registry, ContextBuilder(controller)).invoke(run.run_id, task.task_id, identity.agent_name, identity.agent_version)
+    assert result.status.value == "failed"
+    assert result.adapter_provenance == provenance
+    assert result.error == "structured output invalid"
+
+
+def test_fake_invocations_do_not_leak_execution_metadata(tmp_path):
+    from mechcad_harness.agents import AgentIdentity, FakeAgentAdapter
+    from mechcad_harness.agents.models import AgentInvocationRequest
+    from mechcad_harness.models import DesignState
+
+    identity = AgentIdentity(agent_name="mechcad-test-agent", agent_version="1.0", role="test", protocol_version="1.0")
+    adapter = FakeAgentAdapter(identity, findings=("one",))
+    context = __import__("mechcad_harness.agents.models", fromlist=["AgentContext"]).AgentContext(project_id="PRJ", run_id="RUN", task_id="TASK", revision=1, state_hash="hash", design_state=DesignState(id="DES", revision=1), task_objective="test", task_instructions="test")
+    first = adapter.invoke(AgentInvocationRequest(invocation_id="INV-1", agent=identity, project_id="PRJ", run_id="RUN", task_id="TASK", bound_revision=1, bound_state_hash="hash", context=context, requested_output_schema_version="1.0", context_hash="ctx-1"))
+    second = adapter.invoke(AgentInvocationRequest(invocation_id="INV-2", agent=identity, project_id="PRJ", run_id="RUN", task_id="TASK", bound_revision=1, bound_state_hash="hash", context=context, requested_output_schema_version="1.0", context_hash="ctx-2"))
+    assert first is not second
+    assert first.provenance is not second.provenance
+    assert first.provenance.session_id is None
+    assert second.provenance.session_id is None
+
+
 def test_gateway_rejects_unknown_agent(tmp_path):
     gateway, controller, run, task, identity = _gateway(tmp_path)
     with pytest.raises(Exception, match="unknown agent"):

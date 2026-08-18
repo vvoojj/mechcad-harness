@@ -42,6 +42,13 @@ class AgentAdapterProvenance(Model):
     model: str | None = None
     model_version: str | None = None
     transport: str = Field(min_length=1)
+    server_version: str | None = None
+    configured_agent_name: str | None = None
+    session_id: str | None = None
+    message_id: str | None = None
+    project_directory: str | None = None
+    request_hash: str | None = None
+    validation_diagnostics: dict[str, Any] | None = None
 
 
 class AgentEvidenceSummary(Model):
@@ -128,8 +135,22 @@ class AgentResult(Model):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class AgentAdapterExecutionOutcome(Model):
+    response: AgentResponsePayload
+    provenance: AgentAdapterProvenance
+    execution_metadata: dict[str, Any] | None = None
+
+
+class AgentAdapterExecutionError(Exception):
+    def __init__(self, message: str, *, provenance: AgentAdapterProvenance, execution_metadata: dict[str, Any] | None = None, failure_kind: str = "adapter_failure"):
+        super().__init__(message)
+        self.failure_kind = failure_kind
+        self.provenance = provenance
+        self.execution_metadata = execution_metadata
+
+
 class AgentAdapter(Protocol):
     identity: AgentAdapterIdentity
 
-    def invoke(self, request: AgentInvocationRequest) -> AgentResponsePayload:
+    def invoke(self, request: AgentInvocationRequest) -> AgentAdapterExecutionOutcome:
         ...

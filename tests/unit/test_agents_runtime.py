@@ -23,7 +23,7 @@ def test_fake_agent_returns_configured_finding():
 
     adapter = FakeAgentAdapter(AgentIdentity(agent_name="mechcad-test-agent", agent_version="1.0", role="test", protocol_version="1.0"), findings=("deterministic",))
     request = AgentInvocationRequest(invocation_id="INV-1", agent=adapter.agent_identity, project_id="PRJ-1", run_id="RUN-1", task_id="TASK-1", bound_revision=1, bound_state_hash="sha256:state", context=AgentContext(project_id="PRJ-1", run_id="RUN-1", task_id="TASK-1", revision=1, state_hash="sha256:state", design_state=DesignState(id="DES-1", revision=1), task_objective="test", task_instructions="test"), requested_output_schema_version="1.0", context_hash="sha256:context")
-    assert adapter.invoke(request).findings == ("deterministic",)
+    assert adapter.invoke(request).response.findings == ("deterministic",)
 
 
 def test_context_builder_reads_persisted_revision(tmp_path):

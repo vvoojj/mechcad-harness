@@ -1,6 +1,6 @@
 from collections.abc import Iterable
 
-from .models import AgentAdapterIdentity, AgentAdapterProvenance, AgentIdentity, AgentInvocationRequest, AgentResponsePayload
+from .models import AgentAdapterExecutionError, AgentAdapterExecutionOutcome, AgentAdapterIdentity, AgentAdapterProvenance, AgentIdentity, AgentInvocationRequest, AgentResponsePayload
 
 
 class FakeAgentAdapter:
@@ -12,13 +12,16 @@ class FakeAgentAdapter:
         self._error = error
         self.last_request: AgentInvocationRequest | None = None
 
-    def invoke(self, request: AgentInvocationRequest) -> AgentResponsePayload:
+    def invoke(self, request: AgentInvocationRequest) -> AgentAdapterExecutionOutcome:
         self.last_request = request
+        provenance = self.provenance()
         if self._error is not None:
-            raise self._error
+            raise AgentAdapterExecutionError(str(self._error), provenance=provenance, failure_kind="fake_failure") from self._error
         if self._response is not None:
-            return self._response
-        return AgentResponsePayload(summary="deterministic fake response", findings=self._findings)
+            response = self._response
+        else:
+            response = AgentResponsePayload(summary="deterministic fake response", findings=self._findings)
+        return AgentAdapterExecutionOutcome(response=response, provenance=provenance)
 
     def provenance(self) -> AgentAdapterProvenance:
         return AgentAdapterProvenance(adapter_name=self.identity.adapter_name, adapter_version=self.identity.adapter_version, provider="test", transport="in-process")

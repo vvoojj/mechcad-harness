@@ -1,5 +1,7 @@
 from .models import (
     AgentAdapter,
+    AgentAdapterExecutionError,
+    AgentAdapterExecutionOutcome,
     AgentAdapterIdentity,
     AgentAdapterProvenance,
     AgentContext,
@@ -16,6 +18,8 @@ from .registry import AgentRegistry
 
 __all__ = [
     "AgentAdapter",
+    "AgentAdapterExecutionError",
+    "AgentAdapterExecutionOutcome",
     "AgentAdapterIdentity",
     "AgentAdapterProvenance",
     "AgentContext",
