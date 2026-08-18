@@ -14,6 +14,10 @@ def payload_hash(payload: dict) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def _structural_evidence_complete(output: dict) -> bool:
+    return all(output.get(name, {}).get("status") == "available" for name in ("axial_rigidity_ea", "bending_rigidity_eix", "bending_rigidity_eiy"))
+
+
 class ToolBroker:
     def __init__(self, controller, registry):
         self.controller = controller
@@ -51,13 +55,15 @@ class ToolBroker:
                 raise ToolExecutionError("invalid tool input")
             if tool_name in {"mechcad-build-spur-gear-cad", "mechcad-build-spur-gear-pair-cad"}:
                 output = registration.handler(validated, self.controller.workspace, project_id=context.project_id, run_id=context.run_id, task_id=context.task_id, bound_revision=context.bound_revision, bound_state_hash=context.bound_state_hash, input_hash=call.input_hash)
+            elif tool_name == "mechcad-calc-preliminary-section-engineering-properties":
+                output = registration.handler(validated, self.controller, project_id=context.project_id, run_id=context.run_id, revision=context.bound_revision, state_hash=context.bound_state_hash)
             else:
                 output = registration.handler(validated)
             output_payload = output.model_dump(mode="json")
             provenance = registration.provenance_handler() if registration.provenance_handler else None
             result = ToolResult(result_id=result_id, call_id=call.call_id, tool_name=tool_name, tool_version=tool_version, project_id=context.project_id, run_id=context.run_id, task_id=context.task_id, bound_revision=context.bound_revision, bound_state_hash=context.bound_state_hash, status=ToolResultStatus.SUCCEEDED, input_hash=call.input_hash, output=output_payload, output_hash=payload_hash(output_payload), backend_provenance=provenance)
             self.store.write_result(result)
-            if evidence_node is not None:
+            if evidence_node is not None and not (tool_name == "mechcad-calc-preliminary-section-engineering-properties" and not _structural_evidence_complete(output_payload)):
                 try:
                     evidence = Evidence(id=f"EVD-{uuid4()}", kind=evidence_node, summary=f"{tool_name} result", revision=context.bound_revision, state_hash=context.bound_state_hash, producer_type="tool", producer_name=tool_name, producer_version=tool_version, producer_result_id=result.result_id, input_hash=call.input_hash, output_hash=result.output_hash, backend_provenance=result.backend_provenance)
                     self.controller.evidence.write_evidence(context.project_id, evidence)

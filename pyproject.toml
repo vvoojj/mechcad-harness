@@ -17,6 +17,19 @@ gear = [
     "build123d==0.11.1",
     "py_gearworks @ git+https://github.com/GarryBGoode/py_gearworks.git@2fc2a13d82a9997a65f30c870498f0bb3be62318",
 ]
+materials = [
+    "bd-materials==0.2.4",
+]
+structural = [
+    "numpy>=2,<2.4",
+    "scipy==1.18.0",
+    "matplotlib==3.11.1",
+    "shapely==2.1.2",
+    "cytriangle==3.0.2",
+    "more-itertools==11.1.0",
+    "rich[jupyter]==15.0.0",
+    "sectionproperties==3.10.2",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

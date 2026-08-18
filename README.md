@@ -229,6 +229,175 @@ M5.5D Search + Optimization
 M6A OpenCode Adapter
 ```
 
+## M5.5C-2A Section Geometry
+
+M5.5C-2A adds an optional `structural` dependency profile for deterministic
+geometric cross-section properties. The validated legacy-host profile is
+Python 3.12.10 with `sectionproperties==3.10.2`, NumPy `2.3.5`, SciPy `1.18.0`,
+matplotlib `3.11.1`, Shapely `2.1.2`, cytriangle `3.0.2`,
+more-itertools `11.1.0`, and rich `15.0.0`; `pip check` passed. The project
+runtime contract remains Python `>=3.11`, and NumPy remains outside core
+dependencies with the structural profile constrained to `<2.4` for the tested
+legacy Windows host. This host-specific profile does not claim that newer
+Python versions or modern CPU hosts are incompatible.
+
+The C-2A flow is:
+
+```text
+Normalized MechCAD section input
+        -> SectionPropertiesAdapter
+        -> transient sectionproperties Geometry/mesh/Section
+        -> normalized geometric result
+        -> ToolResult
+        -> optional Evidence
+```
+
+Supported inputs are rectangles, solid circles, and circular hollow sections.
+All dimensions are explicit millimetres. `mesh_size_mm2` is the FEM
+triangulation parameter. `discretization_points` is the circular boundary
+approximation parameter. Both are persisted only as scalar reproducibility
+metadata; Geometry, Shapely, mesh, Section, and FEM objects never cross the
+adapter boundary or enter ToolResult, Evidence, Run, DesignState, or artifact
+metadata.
+
+MechCAD axes are `x = horizontal` and `y = vertical`. For a rectangle, width is `b`,
+height/depth is `d`, and sectionproperties is called as
+`rectangular_section(d=height_mm, b=width_mm)`. The adapter retrieves
+production centroids from `section.get_c()` after
+`calculate_geometric_properties()`, and retrieves `(Ixx, Iyy, Ixy)` directly
+from `section.get_ic()` without swapping axes. The independent rectangle
+oracles are `A=b*h`, `Ixx=b*h^3/12`, `Iyy=h*b^3/12`, and `Ixy=0`. Circle and
+hollow-circle oracles use the corresponding pi formulas. Circle residuals are
+boundary-discretization error from finite `n`; increasing `n` improves or
+preserves agreement with the analytic oracle. Rectangle coarse/fine mesh
+comparisons check expected mesh independence for these geometric quantities;
+they are not FEM convergence proofs for future analyses.
+
+C-2A is geometric only. It deliberately does not implement material
+integration, bd_materials consumption, EA/EI, mass-per-length, warping,
+torsion, shear centre, shear areas, stress, plastic properties, yield checks,
+safety factors, or FEA structures. Those require separate controlled phases.
+
+## M5.5C-2B Section Warping and Torsion
+
+M5.5C-2B extends the same `SectionPropertiesAdapter` to a narrow,
+material-independent warping analysis for rectangles, solid circles, and
+concentric hollow circles. C-2A geometric properties use
+`calculate_geometric_properties()` only. C-2B requires that operation first,
+then calls the validated upstream
+`calculate_warping_properties(solver_type="direct")` sequence.
+
+The adapter exposes only these verified public getters:
+
+```text
+get_j()      -> St. Venant torsion constant J, mm^4
+get_sc()     -> global shear-centre coordinates (x_se, y_se), mm
+get_as()     -> centroidal shear areas (a_sx, a_sy), mm^2
+get_gamma()  -> warping constant Gamma, mm^6
+```
+
+No `bd_materials` values or custom `sectionproperties.pre.Material` objects are
+supplied. This preserves the default homogeneous, non-composite geometric
+behavior and avoids elastic-modulus-weighted torsion or warping quantities.
+
+The adapter version is `0.2.0`, with capabilities
+`structural.cross_section.geometry` and `structural.cross_section.warping`.
+Historical 0.1.0 provenance remains valid and is not rewritten.
+
+Every calculation uses `solver_type = `direct`` and two deterministic mesh levels:
+`coarse_mesh_size_mm2 = input.mesh_size_mm2` and
+`fine_mesh_size_mm2 = input.mesh_size_mm2 / 4`. The normalized result uses the
+fine result only after fail-closed checks. The initial validated thresholds are
+`1e-3` relative for J, nonzero Gamma, and both shear areas, `1e-6` absolute for
+near-zero Gamma, and `1e-4 mm` absolute for the symmetry shear-centre check.
+Convergence metadata records both mesh sizes, scalar coarse/fine values,
+deltas, tolerances, solver type, and status. A failed convergence check creates
+a failed ToolResult and no Evidence; it never silently publishes the fine
+result or loops adaptively.
+
+For independent validation, circles use `J = pi*d^4/32` and hollow circles
+use `J = pi*(Do^4-Di^4)/32`. Symmetric sections cross-check shear centre
+against the C-2A centroid convention. Rectangle J uses convergence,
+positivity, repeatability, and symmetry checks rather than an unverified
+approximate analytic formula. The checked public API reports disconnected
+geometry as invalid for warping analysis; C-2B supports only the connected
+library shapes listed above.
+
+C-2B remains geometric/material-independent. It does not implement stress,
+plastic analysis, material integration, EA, EI, mass per length, buckling,
+beam solving, 3D FEA, or optimization. C-3 is the future controlled material x
+section integration phase.
+
+## M5.5C-3A Preliminary Section Integration
+
+C-3A combines persisted normalized C-1 material facts with persisted C-2A
+geometry facts and optional C-2B warping facts:
+
+```text
+material ToolResult ID
+section geometry ToolResult ID
+optional warping ToolResult ID
+        -> immutable source resolution and verification
+        -> pure native MechCAD calculator
+        -> PreliminarySectionEngineeringResult
+        -> ToolResult / optional Evidence
+```
+
+The public operation accepts only result IDs. It does not accept caller-supplied
+copies of historical normalized outputs. Each source is reloaded from immutable
+run persistence and verified for existence, `SUCCEEDED` status, expected tool
+name/version, project, run, task binding, revision, state hash, and exact
+`output_hash` before its persisted output is parsed. Contributing records retain
+result ID, source task ID, tool identity, project/run, revision/hash, output hash,
+and the original BackendProvenance. Source task IDs are provenance only and do
+not need to equal the current integration task.
+
+The pure calculator has no ToolBroker, RunStore, filesystem, `bd_materials`, or
+`sectionproperties` access. It consumes only normalized MechCAD models and
+performs native deterministic arithmetic. The integration itself has no single
+backend provenance; its ToolResult backend provenance is `None`, while
+contributing source provenance remains structured in the normalized output.
+
+All five outputs always exist as explicit status-bearing values:
+
+```text
+mass_per_length       -> kg/m
+axial_rigidity_ea     -> N
+bending_rigidity_eix  -> N*mm^2
+bending_rigidity_eiy  -> N*mm^2
+torsional_rigidity_gj -> N*mm^2
+```
+
+Ranges remain ranges and no midpoint is fabricated. Density must be exactly
+`kg/m^3`; elastic and explicit shear modulus must be exactly `GPa`; section area
+is `mm^2`, second moments and J are `mm^4`. GPa is explicitly converted to
+N/mm^2 by multiplying by 1000. Unsupported units fail closed.
+
+Missing density produces an explicit unavailable mass value while valid E still
+produces EA/EIx/EIy. Missing E produces a successful partial result with mass
+available and all stiffness values unavailable. GJ is available only when both
+an explicit normalized shear modulus and a valid persisted C-2B J are supplied;
+otherwise it is `UNAVAILABLE` with `SHEAR_MODULUS_UNAVAILABLE` or
+`TORSION_CONSTANT_UNAVAILABLE`. E and Poisson ratio are never used to derive G.
+
+Derived authority inherits the material authority. Typical `bd_materials` data
+therefore remains `TYPICAL_REFERENCE`; deterministic arithmetic never upgrades
+it. Assumptions include `HOMOGENEOUS_SECTION` and
+`ISOTROPIC_LINEAR_ELASTIC_PRELIMINARY`. Printed-material direction, layers,
+infill, moisture, calibration, and shrink compensation are not represented.
+
+Partial success is distinct from structural Evidence completeness. A successful
+partial ToolResult does not create `analysis.structural` Evidence unless EA,
+EIx, and EIy are all `AVAILABLE`. Unavailable mass or GJ does not block Evidence
+when those three stiffness outputs are available. Source-integrity failures,
+binding mismatches, malformed values, and unsupported units fail the ToolResult
+and create no Evidence.
+
+C-3A computes mass and preliminary stiffness envelopes only. It does not
+implement stress, strength, yield, load cases, safety factors, buckling, fatigue,
+material selection, manufacturing profiles, or optimization. C-3B is the future
+controlled load/stress/allowable semantics phase and is not implemented.
+
 ## M5.5B-1 Pinned Gear Geometry
 
 M5.5B-1 adds an optional, geometry-only py_gearworks backend. Core MechCAD
@@ -307,3 +476,43 @@ pair operation that records two independent artifact results plus a nominal
 relative transform. STEP is the authoritative interchange output; STL is a
 derived mesh output. No arbitrary output paths, internal gears, assemblies,
 general CAD scripts, strength calculations, or optimization are implemented.
+
+## M5.5C-1 Typical Material Data
+
+The optional `materials` extra uses `bd-materials==0.2.4` from
+`bernhard-42/bd_materials`, with `threejs-materials==1.2.3` and
+`webcolors==24.8.0` resolved by that package. It remains separate from the
+optional `gear` extra and is not a core dependency.
+
+`BdMaterialsAdapter` exposes only the capability
+`material.typical_properties`. Its results always carry
+`MaterialDataAuthority.TYPICAL_REFERENCE`. The authority ladder is represented
+as:
+
+```text
+TYPICAL_REFERENCE
+        -> lower-authority early-design reference data
+SUPPLIER_DATASHEET
+MEASURED
+USER_OVERRIDE
+```
+
+The latter three are domain semantics only in M5.5C-1; no ingestion or override
+execution paths exist. Catalog ranges preserve min/max without inventing a
+midpoint. Scalar density is explicitly represented as a representative typical
+value. Missing properties remain `MISSING`; upstream `NOT_SUITABLE` values remain
+`NOT_SUITABLE`; neither becomes zero, NaN, or a fabricated engineering value.
+
+The tool `mechcad-material-typical-properties` requires an explicit material
+identity and returns normalized mechanical/thermal properties, canonical identity,
+authority, and backend provenance. Family aliases such as `aluminum` expose the
+resolved canonical grade and emit a warning rather than silently becoming an
+exact material selection. `mechcad-calc-mass-from-typical-material` uses only an
+available representative density and marks the result as a typical reference
+estimate.
+
+`bd_materials` appearance/PBR/finish/process wrappers never cross the MechCAD
+boundary. The backend is not authoritative for supplier data, measured values,
+FDM shrink compensation, print calibration, tolerances, anisotropic strength,
+or manufacturing process corrections. Section properties, structural analysis,
+materials selection, optimization, and M5.5C-2/C-3 remain out of scope.
