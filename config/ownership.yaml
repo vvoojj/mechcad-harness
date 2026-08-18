@@ -1,3 +1,11 @@
 schema: mechcad-harness
 version: 1
-ownership: []
+ownership:
+  - path: /requirements
+    owner: mechcad-requirements
+  - path: /materials
+    owner: mechcad-materials
+  - path: /components/*/transmission
+    owner: mechcad-transmission
+  - path: /components/*/placement
+    owner: mechcad-packaging

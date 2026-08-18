@@ -12,7 +12,6 @@ from .design import (
 from .evidence import Evidence
 from .issue import Issue, IssueStatus
 from .proposal import (
-    ChangeOperation,
     ChangeProposal,
     ChangeSet,
     ConstraintRequest,
