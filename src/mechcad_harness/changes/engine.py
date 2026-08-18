@@ -20,6 +20,13 @@ from .operations import ChangeOperation, OperationType
 from .ownership import OwnershipPolicy
 
 
+class AppliedChangeResult:
+    def __init__(self, snapshot: RevisionSnapshot, changeset_id: str, changed_paths: tuple[str, ...]):
+        self.snapshot = snapshot
+        self.changeset_id = changeset_id
+        self.changed_paths = changed_paths
+
+
 def _segments(path: str) -> list[str]:
     if not path.startswith("/") or path == "/" or "~" in path:
         raise InvalidChangePathError(f"malformed change path: {path!r}")
@@ -103,7 +110,7 @@ class ChangeEngine:
         self.state_manager = state_manager
         self.ownership_policy = ownership_policy
 
-    def apply_proposal(self, project_id: str, proposal: ChangeProposal) -> RevisionSnapshot:
+    def apply_proposal(self, project_id: str, proposal: ChangeProposal) -> AppliedChangeResult:
         current = self.state_manager._read_current(project_id)
         if proposal.base_revision != current["revision"] or proposal.base_state_hash != current["state_hash"]:
             raise StaleProposalError("proposal does not match current revision and state hash")
@@ -130,5 +137,9 @@ class ChangeEngine:
             status=ProposalStatus.ACCEPTED,
             operations=proposal.operations,
         )
-        _ = changeset
-        return self.state_manager.create_revision(project_id, updated)
+        snapshot = self.state_manager.create_revision(project_id, updated)
+        return AppliedChangeResult(
+            snapshot=snapshot,
+            changeset_id=changeset.id,
+            changed_paths=tuple(dict.fromkeys(operation.path for operation in proposal.operations)),
+        )

@@ -66,3 +66,11 @@ deterministic policy loaded from `config/ownership.yaml`; ungoverned paths fail
 closed. Failed ChangeSets do not create revisions or move `current.json`.
 Detailed ownership, dependency invalidation, and orchestration are later
 milestones.
+
+## M3 Dependency Invalidation
+
+M3 keeps canonical `DesignState` revisions separate from derived evidence. After an accepted M2 `ChangeSet`, the small applied-change result exposes the new revision, changeset ID, and changed canonical paths. A deterministic dependency graph matches those paths using literal segments, one-segment `*` wildcards, and prefix matching. It returns direct and transitive invalidated nodes without executing any analysis.
+
+Invalidation records are immutable JSON files outside canonical revisions. Evidence is also immutable, remains stored after becoming stale, and binds to a dependency node, exact state revision, and exact state hash. State hashes provide provenance; dependency history provides reusable-evidence freshness. A different state hash alone does not make every evidence record stale.
+
+Freshness is fail-closed: `CURRENT` requires valid exact-revision provenance, a known configured node, complete invalidation records for every revision after the evidence revision through the current revision, and no matching later invalidation. Matching later invalidation yields `STALE`; missing/corrupt history, invalid provenance, and unknown nodes yield `UNKNOWN`. Evidence created for revision N does not consider the invalidation record that produced revision N. Unknown and stale evidence never satisfy a fresh-evidence query. Recalculation, scheduling, and orchestration are later scope.

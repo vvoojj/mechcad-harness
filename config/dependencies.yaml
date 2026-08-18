@@ -1,2 +1,33 @@
 schema: mechcad-harness
 version: 1
+rules:
+  - when:
+      - /materials/*
+    invalidates:
+      - analysis.materials
+      - analysis.structural
+      - analysis.fits
+      - analysis.transmission_strength
+      - validation.geometry
+  - when:
+      - /components/*/transmission/*
+    invalidates:
+      - analysis.transmission
+      - analysis.packaging
+      - validation.collision
+  - when:
+      - /components/*/placement/*
+    invalidates:
+      - analysis.packaging
+      - validation.collision
+      - validation.assembly
+  - when:
+      - /requirements/*
+    invalidates:
+      - analysis.requirements
+      - analysis.loads
+edges:
+  - from: analysis.loads
+    to: analysis.structural
+  - from: analysis.structural
+    to: validation.structural
