@@ -228,3 +228,82 @@ M5.5C Materials + Structural
 M5.5D Search + Optimization
 M6A OpenCode Adapter
 ```
+
+## M5.5B-1 Pinned Gear Geometry
+
+M5.5B-1 adds an optional, geometry-only py_gearworks backend. Core MechCAD
+installation remains independent of NumPy, SciPy, build123d, and py_gearworks.
+The `gear` extra uses the exact upstream commit
+`2fc2a13d82a9997a65f30c870498f0bb3be62318` from
+`GarryBGoode/py_gearworks`, `build123d==0.11.1`, and NumPy constrained to
+`>=2,<2.4` for the validated legacy-CPU profile. The tested runtime resolved
+Python 3.13.15, NumPy 2.3.5, SciPy 1.18.0, build123d 0.11.1, and
+cadquery-ocp-novtk 7.9.3.1.1.
+
+The validated flow is:
+
+```text
+ToolBroker
+    -> mechcad-calc-spur-gear-geometry-gearworks
+    -> PyGearworksAdapter 0.1.0
+    -> py_gearworks 0.0.18 at exact Git revision
+    -> build123d internally
+    -> normalized Pydantic gear geometry
+    -> ToolResult / optional Evidence
+```
+
+The adapter exposes standard external spur geometry and spur-pair geometry only.
+It is not a strength, efficiency, fatigue, pitting, or lifetime solver. Native
+`mechcad-calc-spur-gear-geometry` remains available as the simple reference
+calculator and is cross-validated against normalized backend pitch diameters,
+ratio, and nominal center distance.
+
+The adapter healthcheck verifies the runtime dependency profile without importing
+third-party packages: py_gearworks 0.0.18, build123d 0.11.1, NumPy `>=2,<2.4`,
+and SciPy `>=1.10.1`. Backend provenance records the detected runtime library
+version and exact Git revision. Backend objects never enter ToolCall, ToolResult,
+Evidence, Run, or DesignState persistence. CAD artifact persistence and general
+CAD generation remain deferred to M5.5B-2.
+
+The NumPy 2.4+ x86-64-v2 baseline was not executable on the tested AMD Phenom II
+X6 1045T Windows host (`STATUS_ILLEGAL_INSTRUCTION`, `0xc000001d`). NumPy 2.3.5
+passed the numeric and full gear-stack smoke tests on that host. This is a
+host/profile validation constraint, not a change to the core Python `>=3.11`
+requirement and not a claim that newer CPUs or operating systems are incompatible.
+
+## M5.5B-2 Gear CAD Artifacts
+
+M5.5B-2 converts accepted external spur geometry into derived STEP and STL
+artifacts through the existing ToolBroker boundary:
+
+```text
+normalized gear input
+    -> mechcad-build-spur-gear-cad
+    -> PyGearworksAdapter
+    -> transient py_gearworks/build123d Part
+    -> explicit central bore subtraction
+    -> STEP/STL exporter
+    -> immutable hashed artifact metadata
+```
+
+Artifacts are stored below the workspace in
+`projects/<project_id>/runs/<run_id>/artifacts/<artifact_id>/` with the artifact
+file and `metadata.json`.
+
+The previous global `projects/_artifacts/<artifact_id>/` layout is not retained
+as a compatibility alias. Publication requires trusted project/run/task binding
+from ToolContext; user-supplied absolute paths and traversal/separator tricks are
+rejected. Artifact bytes and metadata are immutable exclusive-write records, and
+the uniqueness boundary is `(project_id, run_id, artifact_id)`, allowing the same
+artifact ID to exist independently in separate runs.
+Metadata records the safe workspace-relative path, exact SHA-256 and byte size,
+tool/version, bound revision/state hash, normalized input hash, and structured
+backend provenance. Artifact bytes and metadata are exclusive-write and are not
+canonical DesignState or Evidence content. Optional Evidence may reference a
+successful artifact-producing result without embedding file bytes.
+
+The supported CAD operations are external spur gear generation and a narrow spur
+pair operation that records two independent artifact results plus a nominal
+relative transform. STEP is the authoritative interchange output; STL is a
+derived mesh output. No arbitrary output paths, internal gears, assemblies,
+general CAD scripts, strength calculations, or optimization are implemented.

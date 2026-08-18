@@ -70,6 +70,7 @@ class ToolRegistration(Model):
     input_model: Type[Model]
     output_model: Type[Model]
     handler: Callable[[Model], Model]
+    provenance_handler: Callable[[], BackendProvenance] | None = None
     evidence_nodes: tuple[str, ...] = ()
 
     model_config = {"arbitrary_types_allowed": True, "extra": "forbid"}

@@ -11,6 +11,12 @@ dependencies = ["pydantic>=2,<3"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<9"]
+gear = [
+    "numpy>=2,<2.4",
+    "scipy>=1.10.1",
+    "build123d==0.11.1",
+    "py_gearworks @ git+https://github.com/GarryBGoode/py_gearworks.git@2fc2a13d82a9997a65f30c870498f0bb3be62318",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
