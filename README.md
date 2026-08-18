@@ -398,6 +398,62 @@ implement stress, strength, yield, load cases, safety factors, buckling, fatigue
 material selection, manufacturing profiles, or optimization. C-3B is the future
 controlled load/stress/allowable semantics phase and is not implemented.
 
+## M6A-1 Agent Gateway Foundation
+
+M6A-1 introduces the deterministic boundary for future reasoning agents without
+invoking OpenCode or an LLM:
+
+```text
+M4 RunTask
+    -> AgentGateway
+    -> ContextBuilder
+    -> AgentAdapter protocol
+    -> FakeAgentAdapter
+    -> structured AgentResponsePayload
+    -> immutable AgentResult
+```
+
+The context is minimal and read-only. It contains the exact persisted canonical
+DesignState revision, project/run/task identity, revision, state hash, immutable
+task objective/instructions, selected canonical requirement/constraint records,
+and selected persisted Evidence resolved by explicit Evidence IDs. The builder
+verifies each Evidence record's binding and M3 `CURRENT` freshness, then creates
+an `AgentEvidenceSummary`; callers cannot supply arbitrary summary text. Unknown,
+stale, mismatched, or unknown-freshness Evidence is rejected. It does not dump
+the workspace or automatically include all Evidence or ToolResults. Context
+hashes use canonical JSON.
+
+The only agent registered in M6A-1 is `mechcad-test-agent@1.0`. Agent registry
+lookup is exact by name and version; there is no latest fallback, plugin
+discovery, dynamic import, or external runtime. `FakeAgentAdapter` returns
+deterministic findings or configured structured `ChangeProposal`, `Issue`, and
+`ConstraintRequest` objects. It cannot execute tools, Python, shell, network
+requests, or filesystem operations.
+
+Agent records are persisted separately from M4 authority:
+
+```text
+projects/<project_id>/runs/<run_id>/agents/
+    invocations/<invocation_id>.json
+    results/<result_id>.json
+```
+
+Invocation records are written before adapter execution. Invocations and results
+are immutable exclusive-write records with deterministic request/response
+hashes. An AgentResult is not canonical DesignState and is not Evidence.
+
+The gateway rechecks run/task/revision/state-hash binding after adapter return.
+If canonical binding advanced during execution, the historical result is stored
+as `STALE`; it cannot apply a proposal, mutate DesignState, or create current
+Evidence. Returned `ChangeProposal` objects are checked immediately against the
+exact invocation revision/state hash. A mismatch produces FAILED with
+`RESPONSE_BINDING_MISMATCH`. Matching proposals remain proposals and must later pass
+the existing M2 stale, ownership, operation, and resulting-state validation.
+
+M6A-1 deliberately excludes real OpenCode/LLM execution. M6A-2 may add a real
+adapter round trip. M6B may add the first engineering agent,
+`mechcad-transmission`. C-3B remains the future load/stress/safety phase.
+
 ## M5.5B-1 Pinned Gear Geometry
 
 M5.5B-1 adds an optional, geometry-only py_gearworks backend. Core MechCAD
