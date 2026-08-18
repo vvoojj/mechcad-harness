@@ -127,3 +127,104 @@ accepted design-changing canonical revision advancements. It blocks on no state
 progress, repeated state hashes, or an exceeded iteration limit. No OpenCode,
 LLM, agent, CAD, FEA, optimization, or parallel execution integration exists
 in M4. `FakeTaskExecutor` tests the harness independently of an LLM.
+
+## M5 Tool Broker
+
+M5 adds deterministic pure tools behind an exact-version registry and broker:
+
+```text
+M4 task binding
+      -> ToolContext provenance
+      -> explicit typed ToolCall
+      -> exact tool name/version lookup
+      -> pure deterministic handler
+      -> immutable ToolResult
+      -> optional explicitly requested declared Evidence
+```
+
+`ToolContext` contains only `project_id`, `run_id`, `task_id`,
+`bound_revision`, and `bound_state_hash`. Tools do not receive `DesignState`,
+canonical snapshots, hidden project lookups, or arbitrary engineering context.
+All engineering values are explicit validated inputs.
+
+Task definitions may explicitly allow tools through `allowed_tools`; empty or
+missing permissions fail closed. Tool versions are exact and never silently
+resolved to the latest implementation. The broker validates task ownership,
+canonical binding, execution state, and permission before invoking a handler.
+
+Each invocation persists a `ToolCall` before execution and a separate immutable
+`ToolResult` afterward:
+
+```text
+workspace/projects/<project_id>/runs/<run_id>/
+  tool_calls/<call_id>.json
+  tool_results/<result_id>.json
+```
+
+Tool records contain immutable execution provenance and input/output hashes only;
+they do not duplicate mutable run-control authority from `state.json`.
+
+The initial tools are `mechcad-calc-torque`,
+`mechcad-calc-spur-gear-geometry`, `mechcad-check-envelope`, and
+`mechcad-apply-dimension-compensation`. They do not infer safety factors,
+material properties, shrinkage, tolerances, stress, friction, efficiency, or
+ratings. Evidence is opt-in, requires a successful result, and is restricted to
+dependency nodes declared by the exact tool registration. Evidence carries
+optional tool/result and input/output hash provenance while remaining compatible
+with existing M0-M4 records.
+
+## M5.5A Backend Foundation
+
+M5.5A prepares a trusted backend boundary without adding external engineering
+libraries or performing external calculations:
+
+```text
+ToolBroker
+    -> MechCAD Tool
+    -> trusted Backend Adapter
+    -> external engineering library
+    -> normalized MechCAD result
+```
+
+`BackendIdentity` describes what trusted adapter/library is registered. It is
+not runtime detection. `BackendHealth` separately reports whether a mapped
+distribution is available in the current environment, with statuses
+`AVAILABLE`, `UNAVAILABLE`, `INCOMPATIBLE`, and `UNKNOWN`. Detected package
+versions never mutate registered identity.
+
+Backend provenance is a single optional structured model:
+
+```text
+BackendProvenance
+  backend_name
+  backend_adapter_version
+  library_name
+  library_version
+  library_source
+  library_revision
+```
+
+Only normalized scalar provenance crosses ToolResult/Evidence persistence
+boundaries. External backend objects cannot enter canonical state or persisted
+records.
+
+`BackendRegistry` exposes deterministic `register`, `get`, `list`, and
+`find_by_capability` operations. Registrations are explicit trusted Python
+objects. There is no dynamic plugin loading, configuration-driven import,
+network download, shell execution, or generic backend `execute()` API.
+
+Package inspection uses a fixed logical-library-to-distribution mapping and
+`importlib.metadata`; target engineering packages are not imported merely to
+check availability. Missing packages produce deterministic `UNAVAILABLE`
+health.
+
+No engineering libraries were added to runtime dependencies in M5.5A. The
+planned roadmap remains:
+
+```text
+M5.5A Backend Foundation
+M5.5B Gear Geometry
+M5.5C Materials + Structural
+M5.5D Search + Optimization
+M6A OpenCode Adapter
+```

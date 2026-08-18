@@ -85,6 +85,7 @@ class TaskDefinition(Model):
     depends_on: tuple[str, ...] = ()
     required_nodes: tuple[str, ...] = ()
     produces_nodes: tuple[str, ...] = ()
+    allowed_tools: tuple[str, ...] = ()
     created_at: datetime = Field(default_factory=utc_now)
 
 
