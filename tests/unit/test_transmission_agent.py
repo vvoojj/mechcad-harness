@@ -76,6 +76,21 @@ def test_transmission_project_agent_is_reasoning_only():
     assert "safety_factor" in text
     assert "CURRENT torque Evidence takes precedence" in text
     assert "even when force_n, lever_arm_m, and safety_factor Requirements are also present" in text
+    for key in (
+        "transmission.output_angular_speed",
+        "transmission.motor_characteristics",
+        "transmission.output_interface",
+        "transmission.packaging_envelope",
+    ):
+        assert key in text
+    assert "key" in text
+    assert "description" in text
+    assert "rationale" in text
+    assert "CURRENT torque Evidence is not a missing authoritative input" in text
+    assert "already supplied authoritative inputs" in text
+    assert "gear ratio" in text
+    assert "constraint_requests = []" in text
+    assert "Do not create a request merely because information could be useful later" in text
     assert "mechcad-calc-torque" not in text
     assert "mechcad-calc-torque@1.0" not in text
 

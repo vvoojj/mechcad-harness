@@ -105,6 +105,54 @@ def test_gateway_persists_empty_request_observation(tmp_path):
     assert observation.tool_requests == ()
 
 
+def test_gateway_persists_discovery_observation_before_agent_result(tmp_path):
+    from mechcad_harness.agents import AgentConstraintRequestDraft, AgentIdentity, AgentRegistry, ContextBuilder, FakeAgentAdapter
+    from mechcad_harness.agents.gateway import AgentGateway
+    from mechcad_harness.agents.models import AgentAuthoredResponseContract, AgentConstraintDiscoveryResponsePayload
+    from mechcad_harness.agents.persistence import AgentStore
+    from mechcad_harness.agents.tool_mediation import AgentToolMediationMode
+    from mechcad_harness.agents.constraint_requests import SupportedConstraintKey
+
+    controller, run, task, _ = _controller(tmp_path)
+    identity = AgentIdentity(agent_name="agent", agent_version="1.0", role="test", protocol_version="1.0")
+    response = AgentConstraintDiscoveryResponsePayload(status="succeeded", summary="discover", findings=(), issues=(), constraint_requests=(AgentConstraintRequestDraft(key=SupportedConstraintKey.OUTPUT_INTERFACE, description="interface", rationale="needed"),), change_proposals=())
+    adapter = FakeAgentAdapter(identity, response=response)
+    registry = AgentRegistry()
+    registry.register(identity, adapter)
+    gateway = AgentGateway(controller, registry, ContextBuilder(controller))
+    order = []
+    original_constraint = gateway.store.write_constraint_request_observation
+    original_tool = gateway.store.write_tool_request_observation
+    original_result = gateway.store.write_result
+    gateway.store.write_constraint_request_observation = lambda record: (order.append("constraint"), original_constraint(record))[1]
+    gateway.store.write_tool_request_observation = lambda record: (order.append("tool"), original_tool(record))[1]
+    gateway.store.write_result = lambda record: (order.append("result"), original_result(record))[1]
+    result = gateway.invoke(run.run_id, task.task_id, identity.agent_name, identity.agent_version, mediation_mode=AgentToolMediationMode.DISABLED, response_contract=AgentAuthoredResponseContract.CONSTRAINT_DISCOVERY_TOOLS_FORBIDDEN)
+    assert result.status.value == "succeeded"
+    assert order == ["constraint", "tool", "result"]
+    observation = AgentStore(tmp_path).load_constraint_request_observation("PRJ-1", run.run_id, adapter.last_request.invocation_id)
+    assert observation.constraint_requests[0].key is SupportedConstraintKey.OUTPUT_INTERFACE
+
+
+def test_gateway_discovery_observation_failure_prevents_successful_result(tmp_path):
+    from mechcad_harness.agents import AgentConstraintRequestDraft, AgentIdentity, AgentRegistry, ContextBuilder, FakeAgentAdapter
+    from mechcad_harness.agents.gateway import AgentGateway
+    from mechcad_harness.agents.models import AgentAuthoredResponseContract, AgentConstraintDiscoveryResponsePayload
+    from mechcad_harness.agents.tool_mediation import AgentToolMediationMode
+    from mechcad_harness.agents.constraint_requests import SupportedConstraintKey
+
+    controller, run, task, _ = _controller(tmp_path)
+    identity = AgentIdentity(agent_name="agent", agent_version="1.0", role="test", protocol_version="1.0")
+    response = AgentConstraintDiscoveryResponsePayload(status="succeeded", summary="discover", findings=(), issues=(), constraint_requests=(AgentConstraintRequestDraft(key=SupportedConstraintKey.OUTPUT_INTERFACE, description="interface", rationale="needed"),), change_proposals=())
+    registry = AgentRegistry()
+    registry.register(identity, FakeAgentAdapter(identity, response=response))
+    gateway = AgentGateway(controller, registry, ContextBuilder(controller))
+    gateway.store.write_constraint_request_observation = lambda record: (_ for _ in ()).throw(OSError("disk full"))
+    result = gateway.invoke(run.run_id, task.task_id, identity.agent_name, identity.agent_version, mediation_mode=AgentToolMediationMode.DISABLED, response_contract=AgentAuthoredResponseContract.CONSTRAINT_DISCOVERY_TOOLS_FORBIDDEN)
+    assert result.status.value == "failed"
+    assert result.error == "CONSTRAINT_OBSERVATION_PERSISTENCE_FAILED"
+
+
 def test_observation_persistence_failure_blocks_success_and_mediation(tmp_path):
     from mechcad_harness.agents import AgentIdentity, AgentRegistry, ContextBuilder, FakeAgentAdapter
     from mechcad_harness.agents.gateway import AgentGateway

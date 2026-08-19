@@ -4,7 +4,7 @@ from uuid import uuid4
 from mechcad_harness.state.hashing import canonical_json
 
 from .materialization import materialize_agent_response
-from .models import AgentAdapterExecutionError, AgentAdapterExecutionOutcome, AgentAdapterProvenance, AgentAuthoredResponseContract, AgentInvocationRecord, AgentInvocationRequest, AgentResult, AgentResultStatus, AgentResponsePayload, AgentToolRequestObservationRecord, materialize_response_contract
+from .models import AgentAdapterExecutionError, AgentAdapterExecutionOutcome, AgentAdapterProvenance, AgentAuthoredResponseContract, AgentConstraintRequestObservationRecord, AgentInvocationRecord, AgentInvocationRequest, AgentResult, AgentResultStatus, AgentResponsePayload, AgentToolRequestObservationRecord, materialize_response_contract
 from .persistence import AgentStore
 from .tool_mediation import AgentToolMediator, AgentToolMediationMode
 
@@ -21,7 +21,7 @@ class AgentGateway:
         self.store = AgentStore(controller.workspace)
         self.tool_mediator = AgentToolMediator(controller, tool_broker) if tool_broker is not None else None
 
-    def invoke(self, run_id, task_id, agent_name, agent_version, *, requested_output_schema_version="1.0", selected_evidence_ids=(), selected_requirement_ids=(), selected_constraint_ids=(), mediation_mode=AgentToolMediationMode.ENABLED):
+    def invoke(self, run_id, task_id, agent_name, agent_version, *, requested_output_schema_version="1.0", selected_evidence_ids=(), selected_requirement_ids=(), selected_constraint_ids=(), mediation_mode=AgentToolMediationMode.ENABLED, response_contract=None):
         run = self.controller.get_run(run_id)
         definition = self.controller.store.load_task_definition(run.project_id, run_id, task_id)
         task_state = self.controller.store.load_task_state(run.project_id, run_id, task_id)
@@ -34,7 +34,11 @@ class AgentGateway:
         from .models import AgentIdentity
 
         identity = AgentIdentity(agent_name=agent_name, agent_version=agent_version, role="test", protocol_version="1.0")
-        contract = AgentAuthoredResponseContract.TOOL_REQUESTS_ALLOWED if mediation_mode is AgentToolMediationMode.ENABLED else AgentAuthoredResponseContract.TOOL_REQUESTS_FORBIDDEN
+        contract = response_contract or (AgentAuthoredResponseContract.TOOL_REQUESTS_ALLOWED if mediation_mode is AgentToolMediationMode.ENABLED else AgentAuthoredResponseContract.TOOL_REQUESTS_FORBIDDEN)
+        if mediation_mode is AgentToolMediationMode.ENABLED and contract is not AgentAuthoredResponseContract.TOOL_REQUESTS_ALLOWED:
+            raise ValueError("enabled mediation requires TOOL_REQUESTS_ALLOWED")
+        if mediation_mode is AgentToolMediationMode.DISABLED and contract is AgentAuthoredResponseContract.TOOL_REQUESTS_ALLOWED:
+            raise ValueError("disabled mediation requires a no-tool response contract")
         response_schema_hash = materialize_response_contract(contract).schema_hash
         request = AgentInvocationRequest(invocation_id=f"INV-{uuid4()}", agent=identity, project_id=run.project_id, run_id=run_id, task_id=task_id, bound_revision=definition.bound_revision, bound_state_hash=definition.bound_state_hash, context=context, requested_output_schema_version=requested_output_schema_version, context_hash=payload_hash(context.model_dump(mode="json")), response_contract=contract, response_schema_hash=response_schema_hash)
         self.store.write_invocation(AgentInvocationRecord(request=request, request_hash=payload_hash(request.model_dump(mode="json"))))
@@ -47,6 +51,29 @@ class AgentGateway:
             response = materialize_agent_response(request=request, agent=identity, authored=authored)
             response = AgentResponsePayload.model_validate(response)
             authored_requests = [item.model_dump(mode="json") for item in authored.tool_requests]
+            if contract is AgentAuthoredResponseContract.CONSTRAINT_DISCOVERY_TOOLS_FORBIDDEN:
+                constraint_requests = [item.model_dump(mode="json") for item in authored.constraint_requests]
+                constraint_observation_id = payload_hash({"invocation_id": request.invocation_id, "constraint_requests": constraint_requests})[7:]
+                constraint_observation = AgentConstraintRequestObservationRecord(
+                    observation_id=f"OBS-{constraint_observation_id}",
+                    invocation_id=request.invocation_id,
+                    agent_name=identity.agent_name,
+                    agent_version=identity.agent_version,
+                    project_id=request.project_id,
+                    run_id=request.run_id,
+                    task_id=task_id,
+                    bound_revision=request.bound_revision,
+                    bound_state_hash=request.bound_state_hash,
+                    response_contract=contract.value,
+                    constraint_requests=authored.constraint_requests,
+                    constraint_requests_hash=payload_hash(constraint_requests),
+                )
+                try:
+                    self.store.write_constraint_request_observation(constraint_observation)
+                except Exception:
+                    result = AgentResult(result_id=f"AGENTRES-{uuid4()}", invocation_id=request.invocation_id, agent_name=agent_name, agent_version=agent_version, project_id=request.project_id, run_id=run_id, task_id=task_id, bound_revision=request.bound_revision, bound_state_hash=request.bound_state_hash, status=AgentResultStatus.FAILED, response_hash=payload_hash({}), response=None, adapter_provenance=execution.provenance, error="CONSTRAINT_OBSERVATION_PERSISTENCE_FAILED")
+                    self.store.write_result(result)
+                    return result
             observation_digest = payload_hash({"invocation_id": request.invocation_id, "mode": mediation_mode.value, "tool_requests": authored_requests})
             observation = AgentToolRequestObservationRecord(
                 observation_id=f"OBS-{observation_digest[7:]}",

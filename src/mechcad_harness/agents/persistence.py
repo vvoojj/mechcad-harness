@@ -2,7 +2,8 @@ from pathlib import Path
 
 from mechcad_harness.runs.persistence import RunStore
 
-from .models import AgentInvocationRecord, AgentResult, AgentToolRequestObservationRecord
+from .models import AgentConstraintRequestObservationRecord, AgentInvocationRecord, AgentResult, AgentToolRequestObservationRecord
+from .constraint_requests import ConstraintRequestRecord, ConstraintRequestStore
 from .tool_mediation import ToolMediationRecord
 
 
@@ -35,6 +36,16 @@ class AgentStore:
         if len(matches) != 1:
             raise ValueError(f"tool request observation not uniquely found: {invocation_id}")
         return self.store._read(matches[0], AgentToolRequestObservationRecord)
+
+    def write_constraint_request_observation(self, record: AgentConstraintRequestObservationRecord) -> None:
+        self.store._write(self._path(record.project_id, record.run_id, "constraint_request_observations", record.observation_id), record.model_dump(mode="json"), exclusive=True)
+
+    def load_constraint_request_observation(self, project_id, run_id, invocation_id) -> AgentConstraintRequestObservationRecord:
+        directory = self.store.run_dir(project_id, run_id) / "agents" / "constraint_request_observations"
+        matches = [path for path in directory.glob("*.json") if AgentConstraintRequestObservationRecord.model_validate_json(path.read_text(encoding="utf-8")).invocation_id == invocation_id]
+        if len(matches) != 1:
+            raise ValueError(f"constraint request observation not uniquely found: {invocation_id}")
+        return self.store._read(matches[0], AgentConstraintRequestObservationRecord)
 
     def _mediation_path(self, project_id, run_id, mediation_id, filename):
         return self.store.run_dir(project_id, run_id) / "agents" / "tool_mediation" / mediation_id / filename

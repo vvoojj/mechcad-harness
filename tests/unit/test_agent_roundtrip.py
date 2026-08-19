@@ -138,3 +138,58 @@ def test_bounded_roundtrip_a_failure_writes_terminal_transition_and_recovers(tmp
     resumed = TransmissionToolRoundTripCoordinator(controller, gateway, registry).resume(run.run_id, task.task_id, identity.agent_name, identity.agent_version)
     assert resumed.failure_kind == "INVOCATION_A_FAILED"
     assert adapter.invocation_count == calls
+
+
+def test_bounded_constraint_discovery_roundtrip_materializes_typed_requests(tmp_path):
+    from mechcad_harness.agents.constraint_requests import AgentConstraintRequestDraft, SupportedConstraintKey
+    from mechcad_harness.agents.models import AgentAuthoredResponseContract, AgentConstraintDiscoveryResponsePayload
+    from mechcad_harness.agents.persistence import AgentStore
+    from mechcad_harness.agents.roundtrip import TransmissionToolRoundTripCoordinator
+
+    controller, run, task, snapshot, identity, gateway, registry, adapter = _setup(tmp_path)
+    b_response = AgentConstraintDiscoveryResponsePayload(status="succeeded", summary="B", findings=("Required design torque is 4 N*m.",), issues=(), constraint_requests=(
+        AgentConstraintRequestDraft(key=SupportedConstraintKey.OUTPUT_ANGULAR_SPEED, description="Target output speed", rationale="derive the transmission ratio"),
+        AgentConstraintRequestDraft(key=SupportedConstraintKey.OUTPUT_INTERFACE, description="Output shaft interface", rationale="select a compatible output concept"),
+    ), change_proposals=())
+    adapter._scripted_responses = (adapter._scripted_responses[0], b_response)
+    result = TransmissionToolRoundTripCoordinator(controller, gateway, registry).run(run.run_id, task.task_id, identity.agent_name, identity.agent_version, selected_requirement_ids=("REQ-TORQUE-FORCE", "REQ-TORQUE-ARM", "REQ-TORQUE-SAFETY"), mode="constraint_discovery")
+    assert result.status == "complete"
+    run_dir = tmp_path / "projects" / "PRJ-ROUNDTRIP" / "runs" / run.run_id
+    transition_dir = next((run_dir / "agents" / "roundtrips").glob("*"))
+    assert [path.name for path in sorted(transition_dir.glob("*.json"))] == ["00_started.json", "10_invocation_a.json", "20_tool_result.json", "30_evidence.json", "40_invocation_b.json", "45_constraint_requests.json", "50_complete.json"]
+    records = list((run_dir / "agents" / "constraint_requests").glob("*.json"))
+    assert len(records) == 2
+    assert len(list((run_dir / "tool_calls").glob("*.json"))) == 1
+    assert len(list((run_dir / "tool_results").glob("*.json"))) == 1
+    assert len(list((run_dir / "agents" / "constraint_request_observations").glob("*.json"))) == 1
+    complete = json.loads((transition_dir / "50_complete.json").read_text(encoding="utf-8"))
+    materialized_ids = sorted(path.stem for path in records)
+    assert complete["constraint_request_ids"] == materialized_ids
+    assert controller.state_manager._read_current("PRJ-ROUNDTRIP")["state_hash"] == snapshot.state_hash
+
+
+def test_constraint_discovery_duplicate_drafts_materialize_once(tmp_path):
+    from mechcad_harness.agents.constraint_requests import AgentConstraintRequestDraft, SupportedConstraintKey
+    from mechcad_harness.agents.models import AgentConstraintDiscoveryResponsePayload
+    from mechcad_harness.agents.roundtrip import TransmissionToolRoundTripCoordinator
+
+    controller, run, task, _, identity, gateway, registry, adapter = _setup(tmp_path)
+    draft = AgentConstraintRequestDraft(key=SupportedConstraintKey.OUTPUT_INTERFACE, description="first wording", rationale="first rationale")
+    duplicate = AgentConstraintRequestDraft(key=SupportedConstraintKey.OUTPUT_INTERFACE, description="different wording", rationale="different rationale")
+    adapter._scripted_responses = (adapter._scripted_responses[0], AgentConstraintDiscoveryResponsePayload(status="succeeded", summary="B", findings=(), issues=(), constraint_requests=(draft, duplicate), change_proposals=()))
+    result = TransmissionToolRoundTripCoordinator(controller, gateway, registry).run(run.run_id, task.task_id, identity.agent_name, identity.agent_version, mode="constraint_discovery")
+    assert result.status == "complete"
+    assert len(list((tmp_path / "projects" / "PRJ-ROUNDTRIP" / "runs" / run.run_id / "agents" / "constraint_requests").glob("*.json"))) == 1
+
+
+def test_constraint_discovery_zero_request_completion_is_valid(tmp_path):
+    from mechcad_harness.agents.models import AgentConstraintDiscoveryResponsePayload
+    from mechcad_harness.agents.roundtrip import TransmissionToolRoundTripCoordinator
+
+    controller, run, task, _, identity, gateway, registry, adapter = _setup(tmp_path)
+    adapter._scripted_responses = (adapter._scripted_responses[0], AgentConstraintDiscoveryResponsePayload(status="succeeded", summary="B", findings=("No additional inputs are required.",), issues=(), constraint_requests=(), change_proposals=()))
+    result = TransmissionToolRoundTripCoordinator(controller, gateway, registry).run(run.run_id, task.task_id, identity.agent_name, identity.agent_version, mode="constraint_discovery")
+    assert result.status == "complete"
+    transition_dir = next((tmp_path / "projects" / "PRJ-ROUNDTRIP" / "runs" / run.run_id / "agents" / "roundtrips").glob("*"))
+    assert json.loads((transition_dir / "45_constraint_requests.json").read_text(encoding="utf-8"))["constraint_request_ids"] == []
+    assert json.loads((transition_dir / "50_complete.json").read_text(encoding="utf-8"))["constraint_request_ids"] == []

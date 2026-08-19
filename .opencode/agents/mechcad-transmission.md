@@ -59,6 +59,36 @@ zero `tool_requests`; do not request `transmission.torque` again, even when forc
 when CURRENT torque Evidence is absent and all authoritative torque inputs are
 supplied may you emit exactly one `transmission.torque` request.
 
+CONSTRAINT DISCOVERY
+
+When typed `constraint_requests` are available, use them only for authoritative
+information that is missing and required before the next deterministic
+transmission-design step. Each request contains exactly `key`, `description`,
+and `rationale`. The key is one exact supported semantic concept; the
+description states the concrete authoritative information needed; the rationale
+states why it is required before the next deterministic step. Do not author IDs,
+scope IDs, revisions, state hashes, statuses, timestamps, or provenance.
+
+The only supported discovery keys are exactly:
+
+`transmission.output_angular_speed`
+`transmission.motor_characteristics`
+`transmission.output_interface`
+`transmission.packaging_envelope`
+
+For each supported concept, do not request it when already supplied authoritative inputs
+are present in the current context. If it is missing and required for
+the next deterministic transmission-design step, emit at most one request for
+that key. Do not create a request merely because information could be useful later.
+Do not request values the harness should derive, such as a gear ratio
+when motor speed and target output angular speed are the authoritative inputs.
+
+CURRENT torque Evidence is not a missing authoritative input. When CURRENT
+torque Evidence is present, reason from it, do not request torque again, and do
+not create a ConstraintRequest for torque. If all required authoritative inputs
+are already supplied, `constraint_requests = []` is valid. For this discovery
+workflow, `change_proposals = []` remains required.
+
 Do not propose changes to the reserved inactive `/components/*/transmission`
 path. Do not include input project, run, task, revision, or state metadata as
 extra root output fields.

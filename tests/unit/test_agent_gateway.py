@@ -190,6 +190,24 @@ def test_gateway_fails_wrong_proposal_revision_or_hash(tmp_path):
     assert controller.state_manager._read_snapshot("PRJ-1", 1).state_hash == run.active_state_hash
 
 
+def test_gateway_rejects_enabled_discovery_contract_and_accepts_disabled_discovery(tmp_path):
+    from mechcad_harness.agents import AgentIdentity, AgentRegistry, ContextBuilder, FakeAgentAdapter
+    from mechcad_harness.agents.gateway import AgentGateway
+    from mechcad_harness.agents.models import AgentAuthoredResponseContract, AgentAuthoredResponsePayload
+    from mechcad_harness.agents.tool_mediation import AgentToolMediationMode
+
+    controller, run, task, _ = _controller(tmp_path)
+    identity = AgentIdentity(agent_name="agent", agent_version="1.0", role="test", protocol_version="1.0")
+    adapter = FakeAgentAdapter(identity, response=AgentAuthoredResponsePayload(status="succeeded", summary="ok", findings=(), issues=(), constraint_requests=(), change_proposals=()))
+    registry = AgentRegistry()
+    registry.register(identity, adapter)
+    gateway = AgentGateway(controller, registry, ContextBuilder(controller))
+    with pytest.raises(ValueError, match="enabled mediation"):
+        gateway.invoke(run.run_id, task.task_id, identity.agent_name, identity.agent_version, mediation_mode=AgentToolMediationMode.ENABLED, response_contract=AgentAuthoredResponseContract.CONSTRAINT_DISCOVERY_TOOLS_FORBIDDEN)
+    result = gateway.invoke(run.run_id, task.task_id, identity.agent_name, identity.agent_version, mediation_mode=AgentToolMediationMode.DISABLED, response_contract=AgentAuthoredResponseContract.CONSTRAINT_DISCOVERY_TOOLS_FORBIDDEN)
+    assert result.status.value == "succeeded"
+
+
 def test_duplicate_invocation_and_result_records_are_rejected(tmp_path):
     gateway, controller, run, task, identity = _gateway(tmp_path)
     result = gateway.invoke(run.run_id, task.task_id, identity.agent_name, identity.agent_version)

@@ -3,7 +3,7 @@ import uuid
 
 from mechcad_harness.models import ChangeProposal, ConstraintRequest, Issue, IssueStatus, ProposalStatus
 
-from .models import AgentAuthoredResponsePayload, AgentIdentity, AgentInvocationRequest, AgentResponsePayload
+from .models import AgentAuthoredResponsePayload, AgentAuthoredResponseContract, AgentIdentity, AgentInvocationRequest, AgentResponsePayload
 
 
 def _materialized_id(prefix: str, invocation_id: str, kind: str, ordinal: int) -> str:
@@ -22,15 +22,18 @@ def materialize_agent_response(*, request: AgentInvocationRequest, agent: AgentI
         )
         for index, value in enumerate(authored.issues)
     )
-    constraint_requests = tuple(
-        ConstraintRequest(
-            id=_materialized_id("CR", request.invocation_id, "constraint_request", index),
-            revision=request.bound_revision,
-            state_hash=request.bound_state_hash,
-            description=value,
+    if request.response_contract is AgentAuthoredResponseContract.CONSTRAINT_DISCOVERY_TOOLS_FORBIDDEN:
+        constraint_requests = ()
+    else:
+        constraint_requests = tuple(
+            ConstraintRequest(
+                id=_materialized_id("CR", request.invocation_id, "constraint_request", index),
+                revision=request.bound_revision,
+                state_hash=request.bound_state_hash,
+                description=value,
+            )
+            for index, value in enumerate(authored.constraint_requests)
         )
-        for index, value in enumerate(authored.constraint_requests)
-    )
     proposals = tuple(
         ChangeProposal(
             id=_materialized_id("CP", request.invocation_id, "change_proposal", index),

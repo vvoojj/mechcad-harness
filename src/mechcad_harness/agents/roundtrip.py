@@ -2,6 +2,8 @@ from uuid import uuid5, NAMESPACE_URL
 
 from .persistence import AgentStore
 from .tool_mediation import AgentToolMediationMode
+from .models import AgentAuthoredResponseContract
+from .constraint_requests import ConstraintRequestMaterializer, ConstraintRequestStore
 from mechcad_harness.tools.evidence import ToolEvidenceMaterializer
 
 
@@ -18,7 +20,7 @@ class TransmissionToolRoundTripCoordinator:
         self.gateway = gateway
         self.registry = registry
 
-    def run(self, run_id, task_id, agent_name, agent_version, *, selected_requirement_ids=(), selected_constraint_ids=()):
+    def run(self, run_id, task_id, agent_name, agent_version, *, selected_requirement_ids=(), selected_constraint_ids=(), mode="standard", engineering_scope_id="transmission"):
         run = self.controller.get_run(run_id)
         definition = self.controller.store.load_task_definition(run.project_id, run_id, task_id)
         workflow_id = f"RTR-{uuid5(NAMESPACE_URL, f'mechcad:roundtrip:{run.project_id}:{run_id}:{task_id}:{agent_name}:{agent_version}') }"
@@ -63,7 +65,8 @@ class TransmissionToolRoundTripCoordinator:
         if not self._binding_current(run_id, task_id, definition.bound_revision, definition.bound_state_hash) or not self.controller.evidence.is_evidence_fresh(run.project_id, evidence.id):
             return TransmissionToolRoundTripResult("failed", failure_kind="EVIDENCE_NOT_CURRENT")
         self._write_transition(run.project_id, run_id, workflow_id, "30_evidence", {"workflow_id": workflow_id, "evidence_id": evidence.id, "mediation_id": mediation.mediation_id, "tool_result_id": mediation.tool_result_id})
-        result_b = self.gateway.invoke(run_id, task_id, agent_name, agent_version, selected_evidence_ids=(evidence.id,), selected_requirement_ids=selected_requirement_ids, selected_constraint_ids=selected_constraint_ids, mediation_mode=AgentToolMediationMode.DISABLED)
+        response_contract = AgentAuthoredResponseContract.CONSTRAINT_DISCOVERY_TOOLS_FORBIDDEN if mode == "constraint_discovery" else AgentAuthoredResponseContract.TOOL_REQUESTS_FORBIDDEN
+        result_b = self.gateway.invoke(run_id, task_id, agent_name, agent_version, selected_evidence_ids=(evidence.id,), selected_requirement_ids=selected_requirement_ids, selected_constraint_ids=selected_constraint_ids, mediation_mode=AgentToolMediationMode.DISABLED, response_contract=response_contract)
         if result_b.invocation_id == result_a.invocation_id:
             raise RuntimeError("gateway did not create a fresh Invocation B")
         if result_b.status.value != "succeeded":
@@ -100,6 +103,27 @@ class TransmissionToolRoundTripCoordinator:
                 "bound_state_hash": definition.bound_state_hash,
             })
             return TransmissionToolRoundTripResult("failed", failure_kind="SECOND_TOOL_REQUEST", evidence_id=evidence.id)
+        if mode == "constraint_discovery":
+            constraint_observation = store.load_constraint_request_observation(run.project_id, run_id, result_b.invocation_id)
+            constraint_records = ConstraintRequestMaterializer(ConstraintRequestStore(self.controller.workspace)).materialize(
+                project_id=run.project_id,
+                run_id=run_id,
+                task_id=task_id,
+                agent_name=agent_name,
+                agent_version=agent_version,
+                source_invocation_id=result_b.invocation_id,
+                source_agent_result_id=result_b.result_id,
+                engineering_scope_id=engineering_scope_id,
+                bound_revision=definition.bound_revision,
+                bound_state_hash=definition.bound_state_hash,
+                source_created_at=store.load_invocation(run.project_id, run_id, result_b.invocation_id).request.created_at,
+                state=self.controller.state_manager.load_revision(run.project_id, definition.bound_revision),
+                drafts=constraint_observation.constraint_requests,
+            )
+            request_ids = sorted({record.request.id for record in constraint_records})
+            self._write_transition(run.project_id, run_id, workflow_id, "45_constraint_requests", {"workflow_id": workflow_id, "invocation_b_id": result_b.invocation_id, "agent_result_b_id": result_b.result_id, "constraint_observation_id": constraint_observation.observation_id, "constraint_request_ids": request_ids, "engineering_scope_id": engineering_scope_id, "bound_revision": definition.bound_revision, "bound_state_hash": definition.bound_state_hash})
+            self._write_transition(run.project_id, run_id, workflow_id, "50_complete", {"workflow_id": workflow_id, "evidence_id": evidence.id, "agent_result_b_id": result_b.result_id, "constraint_request_ids": request_ids})
+            return TransmissionToolRoundTripResult("complete", evidence_id=evidence.id)
         if result_b.status.value != "succeeded":
             return TransmissionToolRoundTripResult("failed", failure_kind="INVOCATION_B_FAILED", evidence_id=evidence.id)
         self._write_transition(run.project_id, run_id, workflow_id, "50_complete", {"workflow_id": workflow_id, "evidence_id": evidence.id, "agent_result_b_id": result_b.result_id})

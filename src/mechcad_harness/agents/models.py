@@ -10,6 +10,7 @@ from pydantic import Field, field_validator
 from mechcad_harness.models import ChangeProposal, ConstraintRequest, DesignState, Issue
 from mechcad_harness.models.common import Model
 from mechcad_harness.tools.models import TorqueInput
+from .constraint_requests import AgentConstraintRequestDraft, SupportedConstraintKey
 
 
 def utc_now() -> datetime:
@@ -157,6 +158,21 @@ class AgentToolRequestObservationRecord(Model):
     tool_requests_hash: str = Field(min_length=1)
 
 
+class AgentConstraintRequestObservationRecord(Model):
+    observation_id: str = Field(min_length=1)
+    invocation_id: str = Field(min_length=1)
+    agent_name: str = Field(min_length=1)
+    agent_version: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    bound_revision: int = Field(gt=0)
+    bound_state_hash: str = Field(min_length=1)
+    response_contract: str = Field(min_length=1)
+    constraint_requests: tuple[AgentConstraintRequestDraft, ...] = ()
+    constraint_requests_hash: str = Field(min_length=1)
+
+
 class AgentAuthoredResponsePayload(Model):
     status: AgentResponseStatus
     summary: str
@@ -170,10 +186,16 @@ class AgentAuthoredResponsePayload(Model):
 class AgentAuthoredResponseContract(StrEnum):
     TOOL_REQUESTS_ALLOWED = "tool_requests_allowed"
     TOOL_REQUESTS_FORBIDDEN = "tool_requests_forbidden"
+    CONSTRAINT_DISCOVERY_TOOLS_FORBIDDEN = "constraint_discovery_tools_forbidden"
 
 
 class AgentAuthoredNoToolResponsePayload(AgentAuthoredResponsePayload):
     tool_requests: tuple[()] = ()
+
+
+class AgentConstraintDiscoveryResponsePayload(AgentAuthoredResponsePayload):
+    tool_requests: tuple[()] = ()
+    constraint_requests: tuple[AgentConstraintRequestDraft, ...] = ()
 
 
 class ResponseContractMaterialization(NamedTuple):
@@ -190,6 +212,8 @@ def response_model_for_contract(contract: AgentAuthoredResponseContract):
         return AgentAuthoredResponsePayload
     if contract is AgentAuthoredResponseContract.TOOL_REQUESTS_FORBIDDEN:
         return AgentAuthoredNoToolResponsePayload
+    if contract is AgentAuthoredResponseContract.CONSTRAINT_DISCOVERY_TOOLS_FORBIDDEN:
+        return AgentConstraintDiscoveryResponsePayload
     raise ValueError(f"unsupported authored response contract: {contract}")
 
 

@@ -92,6 +92,20 @@ def test_response_contract_materialization_is_canonical_and_distinct():
     assert forbidden.schema_hash == f"sha256:{__import__('hashlib').sha256(forbidden.schema_json.encode()).hexdigest()}"
 
 
+def test_constraint_discovery_contract_has_typed_four_key_requests_and_no_tools():
+    from mechcad_harness.agents.models import AgentAuthoredResponseContract, response_model_for_contract
+
+    model = response_model_for_contract(AgentAuthoredResponseContract.CONSTRAINT_DISCOVERY_TOOLS_FORBIDDEN)
+    schema = model.model_json_schema()
+    assert schema["properties"]["tool_requests"]["maxItems"] == 0
+    assert set(schema["$defs"]["SupportedConstraintKey"]["enum"]) == {
+        "transmission.output_angular_speed",
+        "transmission.motor_characteristics",
+        "transmission.output_interface",
+        "transmission.packaging_envelope",
+    }
+
+
 def test_materialization_preserves_semantics_and_binds_trusted_fields():
     from mechcad_harness.agents.materialization import materialize_agent_response
     from mechcad_harness.agents.models import AgentAuthoredResponsePayload, AgentIdentity, AgentInvocationRequest, AgentContext

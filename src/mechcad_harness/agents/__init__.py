@@ -4,7 +4,10 @@ from .models import (
     AgentAdapterExecutionOutcome,
     AgentAdapterIdentity,
     AgentAdapterProvenance,
+    AgentAuthoredResponseContract,
     AgentAuthoredResponsePayload,
+    AgentConstraintDiscoveryResponsePayload,
+    AgentConstraintRequestObservationRecord,
     AgentChangeProposalDraft,
     AgentContext,
     AgentEvidenceSummary,
@@ -18,6 +21,7 @@ from .models import (
 from .context import ContextBuilder
 from .fake import FakeAgentAdapter
 from .materialization import materialize_agent_response
+from .constraint_requests import AgentConstraintRequestDraft, ConstraintRequestMaterializer, ConstraintRequestRecord, ConstraintRequestStore, SupportedConstraintKey
 from .registry import AgentRegistry
 from .tool_mediation import AgentToolMediator, CapabilityPolicy, ToolMediationError, ToolMediationRecord
 
@@ -28,6 +32,10 @@ __all__ = [
     "AgentAdapterIdentity",
     "AgentAdapterProvenance",
     "AgentAuthoredResponsePayload",
+    "AgentAuthoredResponseContract",
+    "AgentConstraintDiscoveryResponsePayload",
+    "AgentConstraintRequestDraft",
+    "AgentConstraintRequestObservationRecord",
     "AgentChangeProposalDraft",
     "AgentContext",
     "AgentEvidenceSummary",
@@ -43,6 +51,10 @@ __all__ = [
     "ContextBuilder",
     "FakeAgentAdapter",
     "materialize_agent_response",
+    "ConstraintRequestMaterializer",
+    "ConstraintRequestRecord",
+    "ConstraintRequestStore",
+    "SupportedConstraintKey",
     "ToolMediationError",
     "ToolMediationRecord",
 ]
