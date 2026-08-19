@@ -1,6 +1,9 @@
 from datetime import datetime
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
+from typing import Literal
+from mechcad_harness.engineering.keys import SupportedConstraintKey
+from mechcad_harness.engineering.values import AuthoritativeValue, MotorCharacteristicsValue, OutputAngularSpeedValue, OutputInterfaceValue, PackagingEnvelopeValue
 
 from .common import Model, NamedModel, utc_now
 
@@ -33,6 +36,34 @@ class LoadCase(NamedModel):
     description: str = Field(min_length=1)
 
 
+class AuthoritativeAnchor(Model):
+    kind: Literal["requirement", "constraint"]
+    id: str = Field(min_length=1)
+
+
+class AuthoritativeParameter(Model):
+    id: str = Field(min_length=1)
+    anchor: AuthoritativeAnchor
+    scope_id: str = Field(min_length=1)
+    key: SupportedConstraintKey
+    value: AuthoritativeValue
+    source_resolution_id: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_binding(self):
+        if getattr(self.value, "kind", None) != self.key.value:
+            raise ValueError("authoritative parameter key/value mismatch")
+        expected = {
+            SupportedConstraintKey.OUTPUT_ANGULAR_SPEED: ("requirement", "REQ-TRANSMISSION-OUTPUT-SPEED"),
+            SupportedConstraintKey.MOTOR_CHARACTERISTICS: ("requirement", "REQ-TRANSMISSION-MOTOR-CHARACTERISTICS"),
+            SupportedConstraintKey.OUTPUT_INTERFACE: ("constraint", "CON-TRANSMISSION-OUTPUT-INTERFACE"),
+            SupportedConstraintKey.PACKAGING_ENVELOPE: ("constraint", "CON-TRANSMISSION-PACKAGING-ENVELOPE"),
+        }[self.key]
+        if (self.anchor.kind, self.anchor.id) != expected:
+            raise ValueError("authoritative parameter key/anchor mismatch")
+        return self
+
+
 class DesignState(Model):
     id: str = Field(min_length=1)
     revision: int = Field(gt=0)
@@ -44,6 +75,7 @@ class DesignState(Model):
     interfaces: list[Interface] = Field(default_factory=list)
     constraints: list[Constraint] = Field(default_factory=list)
     load_cases: list[LoadCase] = Field(default_factory=list)
+    authoritative_parameters: list[AuthoritativeParameter] = Field(default_factory=list)
 
     @field_validator("created_at")
     @classmethod

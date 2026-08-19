@@ -22,6 +22,7 @@ from .context import ContextBuilder
 from .fake import FakeAgentAdapter
 from .materialization import materialize_agent_response
 from .constraint_requests import AgentConstraintRequestDraft, ConstraintRequestMaterializer, ConstraintRequestRecord, ConstraintRequestStore, SupportedConstraintKey
+from .constraint_resolution import ConstraintResolutionBatchCommand, ConstraintResolutionRecord, ConstraintResolutionStore
 from .registry import AgentRegistry
 from .tool_mediation import AgentToolMediator, CapabilityPolicy, ToolMediationError, ToolMediationRecord
 
@@ -55,6 +56,9 @@ __all__ = [
     "ConstraintRequestRecord",
     "ConstraintRequestStore",
     "SupportedConstraintKey",
+    "ConstraintResolutionBatchCommand",
+    "ConstraintResolutionRecord",
+    "ConstraintResolutionStore",
     "ToolMediationError",
     "ToolMediationRecord",
 ]

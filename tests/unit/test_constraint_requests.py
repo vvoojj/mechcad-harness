@@ -51,12 +51,31 @@ def test_satisfaction_uses_exact_trusted_anchors_only():
 
     materializer = ConstraintRequestMaterializer()
     state = _state(requirement_ids=("REQ-TRANSMISSION-OUTPUT-SPEED",), constraint_ids=("CON-TRANSMISSION-OUTPUT-INTERFACE",))
-    assert materializer.is_satisfied(SupportedConstraintKey.OUTPUT_ANGULAR_SPEED, state)
+    assert not materializer.is_satisfied(SupportedConstraintKey.OUTPUT_ANGULAR_SPEED, state)
     assert not materializer.is_satisfied(SupportedConstraintKey.MOTOR_CHARACTERISTICS, state)
-    assert materializer.is_satisfied(SupportedConstraintKey.OUTPUT_INTERFACE, state)
+    assert not materializer.is_satisfied(SupportedConstraintKey.OUTPUT_INTERFACE, state)
     assert not materializer.is_satisfied(SupportedConstraintKey.PACKAGING_ENVELOPE, state)
     text_only = _state(requirement_ids=("REQ-OTHER",))
     assert not materializer.is_satisfied(SupportedConstraintKey.OUTPUT_ANGULAR_SPEED, text_only)
+
+
+def test_satisfaction_requires_exact_authoritative_parameter_and_fails_closed_on_corruption():
+    from mechcad_harness.agents.constraint_requests import ConstraintRequestMaterializer, SupportedConstraintKey
+    from mechcad_harness.models.design import AuthoritativeAnchor, AuthoritativeParameter, OutputAngularSpeedValue
+    from mechcad_harness.models import DesignState
+
+    materializer = ConstraintRequestMaterializer()
+    anchor = _state(requirement_ids=("REQ-TRANSMISSION-OUTPUT-SPEED",))
+    parameter = AuthoritativeParameter(id="PARAM-1", anchor=AuthoritativeAnchor(kind="requirement", id="REQ-TRANSMISSION-OUTPUT-SPEED"), scope_id="transmission", key=SupportedConstraintKey.OUTPUT_ANGULAR_SPEED, value=OutputAngularSpeedValue(kind=SupportedConstraintKey.OUTPUT_ANGULAR_SPEED.value, value_rad_s=1), source_resolution_id="CRRES-1")
+    assert not materializer.is_satisfied(SupportedConstraintKey.OUTPUT_ANGULAR_SPEED, anchor)
+    assert materializer.is_satisfied(SupportedConstraintKey.OUTPUT_ANGULAR_SPEED, anchor.model_copy(update={"authoritative_parameters": [parameter]}))
+    assert not materializer.is_satisfied(SupportedConstraintKey.OUTPUT_ANGULAR_SPEED, anchor.model_copy(update={"authoritative_parameters": [parameter.model_copy(update={"scope_id": "other"})]}))
+    with pytest.raises(ValueError):
+        materializer.is_satisfied(SupportedConstraintKey.OUTPUT_ANGULAR_SPEED, _state().model_copy(update={"authoritative_parameters": [parameter]}))
+    assert not materializer.is_satisfied(SupportedConstraintKey.MOTOR_CHARACTERISTICS, anchor.model_copy(update={"authoritative_parameters": [parameter]}))
+    duplicate = parameter.model_copy(update={"id": "PARAM-2"})
+    with pytest.raises(ValueError):
+        materializer.is_satisfied(SupportedConstraintKey.OUTPUT_ANGULAR_SPEED, anchor.model_copy(update={"authoritative_parameters": [parameter, duplicate]}))
 
 
 def test_materializer_persists_and_reuses_semantic_request(tmp_path):
@@ -81,6 +100,6 @@ def test_materializer_suppresses_satisfied_and_rejects_unknown_keys(tmp_path):
     materializer = ConstraintRequestMaterializer(ConstraintRequestStore(tmp_path))
     state = _state(requirement_ids=("REQ-TRANSMISSION-OUTPUT-SPEED",))
     result = materializer.materialize(project_id="PRJ", run_id="RUN", task_id="TASK", agent_name="agent", agent_version="1.0", source_invocation_id="INV", source_agent_result_id="RES", engineering_scope_id="transmission", bound_revision=3, bound_state_hash="sha256:state", source_created_at=None, state=state, drafts=(_draft(SupportedConstraintKey.OUTPUT_ANGULAR_SPEED),))
-    assert result == ()
+    assert len(result) == 1
     with pytest.raises(ValidationError):
         _draft("transmission.unknown")

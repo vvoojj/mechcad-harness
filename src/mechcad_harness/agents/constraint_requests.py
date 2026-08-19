@@ -5,14 +5,8 @@ from uuid import NAMESPACE_URL, uuid5
 from pydantic import Field
 
 from mechcad_harness.models.proposal import ConstraintRequest
+from mechcad_harness.engineering.keys import SupportedConstraintKey
 from mechcad_harness.models.common import Model
-
-
-class SupportedConstraintKey(StrEnum):
-    OUTPUT_ANGULAR_SPEED = "transmission.output_angular_speed"
-    MOTOR_CHARACTERISTICS = "transmission.motor_characteristics"
-    OUTPUT_INTERFACE = "transmission.output_interface"
-    PACKAGING_ENVELOPE = "transmission.packaging_envelope"
 
 
 class AgentConstraintRequestDraft(Model):
@@ -71,9 +65,24 @@ class ConstraintRequestMaterializer:
         identity = "\n".join((project_id, engineering_scope_id, str(bound_revision), bound_state_hash, draft.key.value))
         return f"CRREQ-{uuid5(NAMESPACE_URL, identity)}"
 
-    def is_satisfied(self, key: SupportedConstraintKey, state) -> bool:
+    def is_satisfied(self, key: SupportedConstraintKey, state, engineering_scope_id: str = "transmission") -> bool:
         collection, record_id = self._anchors[key]
-        return any(item.id == record_id for item in getattr(state, collection))
+        anchors = [item for item in getattr(state, collection) if item.id == record_id]
+        parameters = [item for item in state.authoritative_parameters if item.anchor.kind == ("requirement" if collection == "requirements" else "constraint") and item.anchor.id == record_id]
+        if len(parameters) > 1:
+            raise ValueError("multiple authoritative parameters for anchor")
+        if not anchors:
+            if parameters:
+                raise ValueError("authoritative parameter anchor is missing")
+            return False
+        if not parameters:
+            return False
+        parameter = parameters[0]
+        if parameter.scope_id != engineering_scope_id:
+            return False
+        if parameter.key is not key or getattr(parameter.value, "kind", None) != key.value:
+            raise ValueError("authoritative parameter key/value mismatch")
+        return True
 
     def materialize(self, *, project_id, run_id, task_id, agent_name, agent_version, source_invocation_id, source_agent_result_id, engineering_scope_id, bound_revision, bound_state_hash, source_created_at, state, drafts):
         if self.store is None:
