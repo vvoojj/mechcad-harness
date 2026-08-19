@@ -135,6 +135,16 @@ class StateManager:
     def load_revision(self, project_id: str, revision: int) -> DesignState:
         return self._read_snapshot(project_id, revision).state
 
+    def promote_existing_revision(self, project_id: str, *, expected_current_revision: int, expected_current_hash: str, target_revision: int, target_hash: str) -> RevisionSnapshot:
+        current = self._read_current(project_id)
+        if current["revision"] != expected_current_revision or current["state_hash"] != expected_current_hash:
+            raise RevisionConflictError("current pointer does not match expected base")
+        snapshot = self._read_snapshot(project_id, target_revision)
+        if snapshot.state_hash != target_hash or snapshot.parent_revision != expected_current_revision:
+            raise StateIntegrityError("existing target revision does not match expected application")
+        self._write_atomic(self._current_path(project_id), {"project_id": project_id, "revision": target_revision, "state_hash": target_hash})
+        return snapshot
+
     def verify_revision(self, project_id: str, revision: int) -> bool:
         self._read_snapshot(project_id, revision)
         return True

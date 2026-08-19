@@ -10,6 +10,11 @@ __all__ = [
     "OwnershipViolationError",
     "StaleProposalError",
     "apply_operation",
+    "StateApplicationPreparationRecord",
+    "StateApplicationReceiptRecord",
+    "StateApplicationStore",
+    "application_id",
+    "operations_hash",
 ]
 
 
@@ -33,6 +38,9 @@ def __getattr__(name: str):
     if name in {"ChangeEngine", "apply_operation"}:
         from .engine import ChangeEngine, apply_operation
         return {"ChangeEngine": ChangeEngine, "apply_operation": apply_operation}[name]
+    if name in {"StateApplicationPreparationRecord", "StateApplicationReceiptRecord", "StateApplicationStore", "application_id", "operations_hash"}:
+        from .provenance import StateApplicationPreparationRecord, StateApplicationReceiptRecord, StateApplicationStore, application_id, operations_hash
+        return locals()[name]
     if name == "AppliedChangeResult":
         from .engine import AppliedChangeResult
         return AppliedChangeResult

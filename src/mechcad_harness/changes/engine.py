@@ -110,7 +110,7 @@ class ChangeEngine:
         self.state_manager = state_manager
         self.ownership_policy = ownership_policy
 
-    def apply_proposal(self, project_id: str, proposal: ChangeProposal) -> AppliedChangeResult:
+    def prepare_proposal(self, project_id: str, proposal: ChangeProposal, *, changeset_id: str | None = None):
         current = self.state_manager._read_current(project_id)
         if proposal.base_revision != current["revision"] or proposal.base_state_hash != current["state_hash"]:
             raise StaleProposalError("proposal does not match current revision and state hash")
@@ -129,7 +129,7 @@ class ChangeEngine:
         except ValidationError as exc:
             raise ChangeSetValidationError("resulting DesignState is invalid") from exc
         changeset = ChangeSet(
-            id=f"CS-{uuid4()}",
+            id=changeset_id or f"CS-{uuid4()}",
             proposal_id=proposal.id,
             base_revision=proposal.base_revision,
             base_state_hash=proposal.base_state_hash,
@@ -137,6 +137,10 @@ class ChangeEngine:
             status=ProposalStatus.ACCEPTED,
             operations=proposal.operations,
         )
+        return current, updated, changeset
+
+    def apply_proposal(self, project_id: str, proposal: ChangeProposal) -> AppliedChangeResult:
+        _, updated, changeset = self.prepare_proposal(project_id, proposal)
         snapshot = self.state_manager.create_revision(project_id, updated)
         return AppliedChangeResult(
             snapshot=snapshot,

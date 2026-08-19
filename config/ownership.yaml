@@ -3,6 +3,8 @@ version: 1
 ownership:
   - path: /requirements
     owner: mechcad-requirements
+  - path: /authoritative_parameters
+    owner: mechcad-resolution
   - path: /materials
     owner: mechcad-materials
   - path: /components/*/transmission
