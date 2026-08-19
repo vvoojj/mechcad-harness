@@ -26,6 +26,18 @@ rules:
     invalidates:
       - analysis.requirements
       - analysis.loads
+  - when:
+      - /requirements/REQ-TORQUE-FORCE/description
+    invalidates:
+      - analysis.transmission.torque
+  - when:
+      - /requirements/REQ-TORQUE-ARM/description
+    invalidates:
+      - analysis.transmission.torque
+  - when:
+      - /requirements/REQ-TORQUE-SAFETY/description
+    invalidates:
+      - analysis.transmission.torque
 edges:
   - from: analysis.loads
     to: analysis.structural

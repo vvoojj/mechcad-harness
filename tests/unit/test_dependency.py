@@ -128,6 +128,23 @@ def test_matching_later_invalidation_is_stale_and_unknown_is_not_fresh(tmp_path)
     assert not store.is_evidence_fresh("PRJ-1", "EVD-1")
 
 
+def test_torque_dependency_rules_match_only_three_authoritative_requirement_paths(tmp_path):
+    from mechcad_harness.dependency import DependencyGraph
+
+    graph_path = tmp_path / "dependencies.json"
+    graph_path.write_text(json.dumps({"rules": [
+        {"when": ["/requirements/REQ-TORQUE-FORCE/description"], "invalidates": ["analysis.transmission.torque"]},
+        {"when": ["/requirements/REQ-TORQUE-ARM/description"], "invalidates": ["analysis.transmission.torque"]},
+        {"when": ["/requirements/REQ-TORQUE-SAFETY/description"], "invalidates": ["analysis.transmission.torque"]},
+    ], "edges": []}), encoding="utf-8")
+    graph = DependencyGraph.from_yaml(graph_path)
+    assert graph.impact(["/requirements/REQ-TORQUE-FORCE/description"]).direct_nodes == ("analysis.transmission.torque",)
+    assert graph.impact(["/requirements/REQ-TORQUE-ARM/description"]).direct_nodes == ("analysis.transmission.torque",)
+    assert graph.impact(["/requirements/REQ-TORQUE-SAFETY/description"]).direct_nodes == ("analysis.transmission.torque",)
+    assert graph.impact(["/requirements/REQ-OTHER/description"]).direct_nodes == ()
+    assert graph.impact(["/components/P-1/name", "/materials/M-1/material", "/constraints/C-1/expression"]).direct_nodes == ()
+
+
 def test_wrong_hash_and_unknown_node_are_unknown(tmp_path):
     manager = StateManager(tmp_path)
     manager.create_project("PRJ-1", make_state())

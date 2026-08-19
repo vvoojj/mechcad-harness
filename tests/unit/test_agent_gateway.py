@@ -45,7 +45,7 @@ def test_gateway_persists_invocation_before_adapter_and_result_separately(tmp_pa
 def test_gateway_uses_invocation_outcome_provenance(tmp_path):
     from mechcad_harness.agents import AgentIdentity, AgentRegistry, ContextBuilder
     from mechcad_harness.agents.gateway import AgentGateway
-    from mechcad_harness.agents.models import AgentAdapterExecutionOutcome, AgentAdapterProvenance, AgentResponsePayload
+    from mechcad_harness.agents.models import AgentAdapterExecutionOutcome, AgentAdapterProvenance, AgentAuthoredResponsePayload
 
     identity = AgentIdentity(agent_name="mechcad-test-agent", agent_version="1.0", role="test", protocol_version="1.0")
     provenance = AgentAdapterProvenance(adapter_name="outcome", adapter_version="1.0", provider="test-provider", transport="test", session_id="session-1")
@@ -55,7 +55,7 @@ def test_gateway_uses_invocation_outcome_provenance(tmp_path):
 
         def invoke(self, request):
             assert (tmp_path / "projects" / "PRJ-1" / "runs" / run.run_id / "agents" / "invocations").exists()
-            return AgentAdapterExecutionOutcome(response=AgentResponsePayload(summary="ok"), provenance=provenance)
+            return AgentAdapterExecutionOutcome(authored_response=AgentAuthoredResponsePayload(status="succeeded", summary="ok", findings=(), issues=(), constraint_requests=(), change_proposals=()), provenance=provenance)
 
     controller, run, task, _ = _controller(tmp_path)
     registry = AgentRegistry()
@@ -103,6 +103,50 @@ def test_fake_invocations_do_not_leak_execution_metadata(tmp_path):
     assert second.provenance.session_id is None
 
 
+def test_fake_adapter_scripted_responses_are_consumed_in_order():
+    from mechcad_harness.agents import AgentIdentity, FakeAgentAdapter
+    from mechcad_harness.agents.models import AgentAuthoredResponsePayload, AgentContext, AgentInvocationRequest
+    from mechcad_harness.models import DesignState
+
+    identity = AgentIdentity(agent_name="mechcad-test-agent", agent_version="1.0", role="test", protocol_version="1.0")
+    first = AgentAuthoredResponsePayload(status="succeeded", summary="A", findings=(), issues=(), constraint_requests=(), change_proposals=())
+    second = AgentAuthoredResponsePayload(status="succeeded", summary="B", findings=(), issues=(), constraint_requests=(), change_proposals=())
+    adapter = FakeAgentAdapter(identity, scripted_responses=(first, second))
+    context = AgentContext(project_id="PRJ", run_id="RUN", task_id="TASK", revision=1, state_hash="hash", design_state=DesignState(id="DES", revision=1), task_objective="test", task_instructions="test")
+    request = lambda invocation_id: AgentInvocationRequest(invocation_id=invocation_id, agent=identity, project_id="PRJ", run_id="RUN", task_id="TASK", bound_revision=1, bound_state_hash="hash", context=context, requested_output_schema_version="1.0", context_hash=invocation_id)
+    assert adapter.invoke(request("INV-A")).authored_response.summary == "A"
+    assert adapter.invoke(request("INV-B")).authored_response.summary == "B"
+    assert adapter.invocation_count == 2
+    assert [item.invocation_id for item in adapter.requests] == ["INV-A", "INV-B"]
+
+
+def test_fake_adapter_scripted_exhaustion_fails_closed():
+    import pytest
+    from mechcad_harness.agents import AgentIdentity, FakeAgentAdapter
+    from mechcad_harness.agents.models import AgentAuthoredResponsePayload, AgentContext, AgentInvocationRequest
+    from mechcad_harness.models import DesignState
+
+    identity = AgentIdentity(agent_name="mechcad-test-agent", agent_version="1.0", role="test", protocol_version="1.0")
+    response = AgentAuthoredResponsePayload(status="succeeded", summary="A", findings=(), issues=(), constraint_requests=(), change_proposals=())
+    adapter = FakeAgentAdapter(identity, scripted_responses=(response,))
+    context = AgentContext(project_id="PRJ", run_id="RUN", task_id="TASK", revision=1, state_hash="hash", design_state=DesignState(id="DES", revision=1), task_objective="test", task_instructions="test")
+    request = AgentInvocationRequest(invocation_id="INV", agent=identity, project_id="PRJ", run_id="RUN", task_id="TASK", bound_revision=1, bound_state_hash="hash", context=context, requested_output_schema_version="1.0", context_hash="ctx")
+    adapter.invoke(request)
+    with pytest.raises(Exception, match="scripted responses exhausted"):
+        adapter.invoke(request)
+
+
+def test_fake_adapter_duplicate_identity_registration_remains_rejected():
+    import pytest
+    from mechcad_harness.agents import AgentIdentity, AgentRegistry, FakeAgentAdapter
+
+    identity = AgentIdentity(agent_name="mechcad-test-agent", agent_version="1.0", role="test", protocol_version="1.0")
+    registry = AgentRegistry()
+    registry.register(identity, FakeAgentAdapter(identity))
+    with pytest.raises(ValueError, match="duplicate agent registration"):
+        registry.register(identity, FakeAgentAdapter(identity))
+
+
 def test_gateway_rejects_unknown_agent(tmp_path):
     gateway, controller, run, task, identity = _gateway(tmp_path)
     with pytest.raises(Exception, match="unknown agent"):
@@ -120,35 +164,29 @@ def test_gateway_adapter_failure_persists_failed_result(tmp_path):
 
 def test_gateway_preserves_structured_proposal_without_applying_it(tmp_path):
     from mechcad_harness.agents import AgentIdentity, FakeAgentAdapter
-    from mechcad_harness.agents.models import AgentResponsePayload
-    from mechcad_harness.models import ChangeProposal, ProposalStatus
+    from mechcad_harness.agents.models import AgentAuthoredResponsePayload, AgentChangeProposalDraft
 
     identity = AgentIdentity(agent_name="mechcad-test-agent", agent_version="1.0", role="test", protocol_version="1.0")
-    proposal = ChangeProposal(id="PROP-1", title="Proposal", status=ProposalStatus.DRAFT, base_revision=1, base_state_hash="sha256:placeholder", actor="agent")
     controller, run, task, snapshot = _controller(tmp_path)
-    proposal = proposal.model_copy(update={"base_state_hash": snapshot.state_hash})
     from mechcad_harness.agents import AgentRegistry, ContextBuilder
     from mechcad_harness.agents.gateway import AgentGateway
     registry = AgentRegistry()
-    registry.register(identity, FakeAgentAdapter(identity, response=AgentResponsePayload(change_proposals=(proposal,))))
+    registry.register(identity, FakeAgentAdapter(identity, response=AgentAuthoredResponsePayload(status="succeeded", summary="", findings=(), issues=(), constraint_requests=(), change_proposals=(AgentChangeProposalDraft(title="Proposal", operations=()),))))
     gateway = AgentGateway(controller, registry, ContextBuilder(controller))
     snapshot_hash = run.active_state_hash
     result = gateway.invoke(run.run_id, task.task_id, identity.agent_name, identity.agent_version)
-    assert result.response.change_proposals[0].id == "PROP-1"
+    assert result.response.change_proposals[0].title == "Proposal"
     assert controller.state_manager._read_snapshot("PRJ-1", 1).state_hash == snapshot_hash
 
 
 def test_gateway_fails_wrong_proposal_revision_or_hash(tmp_path):
     from mechcad_harness.agents import AgentIdentity, FakeAgentAdapter
-    from mechcad_harness.agents.models import AgentResponsePayload
-    from mechcad_harness.models import ChangeProposal, ProposalStatus
+    from mechcad_harness.agents.models import AgentAuthoredResponsePayload, AgentChangeProposalDraft
 
     identity = AgentIdentity(agent_name="mechcad-test-agent", agent_version="1.0", role="test", protocol_version="1.0")
-    proposal = ChangeProposal(id="PROP-BAD", title="Bad", status=ProposalStatus.DRAFT, base_revision=99, base_state_hash="sha256:wrong", actor="agent")
-    gateway, controller, run, task, identity = _gateway(tmp_path, FakeAgentAdapter(identity, response=AgentResponsePayload(change_proposals=(proposal,))))
+    gateway, controller, run, task, identity = _gateway(tmp_path, FakeAgentAdapter(identity, response=AgentAuthoredResponsePayload(status="succeeded", summary="", findings=(), issues=(), constraint_requests=(), change_proposals=(AgentChangeProposalDraft(title="Bad", operations=()),))))
     result = gateway.invoke(run.run_id, task.task_id, identity.agent_name, identity.agent_version)
-    assert result.status.value == "failed"
-    assert result.error == "RESPONSE_BINDING_MISMATCH"
+    assert result.status.value == "succeeded"
     assert controller.state_manager._read_snapshot("PRJ-1", 1).state_hash == run.active_state_hash
 
 

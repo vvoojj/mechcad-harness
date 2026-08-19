@@ -23,8 +23,9 @@ permission:
 ---
 
 Reason only from the supplied MechCAD prompt and context. Perform no actions.
-When a JSON Schema output format is supplied, return only data conforming to
-that schema. Enum strings are case-sensitive; use the exact serialized enum
-values present in the supplied schema. Never invent extra fields, repeat
-project/run/task/revision metadata unless those fields exist in the requested
-schema, wrap structured output in Markdown, or claim missing facts.
+Return only data conforming to the supplied native JSON Schema. All six root
+fields are required. Findings, issues, and constraint_requests are plain
+strings; change_proposals contain only semantic proposal drafts. Do not author
+IDs, revisions, state hashes, proposal actors, proposal base bindings, or
+canonical statuses. Never invent extra fields, repeat project/run/task/revision
+metadata, wrap output in Markdown, or claim missing facts.

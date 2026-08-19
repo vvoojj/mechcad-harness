@@ -1,11 +1,15 @@
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any, Protocol
+import math
+from typing import Any, Literal, NamedTuple, Protocol
+import hashlib
+import json
 
 from pydantic import Field, field_validator
 
 from mechcad_harness.models import ChangeProposal, ConstraintRequest, DesignState, Issue
 from mechcad_harness.models.common import Model
+from mechcad_harness.tools.models import TorqueInput
 
 
 def utc_now() -> datetime:
@@ -48,6 +52,8 @@ class AgentAdapterProvenance(Model):
     message_id: str | None = None
     project_directory: str | None = None
     request_hash: str | None = None
+    response_mode: str | None = None
+    schema_hash: str | None = None
     validation_diagnostics: dict[str, Any] | None = None
 
 
@@ -87,6 +93,8 @@ class AgentInvocationRequest(Model):
     bound_state_hash: str = Field(min_length=1)
     context: AgentContext
     requested_output_schema_version: str = Field(min_length=1)
+    response_contract: "AgentAuthoredResponseContract" = "tool_requests_allowed"
+    response_schema_hash: str = ""
     created_at: datetime = Field(default_factory=utc_now)
     context_hash: str = Field(min_length=1)
 
@@ -103,6 +111,101 @@ class AgentResponsePayload(Model):
     change_proposals: tuple[ChangeProposal, ...] = ()
     issues: tuple[Issue, ...] = ()
     constraint_requests: tuple[ConstraintRequest, ...] = ()
+
+
+class AgentChangeProposalDraft(Model):
+    title: str = Field(min_length=1)
+    operations: tuple["ChangeOperation", ...] = ()
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, str, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("arguments must contain finite numbers")
+        return value
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("argument object keys must be strings")
+        return {key: _json_safe(item) for key, item in value.items()}
+    raise ValueError("arguments must contain only JSON-safe values")
+
+
+class TransmissionTorqueToolRequestDraft(Model):
+    capability: Literal["transmission.torque"]
+    arguments: TorqueInput
+
+
+AgentToolRequestDraft = TransmissionTorqueToolRequestDraft
+
+
+class AgentToolRequestObservationRecord(Model):
+    observation_id: str = Field(min_length=1)
+    invocation_id: str = Field(min_length=1)
+    agent_name: str = Field(min_length=1)
+    agent_version: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    bound_revision: int = Field(gt=0)
+    bound_state_hash: str = Field(min_length=1)
+    mediation_mode: str = Field(min_length=1)
+    tool_requests: tuple[AgentToolRequestDraft, ...] = ()
+    tool_requests_hash: str = Field(min_length=1)
+
+
+class AgentAuthoredResponsePayload(Model):
+    status: AgentResponseStatus
+    summary: str
+    findings: tuple[str, ...]
+    issues: tuple[str, ...]
+    constraint_requests: tuple[str, ...]
+    change_proposals: tuple[AgentChangeProposalDraft, ...]
+    tool_requests: tuple[AgentToolRequestDraft, ...] = ()
+
+
+class AgentAuthoredResponseContract(StrEnum):
+    TOOL_REQUESTS_ALLOWED = "tool_requests_allowed"
+    TOOL_REQUESTS_FORBIDDEN = "tool_requests_forbidden"
+
+
+class AgentAuthoredNoToolResponsePayload(AgentAuthoredResponsePayload):
+    tool_requests: tuple[()] = ()
+
+
+class ResponseContractMaterialization(NamedTuple):
+    contract: AgentAuthoredResponseContract
+    response_model: type[AgentAuthoredResponsePayload]
+    schema: dict[str, Any]
+    schema_json: str
+    schema_hash: str
+
+
+def response_model_for_contract(contract: AgentAuthoredResponseContract):
+    contract = AgentAuthoredResponseContract(contract)
+    if contract is AgentAuthoredResponseContract.TOOL_REQUESTS_ALLOWED:
+        return AgentAuthoredResponsePayload
+    if contract is AgentAuthoredResponseContract.TOOL_REQUESTS_FORBIDDEN:
+        return AgentAuthoredNoToolResponsePayload
+    raise ValueError(f"unsupported authored response contract: {contract}")
+
+
+def materialize_response_contract(contract: AgentAuthoredResponseContract) -> ResponseContractMaterialization:
+    contract = AgentAuthoredResponseContract(contract)
+    response_model = response_model_for_contract(contract)
+    schema = response_model.model_json_schema()
+    schema_json = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    schema_hash = f"sha256:{hashlib.sha256(schema_json.encode()).hexdigest()}"
+    return ResponseContractMaterialization(contract, response_model, schema, schema_json, schema_hash)
+
+
+from mechcad_harness.changes.operations import ChangeOperation
+
+AgentChangeProposalDraft.model_rebuild(_types_namespace={"ChangeOperation": ChangeOperation})
+AgentInvocationRequest.model_rebuild(_types_namespace={"AgentAuthoredResponseContract": AgentAuthoredResponseContract})
 
 
 class AgentResultStatus(StrEnum):
@@ -136,7 +239,7 @@ class AgentResult(Model):
 
 
 class AgentAdapterExecutionOutcome(Model):
-    response: AgentResponsePayload
+    authored_response: AgentAuthoredResponsePayload
     provenance: AgentAdapterProvenance
     execution_metadata: dict[str, Any] | None = None
 

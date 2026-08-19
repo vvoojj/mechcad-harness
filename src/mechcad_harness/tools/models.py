@@ -12,6 +12,12 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class TorqueInput(Model):
+    force_n: float = Field(gt=0)
+    lever_arm_m: float = Field(gt=0)
+    safety_factor: float = Field(gt=0)
+
+
 class ToolContext(Model):
     project_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
@@ -71,6 +77,7 @@ class ToolRegistration(Model):
     output_model: Type[Model]
     handler: Callable[[Model], Model]
     provenance_handler: Callable[[], BackendProvenance] | None = None
+    evidence_summary_handler: Callable[[Model], str] | None = None
     evidence_nodes: tuple[str, ...] = ()
 
     model_config = {"arbitrary_types_allowed": True, "extra": "forbid"}

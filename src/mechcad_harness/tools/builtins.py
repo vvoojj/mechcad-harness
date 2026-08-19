@@ -2,13 +2,7 @@ from pydantic import Field, model_validator
 
 from mechcad_harness.models.common import Model
 
-from .models import ToolRegistration
-
-
-class TorqueInput(Model):
-    force_n: float = Field(gt=0)
-    lever_arm_m: float = Field(gt=0)
-    safety_factor: float = Field(gt=0)
+from .models import ToolRegistration, TorqueInput
 
 
 class TorqueOutput(Model):
@@ -19,6 +13,10 @@ class TorqueOutput(Model):
 def calc_torque(value: TorqueInput) -> TorqueOutput:
     nominal = value.force_n * value.lever_arm_m
     return TorqueOutput(nominal_torque_nm=nominal, design_torque_nm=nominal * value.safety_factor)
+
+
+def torque_evidence_summary(value: TorqueOutput) -> str:
+    return f"Required design torque: {value.design_torque_nm:g} N*m"
 
 
 class SpurGearInput(Model):
@@ -83,7 +81,7 @@ class BuiltinTools:
     @staticmethod
     def registrations() -> list[ToolRegistration]:
         return [
-            ToolRegistration(name="mechcad-calc-torque", version="1.0", input_model=TorqueInput, output_model=TorqueOutput, handler=calc_torque),
+            ToolRegistration(name="mechcad-calc-torque", version="1.0", input_model=TorqueInput, output_model=TorqueOutput, handler=calc_torque, evidence_nodes=("analysis.transmission.torque",), evidence_summary_handler=torque_evidence_summary),
             ToolRegistration(name="mechcad-calc-spur-gear-geometry", version="1.0", input_model=SpurGearInput, output_model=SpurGearOutput, handler=calc_spur_gear),
             ToolRegistration(name="mechcad-check-envelope", version="1.0", input_model=EnvelopeInput, output_model=EnvelopeOutput, handler=check_envelope),
             ToolRegistration(name="mechcad-apply-dimension-compensation", version="1.0", input_model=CompensationInput, output_model=CompensationOutput, handler=apply_dimension_compensation),

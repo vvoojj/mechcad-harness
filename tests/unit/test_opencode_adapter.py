@@ -1,4 +1,270 @@
+import json
+
 import pytest
+
+
+def _request_model():
+    from mechcad_harness.agents.models import AgentContext, AgentIdentity, AgentInvocationRequest
+    from mechcad_harness.models import DesignState
+
+    identity = AgentIdentity(agent_name="mechcad-test-agent", agent_version="1.0", role="test", protocol_version="1.0")
+    return AgentInvocationRequest(invocation_id="INV", agent=identity, project_id="PRJ", run_id="RUN", task_id="TASK", bound_revision=1, bound_state_hash="hash", context=AgentContext(project_id="PRJ", run_id="RUN", task_id="TASK", revision=1, state_hash="hash", design_state=DesignState(id="DES", revision=1), task_objective="test", task_instructions="test"), requested_output_schema_version="1.0", context_hash="hash")
+
+
+def _valid_structured_output(summary="structured"):
+    return {"status": "succeeded", "summary": summary, "findings": [], "change_proposals": [], "issues": [], "constraint_requests": []}
+
+
+def test_response_mode_defaults_to_native():
+    from mechcad_harness.agents.opencode import OpenCodeAdapterConfig, OpenCodeResponseMode
+
+    config = OpenCodeAdapterConfig(project_directory="E:/repo/mechcad-harness", provider_id="screenpipe", model_id="gpt-5.6-luna")
+
+    assert config.response_mode == OpenCodeResponseMode.NATIVE_JSON_SCHEMA
+
+
+def test_validated_text_response_mode_is_explicitly_selectable():
+    from mechcad_harness.agents.opencode import OpenCodeAdapterConfig, OpenCodeResponseMode
+
+    config = OpenCodeAdapterConfig(project_directory="E:/repo/mechcad-harness", provider_id="screenpipe", model_id="gpt-5.6-luna", response_mode=OpenCodeResponseMode.VALIDATED_JSON_TEXT)
+
+    assert config.response_mode == OpenCodeResponseMode.VALIDATED_JSON_TEXT
+
+
+def test_unknown_response_mode_is_rejected():
+    from mechcad_harness.agents.opencode import OpenCodeAdapterConfig
+
+    with pytest.raises(ValueError, match="unsupported OpenCode response mode"):
+        OpenCodeAdapterConfig(project_directory="E:/repo/mechcad-harness", provider_id="screenpipe", model_id="gpt-5.6-luna", response_mode="fallback")
+
+
+def test_adapter_provenance_carries_response_mode_and_schema_hash():
+    from mechcad_harness.agents.models import AgentAdapterProvenance
+
+    provenance = AgentAdapterProvenance(adapter_name="test", adapter_version="1.0", provider="screenpipe", transport="test", response_mode="validated_json_text", schema_hash="sha256:schema")
+
+    assert provenance.response_mode == "validated_json_text"
+    assert provenance.schema_hash == "sha256:schema"
+
+
+def test_contract_schema_and_runtime_validation_use_the_same_selected_model(monkeypatch):
+    from mechcad_harness.agents.models import AgentAuthoredResponseContract
+    from mechcad_harness.agents.opencode import OpenCodeAdapterConfig, OpenCodeAgentAdapter, OpenCodeResponseMode
+
+    response = {"info": {"id": "msg-text", "providerID": "screenpipe", "modelID": "gpt-5.6-luna"}, "parts": [{"type": "text", "text": _valid_authored_text(tool_requests=[])}]}
+    adapter, calls = _text_adapter_with_response(monkeypatch, response)
+    adapter.config = OpenCodeAdapterConfig(project_directory="E:/repo/mechcad-harness", provider_id="screenpipe", model_id="gpt-5.6-luna", response_mode=OpenCodeResponseMode.VALIDATED_JSON_TEXT)
+    outcome = adapter.invoke(_request_model().model_copy(update={"response_contract": AgentAuthoredResponseContract.TOOL_REQUESTS_FORBIDDEN}))
+    prompt = calls[1][2]["parts"][0]["text"]
+    assert '"maxItems":0' in prompt
+    assert outcome.authored_response.tool_requests == ()
+    assert outcome.provenance.schema_hash
+
+
+def test_native_json_schema_uses_forbidden_contract_schema(monkeypatch):
+    from mechcad_harness.agents.models import AgentAuthoredResponseContract
+    from mechcad_harness.agents.opencode import OpenCodeAdapterConfig, OpenCodeAgentAdapter
+
+    adapter = OpenCodeAgentAdapter(OpenCodeAdapterConfig(project_directory="E:/repo/mechcad-harness", provider_id="screenpipe", model_id="gpt-5.6-luna"), "secret")
+    monkeypatch.setattr(adapter, "health", lambda: type("Health", (), {"healthy": True, "server_version": "1.18.18", "message": None})())
+    calls = []
+
+    def request(method, path, payload=None):
+        calls.append((method, path, payload))
+        if path == "/session":
+            return {"id": "ses-native"}
+        return {"info": {"id": "msg-native", "providerID": "screenpipe", "modelID": "gpt-5.6-luna", "structured_output": {"status": "succeeded", "summary": "B", "findings": [], "issues": [], "constraint_requests": [], "change_proposals": [], "tool_requests": []}}, "parts": []}
+
+    monkeypatch.setattr(adapter.transport, "request", request)
+    request_model = _request_model().model_copy(update={"response_contract": AgentAuthoredResponseContract.TOOL_REQUESTS_FORBIDDEN})
+    outcome = adapter.invoke(request_model)
+    assert calls[1][2]["format"]["schema"]["properties"]["tool_requests"]["maxItems"] == 0
+    assert outcome.authored_response.tool_requests == ()
+
+
+def _valid_authored_text(summary="text", **overrides):
+    value = {"status": "succeeded", "summary": summary, "findings": [], "issues": [], "constraint_requests": [], "change_proposals": []}
+    value.update(overrides)
+    return json.dumps(value, separators=(",", ":"))
+
+
+def _text_adapter_with_response(monkeypatch, response):
+    from mechcad_harness.agents.opencode import OpenCodeAdapterConfig, OpenCodeAgentAdapter, OpenCodeResponseMode
+
+    adapter = OpenCodeAgentAdapter(OpenCodeAdapterConfig(project_directory="E:/repo/mechcad-harness", provider_id="screenpipe", model_id="gpt-5.6-luna", response_mode=OpenCodeResponseMode.VALIDATED_JSON_TEXT), "secret")
+    monkeypatch.setattr(adapter, "health", lambda: type("Health", (), {"healthy": True, "server_version": "1.18.18", "message": None})())
+    calls = []
+
+    def request(method, path, payload=None):
+        calls.append((method, path, payload))
+        if path == "/session":
+            return {"id": "ses-text"}
+        return response
+
+    monkeypatch.setattr(adapter.transport, "request", request)
+    return adapter, calls
+
+
+def test_validated_text_accepts_one_exact_json_document(monkeypatch):
+    adapter, _ = _text_adapter_with_response(monkeypatch, {"info": {"id": "msg-text", "providerID": "screenpipe", "modelID": "gpt-5.6-luna"}, "parts": [{"type": "text", "text": _valid_authored_text()}]})
+
+    outcome = adapter.invoke(_request_model())
+
+    assert outcome.authored_response.summary == "text"
+
+
+def test_validated_text_accepts_surrounding_json_whitespace(monkeypatch):
+    adapter, _ = _text_adapter_with_response(monkeypatch, {"info": {"id": "msg-text", "providerID": "screenpipe", "modelID": "gpt-5.6-luna"}, "parts": [{"type": "text", "text": "  \n" + _valid_authored_text() + "\t\n"}]})
+
+    assert adapter.invoke(_request_model()).authored_response.status.value == "succeeded"
+
+
+def test_validated_text_omits_native_format_and_does_not_require_structured_output(monkeypatch):
+    adapter, calls = _text_adapter_with_response(monkeypatch, {"info": {"id": "msg-text", "providerID": "screenpipe", "modelID": "gpt-5.6-luna"}, "parts": [{"type": "text", "text": _valid_authored_text()}]})
+
+    adapter.invoke(_request_model())
+
+    payload = calls[1][2]
+    assert "format" not in payload
+    assert "OUTPUT CONTRACT" in payload["parts"][0]["text"]
+
+
+@pytest.mark.parametrize("text", [
+    "",
+    "not json",
+    "```json\n" + _valid_authored_text() + "\n```",
+    "prefix " + _valid_authored_text(),
+    _valid_authored_text() + " suffix",
+    _valid_authored_text() + _valid_authored_text(),
+])
+def test_validated_text_rejects_non_whole_document_text(monkeypatch, text):
+    from mechcad_harness.agents.models import AgentAdapterExecutionError
+
+    adapter, _ = _text_adapter_with_response(monkeypatch, {"info": {"id": "msg-text", "providerID": "screenpipe", "modelID": "gpt-5.6-luna"}, "parts": [{"type": "text", "text": text}]})
+
+    with pytest.raises(AgentAdapterExecutionError):
+        adapter.invoke(_request_model())
+
+
+def test_validated_text_rejects_extra_root_field(monkeypatch):
+    from mechcad_harness.agents.models import AgentAdapterExecutionError
+
+    adapter, _ = _text_adapter_with_response(monkeypatch, {"info": {"id": "msg-text", "providerID": "screenpipe", "modelID": "gpt-5.6-luna"}, "parts": [{"type": "text", "text": _valid_authored_text(extra="forbidden")}]})
+
+    with pytest.raises(AgentAdapterExecutionError):
+        adapter.invoke(_request_model())
+
+
+def test_validated_text_rejects_nested_canonical_constraint_request(monkeypatch):
+    from mechcad_harness.agents.models import AgentAdapterExecutionError
+
+    adapter, _ = _text_adapter_with_response(monkeypatch, {"info": {"id": "msg-text", "providerID": "screenpipe", "modelID": "gpt-5.6-luna"}, "parts": [{"type": "text", "text": _valid_authored_text(constraint_requests=[{"id": "CR-1", "description": "legacy"}])}]})
+
+    with pytest.raises(AgentAdapterExecutionError):
+        adapter.invoke(_request_model())
+
+
+def test_validated_text_accepts_plain_string_constraint_request(monkeypatch):
+    adapter, _ = _text_adapter_with_response(monkeypatch, {"info": {"id": "msg-text", "providerID": "screenpipe", "modelID": "gpt-5.6-luna"}, "parts": [{"type": "text", "text": _valid_authored_text(constraint_requests=["missing backlash input"])}]})
+
+    assert adapter.invoke(_request_model()).authored_response.constraint_requests == ("missing backlash input",)
+
+
+def test_validated_text_rejects_tool_parts(monkeypatch):
+    from mechcad_harness.agents.models import AgentAdapterExecutionError
+
+    adapter, _ = _text_adapter_with_response(monkeypatch, {"info": {"id": "msg-text", "providerID": "screenpipe", "modelID": "gpt-5.6-luna"}, "parts": [{"type": "tool", "tool": "bash"}, {"type": "text", "text": _valid_authored_text()}]})
+
+    with pytest.raises(AgentAdapterExecutionError):
+        adapter.invoke(_request_model())
+
+
+def test_validated_text_error_precedes_valid_text(monkeypatch):
+    from mechcad_harness.agents.models import AgentAdapterExecutionError
+
+    adapter, _ = _text_adapter_with_response(monkeypatch, {"info": {"id": "msg-text", "providerID": "screenpipe", "modelID": "gpt-5.6-luna", "error": {"name": "ProviderError", "data": {"message": "provider failed"}}}, "parts": [{"type": "text", "text": _valid_authored_text()}]})
+
+    with pytest.raises(AgentAdapterExecutionError) as error:
+        adapter.invoke(_request_model())
+
+    assert error.value.failure_kind == "text_protocol"
+    assert error.value.provenance.validation_diagnostics["failure_layer"] == "OPENCODE_TEXT_RESPONSE_ERROR"
+    assert error.value.provenance.validation_diagnostics["error_name"] == "ProviderError"
+
+
+def _adapter_with_response(monkeypatch, response):
+    from mechcad_harness.agents.opencode import OpenCodeAdapterConfig, OpenCodeAgentAdapter
+
+    adapter = OpenCodeAgentAdapter(OpenCodeAdapterConfig(project_directory="E:/repo/mechcad-harness", provider_id="screenpipe", model_id="gpt-5.6-luna"), "secret")
+    monkeypatch.setattr(adapter, "health", lambda: type("Health", (), {"healthy": True, "server_version": "1.18.18", "message": None})())
+
+    def request(method, path, payload=None):
+        if path == "/session":
+            return {"id": "ses-test"}
+        return response
+
+    monkeypatch.setattr(adapter.transport, "request", request)
+    return adapter
+
+
+def test_json_schema_uses_valid_structured_output_and_ignores_text(monkeypatch):
+    adapter = _adapter_with_response(monkeypatch, {"info": {"id": "msg-test", "providerID": "screenpipe", "modelID": "gpt-5.6-luna", "structured_output": _valid_structured_output()}, "parts": [{"type": "text", "text": '{"status":"succeeded","summary":"text is not authoritative","findings":[],"change_proposals":[],"issues":[],"constraint_requests":[]}'}]})
+
+    outcome = adapter.invoke(_request_model())
+
+    assert outcome.authored_response.summary == "structured"
+    assert outcome.execution_metadata["authored_response_hash"].startswith("sha256:")
+
+
+@pytest.mark.parametrize("text", [
+    '{"status":"succeeded","summary":"valid-looking","findings":[],"change_proposals":[],"issues":[],"constraint_requests":[]}',
+    "not json",
+])
+def test_structured_output_error_fails_closed_even_when_text_is_valid_or_invalid(monkeypatch, text):
+    from mechcad_harness.agents.models import AgentAdapterExecutionError
+
+    adapter = _adapter_with_response(monkeypatch, {"info": {"id": "msg-test", "providerID": "screenpipe", "modelID": "gpt-5.6-luna", "error": {"name": "StructuredOutputError", "data": {"message": "Model did not produce structured output", "retries": 0}}}, "parts": [{"type": "text", "text": text}]})
+
+    with pytest.raises(AgentAdapterExecutionError) as error:
+        adapter.invoke(_request_model())
+
+    assert error.value.failure_kind == "structured_output_rejected"
+    diagnostics = error.value.provenance.validation_diagnostics
+    assert diagnostics["failure_layer"] == "OPENCODE_STRUCTURED_OUTPUT_REJECTED"
+    assert diagnostics["error_name"] == "StructuredOutputError"
+    assert diagnostics["error_message"] == "Model did not produce structured output"
+    assert diagnostics["retry_count"] == 0
+    assert text not in error.value.provenance.model_dump_json()
+
+
+def test_missing_structured_output_without_error_fails_closed(monkeypatch):
+    from mechcad_harness.agents.models import AgentAdapterExecutionError
+
+    adapter = _adapter_with_response(monkeypatch, {"info": {"id": "msg-test", "providerID": "screenpipe", "modelID": "gpt-5.6-luna"}, "parts": [{"type": "text", "text": '{"status":"succeeded","summary":"fallback","findings":[],"change_proposals":[],"issues":[],"constraint_requests":[]}'}]})
+
+    with pytest.raises(AgentAdapterExecutionError) as error:
+        adapter.invoke(_request_model())
+
+    assert error.value.failure_kind == "structured_output_missing"
+    assert error.value.provenance.validation_diagnostics["failure_layer"] == "STRUCTURED_OUTPUT_MISSING"
+
+
+def test_invalid_structured_output_is_validation_failure_without_text_fallback(monkeypatch):
+    from mechcad_harness.agents.models import AgentAdapterExecutionError
+
+    adapter = _adapter_with_response(monkeypatch, {"info": {"id": "msg-test", "providerID": "screenpipe", "modelID": "gpt-5.6-luna", "structured_output": {"status": "succeeded", "summary": 42}}, "parts": [{"type": "text", "text": '{"status":"succeeded","summary":"valid fallback","findings":[],"change_proposals":[],"issues":[],"constraint_requests":[]}'}]})
+
+    with pytest.raises(AgentAdapterExecutionError) as error:
+        adapter.invoke(_request_model())
+
+    assert error.value.failure_kind == "structured_validation"
+    assert error.value.provenance.validation_diagnostics["failure_layer"] == "PYDANTIC_AUTHORED_RESPONSE_VALIDATION_FAILURE"
+
+
+def test_valid_structured_output_wins_over_different_valid_text(monkeypatch):
+    adapter = _adapter_with_response(monkeypatch, {"info": {"id": "msg-test", "providerID": "screenpipe", "modelID": "gpt-5.6-luna", "structured_output": _valid_structured_output("authoritative")}, "parts": [{"type": "text", "text": '{"status":"succeeded","summary":"different","findings":[],"change_proposals":[],"issues":[],"constraint_requests":[]}'}]})
+
+    assert adapter.invoke(_request_model()).authored_response.summary == "authoritative"
 
 
 def test_loopback_url_policy():
@@ -31,14 +297,14 @@ def test_session_selected_mode_omits_message_model(monkeypatch):
         calls.append((method, path, payload))
         if path == "/session":
             return {"id": "ses-test"}
-        return {"info": {"id": "msg-test", "providerID": "screenpipe", "modelID": "gpt-5.6-terra"}, "parts": [{"type": "text", "text": '{"status":"succeeded","summary":"ok","findings":[],"change_proposals":[],"issues":[],"constraint_requests":[]}' }]}
+        return {"info": {"id": "msg-test", "providerID": "screenpipe", "modelID": "gpt-5.6-terra", "structured_output": _valid_structured_output("ok")}, "parts": [{"type": "text", "text": '{"status":"succeeded","summary":"text","findings":[],"change_proposals":[],"issues":[],"constraint_requests":[]}' }]}
     monkeypatch.setattr(adapter.transport, "request", request)
     from mechcad_harness.agents.models import AgentContext, AgentIdentity, AgentInvocationRequest
     from mechcad_harness.models import DesignState
     identity = AgentIdentity(agent_name="mechcad-test-agent", agent_version="1.0", role="test", protocol_version="1.0")
     req = AgentInvocationRequest(invocation_id="INV", agent=identity, project_id="PRJ", run_id="RUN", task_id="TASK", bound_revision=1, bound_state_hash="hash", context=AgentContext(project_id="PRJ", run_id="RUN", task_id="TASK", revision=1, state_hash="hash", design_state=DesignState(id="DES", revision=1), task_objective="test", task_instructions="test"), requested_output_schema_version="1.0", context_hash="hash")
     outcome = adapter.invoke(req)
-    assert outcome.response.status.value == "succeeded"
+    assert outcome.authored_response.status.value == "succeeded"
     assert "model" not in calls[1][2]
     assert outcome.provenance.provider == "screenpipe"
     assert outcome.provenance.model == "gpt-5.6-terra"
@@ -54,7 +320,7 @@ def test_structured_validation_failure_retains_execution_diagnostics(monkeypatch
     def request(method, path, payload=None):
         if path == "/session":
             return {"id": "ses-test"}
-        return {"info": {"id": "msg-test", "providerID": "screenpipe", "modelID": "gpt-5.6-luna"}, "parts": [{"type": "text", "text": '{"status":"SUCCEEDED","private":"do not persist"}'}]}
+        return {"info": {"id": "msg-test", "providerID": "screenpipe", "modelID": "gpt-5.6-luna", "structured_output": {"status": "SUCCEEDED", "private": "do not persist"}}, "parts": [{"type": "text", "text": "ignored"}]}
     monkeypatch.setattr(adapter.transport, "request", request)
     identity = AgentIdentity(agent_name="mechcad-test-agent", agent_version="1.0", role="test", protocol_version="1.0")
     request_model = AgentInvocationRequest(invocation_id="INV", agent=identity, project_id="PRJ", run_id="RUN", task_id="TASK", bound_revision=1, bound_state_hash="hash", context=AgentContext(project_id="PRJ", run_id="RUN", task_id="TASK", revision=1, state_hash="hash", design_state=DesignState(id="DES", revision=1), task_objective="test", task_instructions="test"), requested_output_schema_version="1.0", context_hash="hash")

@@ -37,3 +37,15 @@ class ToolStore:
 
     def write_result(self, result: ToolResult) -> None:
         self._write(self._path(result.project_id, result.run_id, "tool_results", result.result_id), result.model_dump(mode="json"))
+
+    def load_call(self, project_id: str, run_id: str, call_id: str) -> ToolCall:
+        path = self._path(project_id, run_id, "tool_calls", call_id)
+        if not path.exists():
+            raise ToolPersistenceError(f"tool call not found: {path}")
+        return ToolCall.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def load_result(self, project_id: str, run_id: str, result_id: str) -> ToolResult:
+        path = self._path(project_id, run_id, "tool_results", result_id)
+        if not path.exists():
+            raise ToolPersistenceError(f"tool result not found: {path}")
+        return ToolResult.model_validate_json(path.read_text(encoding="utf-8"))

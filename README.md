@@ -454,6 +454,40 @@ M6A-1 deliberately excludes real OpenCode/LLM execution. M6A-2 may add a real
 adapter round trip. M6B may add the first engineering agent,
 `mechcad-transmission`. C-3B remains the future load/stress/safety phase.
 
+## M6B-1 Transmission Reasoning Agent
+
+M6B-1 adds the first real engineering reasoning boundary:
+
+```text
+authoritative DesignState / selected CURRENT Evidence
+    -> mechcad-transmission reasoning
+    -> findings / Issues / ConstraintRequests / proposals
+    -> immutable AgentResult
+```
+
+`mechcad-transmission@1.0` is trusted by exact MechCAD registry identity and is
+explicitly bound to the project-scoped `mechcad-transmission` OpenCode agent.
+The project agent is reasoning-only with deny-all permissions; it receives no
+repository access and cannot invoke tools, shell, filesystem, MCP, or other
+agents. M6B-1 uses the existing `ContextBuilder` and only caller-selected
+requirements, constraints, and CURRENT Evidence.
+
+Transmission reasoning is not deterministic Evidence. Missing engineering data
+produces a `ConstraintRequest`; a conflict revealed by supplied authoritative
+context produces an `Issue`. Findings are plain strings. Proposals remain
+proposals and are never applied automatically. The first fixture intentionally
+returns zero ChangeProposals and does not create Evidence or mutate
+`DesignState`.
+
+The ownership rule `/components/*/transmission` is reserved-but-inactive
+ownership. Because `Component.transmission` does not exist in the canonical
+Pydantic model, the path is not currently representable or writable. M6B-1 does
+not use `Component.description` or another generic field as a substitute. A
+future canonical transmission model requires separate design and approval.
+
+M6B-1 does not add agent tool calling, automatic iteration, stress/load-case
+C-3B, or direct ToolBroker orchestration. Those remain later milestones.
+
 ## M5.5B-1 Pinned Gear Geometry
 
 M5.5B-1 adds an optional, geometry-only py_gearworks backend. Core MechCAD
@@ -572,3 +606,34 @@ boundary. The backend is not authoritative for supplier data, measured values,
 FDM shrink compensation, print calibration, tolerances, anisotropic strength,
 or manufacturing process corrections. Section properties, structural analysis,
 materials selection, optimization, and M5.5C-2/C-3 remain out of scope.
+## OpenCode Response Modes
+
+The OpenCode adapter has two explicitly selected response modes:
+
+- `NATIVE_JSON_SCHEMA` is the default. It sends OpenCode's native JSON Schema
+  format and accepts only `info.structured_output`. Structured-output errors,
+  missing structured output, and invalid authoritative output fail closed.
+- `VALIDATED_JSON_TEXT` is a separate transport contract for profiles whose
+  OpenCode backend cannot return native structured output. It omits the native
+  format envelope, injects the generated `AgentAuthoredResponsePayload` schema
+  into the deterministic output contract, and validates the complete ordered
+  text parts as one JSON document.
+
+`VALIDATED_JSON_TEXT` is not an automatic fallback. It must be selected in
+trusted adapter configuration before invocation. Text is not trusted because it
+is JSON: it becomes acceptable only after whole-document JSON parsing and
+strict `AgentAuthoredResponsePayload` validation. Markdown fences, prose,
+multiple documents, extra fields, repair, extraction, and response merging are
+rejected.
+
+Canonical IDs, revision/state binding, statuses, proposal actor/base binding,
+materialization, and state mutation remain harness-owned. The model cannot
+authorize those fields. The generated Pydantic schema is the single schema
+source of truth, and response mode plus schema hash are retained in normal
+execution provenance.
+
+The mode exists because OpenCode `1.18.18` with
+`screenpipe/gpt-5.6-luna` repeatedly returned `StructuredOutputError` without
+`info.structured_output`, including with `retryCount=2`, while ordinary text
+could contain semantically valid authored JSON. This compatibility mode does
+not weaken or rename the native fail-closed mode.

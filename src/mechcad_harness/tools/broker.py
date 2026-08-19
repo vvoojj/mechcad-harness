@@ -1,5 +1,5 @@
-import hashlib
 import json
+import hashlib
 from uuid import uuid4
 
 from mechcad_harness.models import Evidence
@@ -65,8 +65,8 @@ class ToolBroker:
             self.store.write_result(result)
             if evidence_node is not None and not (tool_name == "mechcad-calc-preliminary-section-engineering-properties" and not _structural_evidence_complete(output_payload)):
                 try:
-                    evidence = Evidence(id=f"EVD-{uuid4()}", kind=evidence_node, summary=f"{tool_name} result", revision=context.bound_revision, state_hash=context.bound_state_hash, producer_type="tool", producer_name=tool_name, producer_version=tool_version, producer_result_id=result.result_id, input_hash=call.input_hash, output_hash=result.output_hash, backend_provenance=result.backend_provenance)
-                    self.controller.evidence.write_evidence(context.project_id, evidence)
+                    from .evidence import ToolEvidenceMaterializer
+                    evidence = ToolEvidenceMaterializer(self.controller, self.registry).materialize_from_result(context.project_id, context.run_id, context.task_id, result.result_id, evidence_node, context.bound_revision, context.bound_state_hash)
                 except Exception as exc:
                     raise ToolExecutionError(f"evidence persistence failed: {type(exc).__name__}: {exc}") from exc
                 result = result.model_copy(update={"evidence_id": evidence.id})

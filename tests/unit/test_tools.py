@@ -164,3 +164,24 @@ def test_undeclared_evidence_and_failed_evidence_are_rejected(tmp_path):
     broker = make_broker(controller)
     with pytest.raises(ToolExecutionError):
         broker.execute(run.run_id, task.task_id, "mechcad-calc-torque", "1.0", {"force_n": 1, "lever_arm_m": 1, "safety_factor": 1}, evidence_node="analysis.arbitrary")
+
+
+def test_torque_registration_declares_trusted_evidence_summary_and_none_provenance():
+    torque = next(item for item in BuiltinTools.registrations() if item.name == "mechcad-calc-torque")
+    assert torque.evidence_nodes == ("analysis.transmission.torque",)
+    assert torque.provenance_handler is None
+    assert torque.evidence_summary_handler(torque.output_model(nominal_torque_nm=2, design_torque_nm=4)) == "Required design torque: 4 N*m"
+
+
+def test_inline_torque_evidence_is_deterministic_and_idempotent(tmp_path):
+    controller, run, task, _ = make_controller(tmp_path, evidence_nodes=("analysis.transmission.torque",))
+    broker = make_broker(controller)
+    result = broker.execute(run.run_id, task.task_id, "mechcad-calc-torque", "1.0", {"force_n": 10, "lever_arm_m": 0.2, "safety_factor": 2}, evidence_node="analysis.transmission.torque")
+    evidence = controller.evidence.load_evidence("PRJ-1", result.evidence_id)
+    assert result.evidence_id.startswith("EVD-")
+    assert evidence.summary == "Required design torque: 4 N*m"
+    before = (tmp_path / "projects" / "PRJ-1" / "runs" / run.run_id / "tool_results" / f"{result.result_id}.json").read_bytes()
+    from mechcad_harness.tools.evidence import ToolEvidenceMaterializer
+    materializer = ToolEvidenceMaterializer(controller, broker.registry)
+    assert materializer.materialize_from_result("PRJ-1", run.run_id, task.task_id, result.result_id, "analysis.transmission.torque", 1, run.active_state_hash).id == evidence.id
+    assert (tmp_path / "projects" / "PRJ-1" / "runs" / run.run_id / "tool_results" / f"{result.result_id}.json").read_bytes() == before
