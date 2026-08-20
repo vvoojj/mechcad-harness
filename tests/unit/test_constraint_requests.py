@@ -23,13 +23,13 @@ def _draft(key, description="missing", rationale="needed"):
 def test_supported_constraint_key_registry_is_exactly_four_values():
     from mechcad_harness.agents.constraint_requests import SupportedConstraintKey
 
-    assert {item.value for item in SupportedConstraintKey} == {
+    assert {item.value for item in SupportedConstraintKey if item.value.startswith("transmission.")} == {
         "transmission.output_angular_speed",
         "transmission.motor_characteristics",
         "transmission.output_interface",
         "transmission.packaging_envelope",
     }
-    assert len(SupportedConstraintKey) == 4
+    assert len({item.value for item in SupportedConstraintKey if item.value.startswith("transmission.")}) == 4
 
 
 def test_semantic_identity_contains_key_and_excludes_wording_and_provenance():
@@ -37,7 +37,7 @@ def test_semantic_identity_contains_key_and_excludes_wording_and_provenance():
 
     materializer = ConstraintRequestMaterializer()
     common = dict(project_id="PRJ", engineering_scope_id="transmission", bound_revision=3, bound_state_hash="sha256:state")
-    ids = [materializer.request_id(**common, draft=_draft(key)) for key in SupportedConstraintKey]
+    ids = [materializer.request_id(**common, draft=_draft(key)) for key in SupportedConstraintKey if key.value.startswith("transmission.")]
     assert len(set(ids)) == 4
     key = SupportedConstraintKey.OUTPUT_INTERFACE
     assert materializer.request_id(**common, draft=_draft(key, "one", "why")) == materializer.request_id(**common, draft=_draft(key, "two", "other"))

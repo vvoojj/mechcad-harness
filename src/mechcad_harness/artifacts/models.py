@@ -8,8 +8,10 @@ from mechcad_harness.models.common import Model
 
 
 class ArtifactType(StrEnum):
+    FCSTD = "fcstd"
     STEP = "step"
     STL = "stl"
+    JSON = "json"
 
 
 class EngineeringArtifact(Model):

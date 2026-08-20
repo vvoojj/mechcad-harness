@@ -56,3 +56,32 @@ def test_scope_and_filename_traversal_are_rejected(tmp_path):
     for filename in ("..", "../gear.step", "/absolute/gear.step", "C:/gear.step", "a\\..\\gear.step"):
         with pytest.raises(ValueError):
             store.publish("ART-2", ArtifactType.STEP, filename, b"x", "tool", "1.0", 1, "sha256:x")
+
+
+def test_artifact_store_reuses_exact_immutable_replay(tmp_path):
+    store = ArtifactStore(tmp_path, project_id="PRJ-1", run_id="RUN-1")
+    first = store.publish("ART-1", ArtifactType.FCSTD, "plate.FCStd", b"fcstd", "freecad", "1.0", 1, "sha256:state")
+    second = store.publish("ART-1", ArtifactType.FCSTD, "plate.FCStd", b"fcstd", "freecad", "1.0", 1, "sha256:state")
+    assert second == first
+
+
+def test_artifact_store_existing_rejects_metadata_from_another_scope(tmp_path):
+    store = ArtifactStore(tmp_path, project_id="PRJ-1", run_id="RUN-1")
+    artifact = store.publish("ART-1", ArtifactType.FCSTD, "plate.FCStd", b"fcstd", "freecad", "1.0", 1, "sha256:state")
+    metadata = tmp_path / "projects" / "PRJ-1" / "runs" / "RUN-1" / "artifacts" / "ART-1" / "metadata.json"
+    metadata.write_text(metadata.read_text().replace('"run_id":"RUN-1"', '"run_id":"RUN-2"'), encoding="utf-8")
+    assert store.existing(artifact.artifact_id) is None
+
+
+def test_artifact_store_rejects_conflicting_replay(tmp_path):
+    store = ArtifactStore(tmp_path, project_id="PRJ-1", run_id="RUN-1")
+    store.publish("ART-1", ArtifactType.FCSTD, "plate.FCStd", b"fcstd", "freecad", "1.0", 1, "sha256:state")
+    with pytest.raises(Exception, match="conflict"):
+        store.publish("ART-1", ArtifactType.FCSTD, "plate.FCStd", b"other", "freecad", "1.0", 1, "sha256:state")
+
+
+def test_artifact_store_supports_immutable_json_analysis_results(tmp_path):
+    store = ArtifactStore(tmp_path, project_id="PRJ-1", run_id="RUN-1")
+    artifact = store.publish("ANALYSIS-1", ArtifactType.JSON, "analysis.json", b'{"passed":true}\n', "analyzer", "1.0", 1, "sha256:state", input_hash="sha256:plan")
+    assert store.existing("ANALYSIS-1") == artifact
+    assert artifact.media_type == "application/json"

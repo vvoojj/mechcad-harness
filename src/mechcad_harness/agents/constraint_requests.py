@@ -66,7 +66,7 @@ class ConstraintRequestMaterializer:
         return f"CRREQ-{uuid5(NAMESPACE_URL, identity)}"
 
     def is_satisfied(self, key: SupportedConstraintKey, state, engineering_scope_id: str = "transmission") -> bool:
-        collection, record_id = self._anchors[key]
+        collection, record_id = self._anchors.get(key, ("constraints", "CON-AZIMUTH-DRIVE-MOUNT-INTERFACE") if key is SupportedConstraintKey.AZIMUTH_DRIVE_MOUNT_INTERFACE else self._anchors[key])
         anchors = [item for item in getattr(state, collection) if item.id == record_id]
         parameters = [item for item in state.authoritative_parameters if item.anchor.kind == ("requirement" if collection == "requirements" else "constraint") and item.anchor.id == record_id]
         if len(parameters) > 1:
@@ -83,6 +83,13 @@ class ConstraintRequestMaterializer:
         if parameter.key is not key or getattr(parameter.value, "kind", None) != key.value:
             raise ValueError("authoritative parameter key/value mismatch")
         return True
+
+    @classmethod
+    def anchor_for(cls, key: SupportedConstraintKey):
+        if key is SupportedConstraintKey.AZIMUTH_DRIVE_MOUNT_INTERFACE:
+            return ("constraint", "CON-AZIMUTH-DRIVE-MOUNT-INTERFACE")
+        collection, record_id = cls._anchors[key]
+        return ("requirement" if collection == "requirements" else "constraint", record_id)
 
     def materialize(self, *, project_id, run_id, task_id, agent_name, agent_version, source_invocation_id, source_agent_result_id, engineering_scope_id, bound_revision, bound_state_hash, source_created_at, state, drafts):
         if self.store is None:

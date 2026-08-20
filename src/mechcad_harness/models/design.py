@@ -58,6 +58,7 @@ class AuthoritativeParameter(Model):
             SupportedConstraintKey.MOTOR_CHARACTERISTICS: ("requirement", "REQ-TRANSMISSION-MOTOR-CHARACTERISTICS"),
             SupportedConstraintKey.OUTPUT_INTERFACE: ("constraint", "CON-TRANSMISSION-OUTPUT-INTERFACE"),
             SupportedConstraintKey.PACKAGING_ENVELOPE: ("constraint", "CON-TRANSMISSION-PACKAGING-ENVELOPE"),
+            SupportedConstraintKey.AZIMUTH_DRIVE_MOUNT_INTERFACE: ("constraint", "CON-AZIMUTH-DRIVE-MOUNT-INTERFACE"),
         }[self.key]
         if (self.anchor.kind, self.anchor.id) != expected:
             raise ValueError("authoritative parameter key/anchor mismatch")

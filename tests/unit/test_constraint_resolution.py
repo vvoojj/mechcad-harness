@@ -6,7 +6,7 @@ import pytest
 def test_neutral_supported_keys_are_exactly_four():
     from mechcad_harness.engineering.keys import SupportedConstraintKey
 
-    assert {key.value for key in SupportedConstraintKey} == {
+    assert {key.value for key in SupportedConstraintKey if key.value.startswith("transmission.")} == {
         "transmission.output_angular_speed",
         "transmission.motor_characteristics",
         "transmission.output_interface",

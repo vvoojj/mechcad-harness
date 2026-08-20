@@ -98,7 +98,7 @@ def test_constraint_discovery_contract_has_typed_four_key_requests_and_no_tools(
     model = response_model_for_contract(AgentAuthoredResponseContract.CONSTRAINT_DISCOVERY_TOOLS_FORBIDDEN)
     schema = model.model_json_schema()
     assert schema["properties"]["tool_requests"]["maxItems"] == 0
-    assert set(schema["$defs"]["SupportedConstraintKey"]["enum"]) == {
+    assert {key for key in schema["$defs"]["SupportedConstraintKey"]["enum"] if key.startswith("transmission.")} == {
         "transmission.output_angular_speed",
         "transmission.motor_characteristics",
         "transmission.output_interface",

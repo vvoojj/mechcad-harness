@@ -50,4 +50,23 @@ class PackagingEnvelopeValue(Model):
     mounting_description: str = Field(min_length=1)
 
 
-AuthoritativeValue = Annotated[Union[OutputAngularSpeedValue, MotorCharacteristicsValue, OutputInterfaceValue, PackagingEnvelopeValue], Field(discriminator="kind")]
+class AzimuthDriveMountInterfaceValue(Model):
+    kind: Literal["azimuth.drive_mount_interface"]
+    component_id: str = Field(min_length=1)
+    coordinate_convention: Literal["interface-center; mounting plane XY; +Z housing-to-mating-plate; +X source-defined reference; +Y right-handed"] = "interface-center; mounting plane XY; +Z housing-to-mating-plate; +X source-defined reference; +Y right-handed"
+    in_plane_alignment: Literal["aligned-with-plate-axes"] = "aligned-with-plate-axes"
+    frame_reference_id: str = Field(min_length=1)
+    mount_points: tuple[dict, ...] = Field(min_length=1)
+    central_keepout_diameter_mm: float | None = Field(default=None, gt=0)
+    central_required_mating_opening_diameter_mm: float | None = Field(default=None, gt=0)
+    manufacturer_required_central_radial_clearance_mm: float | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_mount_points(self):
+        ids = [point.get("hole_id") for point in self.mount_points]
+        if any(not isinstance(item, str) or not item.strip() for item in ids) or len(ids) != len(set(ids)):
+            raise ValueError("mount point IDs must be unique")
+        return self
+
+
+AuthoritativeValue = Annotated[Union[OutputAngularSpeedValue, MotorCharacteristicsValue, OutputInterfaceValue, PackagingEnvelopeValue, AzimuthDriveMountInterfaceValue], Field(discriminator="kind")]

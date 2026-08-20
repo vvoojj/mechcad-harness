@@ -219,4 +219,5 @@ def _anchor_for(key):
         "transmission.motor_characteristics": ("requirement", "REQ-TRANSMISSION-MOTOR-CHARACTERISTICS"),
         "transmission.output_interface": ("constraint", "CON-TRANSMISSION-OUTPUT-INTERFACE"),
         "transmission.packaging_envelope": ("constraint", "CON-TRANSMISSION-PACKAGING-ENVELOPE"),
+        "azimuth.drive_mount_interface": ("constraint", "CON-AZIMUTH-DRIVE-MOUNT-INTERFACE"),
     }[key.value]

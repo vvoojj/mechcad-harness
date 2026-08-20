@@ -6,3 +6,4 @@ class SupportedConstraintKey(StrEnum):
     MOTOR_CHARACTERISTICS = "transmission.motor_characteristics"
     OUTPUT_INTERFACE = "transmission.output_interface"
     PACKAGING_ENVELOPE = "transmission.packaging_envelope"
+    AZIMUTH_DRIVE_MOUNT_INTERFACE = "azimuth.drive_mount_interface"

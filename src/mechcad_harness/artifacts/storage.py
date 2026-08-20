@@ -8,7 +8,7 @@ from uuid import uuid4
 from .models import ArtifactType, EngineeringArtifact
 
 
-MEDIA_TYPES = {ArtifactType.STEP: "model/step", ArtifactType.STL: "model/stl"}
+MEDIA_TYPES = {ArtifactType.FCSTD: "application/x-freecad", ArtifactType.STEP: "model/step", ArtifactType.STL: "model/stl", ArtifactType.JSON: "application/json"}
 
 
 class ArtifactStore:
@@ -35,13 +35,36 @@ class ArtifactStore:
         artifact_path = artifact_dir / relative_filename.name
         metadata_path = artifact_dir / "metadata.json"
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        if artifact_path.exists() or metadata_path.exists():
-            raise FileExistsError(f"artifact already exists: {artifact_id}")
         digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
+        if artifact_path.exists() or metadata_path.exists():
+            if artifact_path.exists() and metadata_path.exists():
+                try:
+                    existing = EngineeringArtifact.model_validate_json(metadata_path.read_text(encoding="utf-8"))
+                    if existing.sha256 == digest and artifact_path.read_bytes() == content:
+                        return existing
+                except Exception:
+                    pass
+            raise FileExistsError(f"artifact conflict: {artifact_id}")
         artifact = EngineeringArtifact(artifact_id=artifact_id, project_id=self.project_id, run_id=self.run_id, task_id=self.task_id, artifact_type=artifact_type, media_type=MEDIA_TYPES[artifact_type], relative_path=artifact_path.relative_to(self.workspace).as_posix(), sha256=digest, size_bytes=len(content), producer_tool_name=producer_tool_name, producer_tool_version=producer_tool_version, backend_provenance=backend_provenance, bound_revision=bound_revision, bound_state_hash=bound_state_hash, input_hash=input_hash)
         self._atomic_bytes(artifact_path, content)
         self._atomic_text(metadata_path, json.dumps(artifact.model_dump(mode="json"), sort_keys=True, separators=(",", ":")) + "\n")
         return artifact
+
+    def existing(self, artifact_id):
+        artifact_dir = self.workspace / "projects" / self.project_id / "runs" / self.run_id / "artifacts" / self._safe_scope(artifact_id, "artifact_id")
+        metadata_path = artifact_dir / "metadata.json"
+        if not metadata_path.exists():
+            return None
+        try:
+            artifact = EngineeringArtifact.model_validate_json(metadata_path.read_text(encoding="utf-8"))
+            if artifact.project_id != self.project_id or artifact.run_id != self.run_id:
+                return None
+            path = self.workspace / artifact.relative_path
+            if path.is_file() and path.stat().st_size == artifact.size_bytes and f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}" == artifact.sha256:
+                return artifact
+        except Exception:
+            return None
+        return None
 
     def _atomic_bytes(self, path, content):
         fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.{uuid4().hex}.", suffix=".tmp")
