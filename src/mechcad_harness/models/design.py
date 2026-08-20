@@ -81,6 +81,7 @@ class DesignState(Model):
     authoritative_parameters: list[AuthoritativeParameter] = Field(default_factory=list)
     azimuth_mount_plates: list[dict] = Field(default_factory=list)
     yagi_payload_carrier_requirements: list[dict] = Field(default_factory=list)
+    yagi_carriers: list[dict] = Field(default_factory=list)
 
     @field_validator("created_at")
     @classmethod

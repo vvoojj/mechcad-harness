@@ -19,7 +19,7 @@ from mechcad_harness.backends.models import BackendHealth, BackendHealthStatus, 
 from mechcad_harness.models.common import Model
 
 
-FREECAD_BACKEND_VERSION = "mechcad-freecad@2.0"
+FREECAD_BACKEND_VERSION = "mechcad-freecad@2.1"
 
 
 class FreeCADBackendError(Exception):
@@ -178,7 +178,7 @@ class FreeCADBackend:
 
     @staticmethod
     def compile_program(program: CadPartProgram, fcstd_path: str, step_path: str) -> str:
-        from mechcad_harness.cad_program import BasePlateOperation, RectangularPocketOperation, ThroughHoleOperation
+        from mechcad_harness.cad_program import BasePlateOperation, RectangularPocketOperation, ThroughHoleOperation, ThroughSlotOperation
         from mechcad_harness.cad_manifest import build_program_manifest
         manifest = build_program_manifest(program)
         manifest_json = json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
@@ -191,6 +191,30 @@ class FreeCADBackend:
                 lines.append(f"shape = shape.cut(Part.makeCylinder({operation.diameter_mm / 2!r}, {program.operations[0].thickness_mm!r}, FreeCAD.Vector({operation.x_mm!r}, {operation.y_mm!r}, 0)))")
             elif isinstance(operation, RectangularPocketOperation):
                 lines.append(f"shape = shape.cut(Part.makeBox({operation.length_mm!r}, {operation.width_mm!r}, {operation.depth_mm!r}, FreeCAD.Vector({operation.x_mm!r}, {operation.y_mm!r}, {program.operations[0].thickness_mm - operation.depth_mm!r})))")
+            elif isinstance(operation, ThroughSlotOperation):
+                if operation.orientation == "x":
+                    left_x = operation.center_x_mm - operation.length_mm / 2 + operation.width_mm / 2
+                    right_x = operation.center_x_mm + operation.length_mm / 2 - operation.width_mm / 2
+                    rect_x = left_x
+                    rect_y = operation.center_y_mm - operation.width_mm / 2
+                    rect_length = operation.length_mm - operation.width_mm
+                    rect_width = operation.width_mm
+                    first = (left_x, operation.center_y_mm)
+                    second = (right_x, operation.center_y_mm)
+                else:
+                    bottom_y = operation.center_y_mm - operation.length_mm / 2 + operation.width_mm / 2
+                    top_y = operation.center_y_mm + operation.length_mm / 2 - operation.width_mm / 2
+                    rect_x = operation.center_x_mm - operation.width_mm / 2
+                    rect_y = bottom_y
+                    rect_length = operation.width_mm
+                    rect_width = operation.length_mm - operation.width_mm
+                    first = (operation.center_x_mm, bottom_y)
+                    second = (operation.center_x_mm, top_y)
+                thickness = program.operations[0].thickness_mm
+                lines.append(f"slot_rect = Part.makeBox({rect_length!r}, {rect_width!r}, {thickness!r}, FreeCAD.Vector({rect_x!r}, {rect_y!r}, 0))")
+                lines.append(f"slot_cap_a = Part.makeCylinder({operation.width_mm / 2!r}, {thickness!r}, FreeCAD.Vector({first[0]!r}, {first[1]!r}, 0))")
+                lines.append(f"slot_cap_b = Part.makeCylinder({operation.width_mm / 2!r}, {thickness!r}, FreeCAD.Vector({second[0]!r}, {second[1]!r}, 0))")
+                lines.append("shape = shape.cut(slot_rect.fuse(slot_cap_a).fuse(slot_cap_b))")
         final_name = freecad_object_name(program.operations[-1].operation_id)
         lines.extend([f"obj = doc.addObject('PartDesign::Feature', {final_name!r})", "obj.Label = 'final_geometry'", "obj.Shape = shape", f"manifest = doc.addObject('App::FeaturePython', 'program_manifest')", "manifest.Label = 'program_manifest'", "manifest.addProperty('App::PropertyString', 'ManifestJson', 'CAD')", f"manifest.ManifestJson = {manifest_json!r}", "doc.recompute()", f"doc.saveAs({fcstd_path!r})", f"Part.export([obj], {step_path!r})", "FreeCAD.closeDocument(doc.Name)"])
         return "\n".join(lines) + "\n"
@@ -257,7 +281,7 @@ class FreeCADBackend:
         return self._verify_persisted(program, workspace, project_id, run_id, revision, state_hash, discovery, fcstd_artifact, step_artifact)
 
     def _verify_persisted(self, program, workspace, project_id, run_id, revision, state_hash, discovery, fcstd_artifact, step_artifact):
-        from mechcad_harness.cad_program import BasePlateOperation, RectangularPocketOperation, ThroughHoleOperation
+        from mechcad_harness.cad_program import BasePlateOperation, RectangularPocketOperation, ThroughHoleOperation, ThroughSlotOperation
         base = program.operations[0]
         assert isinstance(base, BasePlateOperation)
         fcstd_path = (Path(workspace) / fcstd_artifact.relative_path).resolve()
@@ -269,7 +293,13 @@ class FreeCADBackend:
                 probe_lines.append(f"hole_{operation.operation_id} = not shape.isInside(FreeCAD.Vector({operation.x_mm!r}, {operation.y_mm!r}, 4), 1e-7, True)")
             elif isinstance(operation, RectangularPocketOperation):
                 probe_lines.append(f"pocket_{operation.operation_id} = not shape.isInside(FreeCAD.Vector({operation.x_mm + operation.length_mm / 2!r}, {operation.y_mm + operation.width_mm / 2!r}, {base.thickness_mm - operation.depth_mm / 2!r}), 1e-7, True)")
-        probe_payload = "{" + ",".join(f"{name!r}: {name}" for name in [f"hole_{operation.operation_id}" for operation in program.operations if isinstance(operation, ThroughHoleOperation)] + [f"pocket_{operation.operation_id}" for operation in program.operations if isinstance(operation, RectangularPocketOperation)]) + "}"
+            elif isinstance(operation, ThroughSlotOperation):
+                major_offset = operation.length_mm / 2 - operation.width_mm / 4
+                points = ((operation.center_x_mm, operation.center_y_mm), (operation.center_x_mm + (major_offset if operation.orientation == "x" else 0), operation.center_y_mm + (major_offset if operation.orientation == "y" else 0)), (operation.center_x_mm - (major_offset if operation.orientation == "x" else 0), operation.center_y_mm - (major_offset if operation.orientation == "y" else 0)))
+                for index, point in enumerate(points, start=1):
+                    probe_lines.append(f"slot_{operation.operation_id}_{index} = not shape.isInside(FreeCAD.Vector({point[0]!r}, {point[1]!r}, {base.thickness_mm / 2!r}), 1e-7, True)")
+        probe_names = [f"hole_{operation.operation_id}" for operation in program.operations if isinstance(operation, ThroughHoleOperation)] + [f"pocket_{operation.operation_id}" for operation in program.operations if isinstance(operation, RectangularPocketOperation)] + [f"slot_{operation.operation_id}_{index}" for operation in program.operations if isinstance(operation, ThroughSlotOperation) for index in range(1, 4)]
+        probe_payload = "{" + ",".join(f"{name!r}: {name}" for name in probe_names) + "}"
         from mechcad_harness.cad_manifest import build_program_manifest
         expected_manifest = build_program_manifest(program)
         final_name = expected_manifest.operations[-1].internal_name
@@ -292,6 +322,14 @@ shape = obj.Shape
 print("M7A1_JSON=" + json.dumps({{"status":"verified","object_name":obj.Name,"shape_valid":shape.isValid(),"x_length_mm":box.XLength,"y_length_mm":box.YLength,"z_length_mm":box.ZLength,"volume_mm3":shape.Volume,"solid_count":len(shape.Solids),"feature_probes":{probe_payload}}}, sort_keys=True))
 FreeCAD.closeDocument(doc.Name)
 '''
+        step_probe_lines = []
+        for operation in program.operations:
+            if isinstance(operation, ThroughSlotOperation):
+                major_offset = operation.length_mm / 2 - operation.width_mm / 4
+                points = ((operation.center_x_mm, operation.center_y_mm), (operation.center_x_mm + (major_offset if operation.orientation == "x" else 0), operation.center_y_mm + (major_offset if operation.orientation == "y" else 0)), (operation.center_x_mm - (major_offset if operation.orientation == "x" else 0), operation.center_y_mm - (major_offset if operation.orientation == "y" else 0)))
+                for index, point in enumerate(points, start=1):
+                    step_probe_lines.append(f"slot_{operation.operation_id}_{index} = not shape.isInside(FreeCAD.Vector({point[0]!r}, {point[1]!r}, {base.thickness_mm / 2!r}), 1e-7, True)")
+        step_probe_payload = "{" + ",".join(f"{name!r}: {name}" for name in [f"slot_{operation.operation_id}_{index}" for operation in program.operations if isinstance(operation, ThroughSlotOperation) for index in range(1, 4)]) + "}"
         step_script = f'''import FreeCAD, Part, json
 doc = FreeCAD.newDocument("M7A1StepVerify")
 Part.insert({str(step_path)!r}, doc.Name)
@@ -300,7 +338,8 @@ objects = [obj for obj in doc.Objects if hasattr(obj, "Shape") and not obj.Shape
 if not objects: raise RuntimeError("STEP import produced no shape")
 shape = objects[0].Shape
 box = shape.BoundBox
-print("M7A1_JSON=" + json.dumps({{"status":"verified","object_name":objects[0].Name,"shape_valid":shape.isValid(),"x_length_mm":box.XLength,"y_length_mm":box.YLength,"z_length_mm":box.ZLength,"volume_mm3":shape.Volume,"solid_count":len(shape.Solids),"feature_probes":{{}}}}, sort_keys=True))
+{chr(10).join(step_probe_lines)}
+print("M7A1_JSON=" + json.dumps({{"status":"verified","object_name":objects[0].Name,"shape_valid":shape.isValid(),"x_length_mm":box.XLength,"y_length_mm":box.YLength,"z_length_mm":box.ZLength,"volume_mm3":shape.Volume,"solid_count":len(shape.Solids),"feature_probes":{step_probe_payload}}}, sort_keys=True))
 FreeCAD.closeDocument(doc.Name)
 '''
         with tempfile.TemporaryDirectory(prefix="mechcad-freecad-verify-") as directory:

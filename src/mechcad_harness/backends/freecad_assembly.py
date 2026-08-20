@@ -210,23 +210,23 @@ for obj in objects:
     shape = obj.Shape
     box = shape.BoundBox
     items.append({{"instance_id": obj.Name, "object_name": obj.Name, "x_length_mm": box.XLength, "y_length_mm": box.YLength, "z_length_mm": box.ZLength, "x_min_mm": box.XMin, "x_max_mm": box.XMax, "y_min_mm": box.YMin, "y_max_mm": box.YMax, "z_min_mm": box.ZMin, "z_max_mm": box.ZMax, "volume_mm3": shape.Volume, "shape_valid": shape.isValid()}})
-if len(items) != 2: raise RuntimeError("assembly STEP solid count mismatch")
+if len(items) != {len(program.instances)!r}: raise RuntimeError("assembly STEP solid count mismatch")
 print("M7A2B_JSON=" + json.dumps({{"assembly_id": {program.assembly_id!r}, "assembly_hash": {manifest.assembly_hash!r}, "instances": items, "overall_bounds_mm": [max(item["x_max_mm"] for item in items)-min(item["x_min_mm"] for item in items), max(item["y_max_mm"] for item in items)-min(item["y_min_mm"] for item in items), max(item["z_max_mm"] for item in items)-min(item["z_min_mm"] for item in items)], "total_volume_mm3": sum(item["volume_mm3"] for item in items), "solid_count": len(items), "shape_valid": all(item["shape_valid"] for item in items)}}, sort_keys=True))
 FreeCAD.closeDocument(doc.Name)
 '''
         with tempfile.TemporaryDirectory(prefix="mechcad-assembly-verify-") as directory:
-            fcstd = self._parse(self.part_backend._run(discovery.executable, fcstd_script, cwd=Path(directory)), expected_hash=manifest.assembly_hash)
-            step = self._parse(self.part_backend._run(discovery.executable, step_script, cwd=Path(directory)), expected_hash=manifest.assembly_hash, require_names=False)
+            fcstd = self._parse(self.part_backend._run(discovery.executable, fcstd_script, cwd=Path(directory)), expected_hash=manifest.assembly_hash, expected_solid_count=len(program.instances))
+            step = self._parse(self.part_backend._run(discovery.executable, step_script, cwd=Path(directory)), expected_hash=manifest.assembly_hash, expected_solid_count=len(program.instances), require_names=False)
         return FreeCADAssemblyGenerationResult(fcstd=fcstd_artifact, step=step_artifact, manifest=manifest, fcstd_verification=fcstd, step_verification=step, project_id=project_id, run_id=run_id, bound_revision=revision, bound_state_hash=state_hash, backend_version=ASSEMBLY_BACKEND_VERSION, freecad_version="1.1.3")
 
     @staticmethod
-    def _parse(result, *, expected_hash, require_names=True):
+    def _parse(result, *, expected_hash, expected_solid_count=None, require_names=True):
         if result.returncode != 0:
             raise FreeCADArtifactVerificationError(result.stderr or result.stdout or "assembly verification failed")
         line = next((line for line in result.stdout.splitlines() if line.startswith("M7A2B_JSON=")), None)
         if line is None:
             raise FreeCADArtifactVerificationError("assembly structured verification missing")
         payload = json.loads(line.removeprefix("M7A2B_JSON="))
-        if payload["assembly_hash"] != expected_hash or payload["solid_count"] != 2 or not payload["shape_valid"]:
+        if payload["assembly_hash"] != expected_hash or payload["solid_count"] != (expected_solid_count or payload["solid_count"]) or payload["solid_count"] <= 0 or not payload["shape_valid"]:
             raise FreeCADArtifactVerificationError("assembly verification mismatch")
         return FreeCADAssemblyVerification.model_validate(payload)

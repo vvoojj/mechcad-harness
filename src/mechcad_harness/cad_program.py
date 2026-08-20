@@ -70,7 +70,24 @@ class RectangularPocketOperation(CadOperation):
         return self
 
 
-CadOperationValue = Annotated[BasePlateOperation | ThroughHoleOperation | RectangularPocketOperation, Field(discriminator="operation_type")]
+class ThroughSlotOperation(CadOperation):
+    operation_type: Literal["through_slot"] = "through_slot"
+    center_x_mm: float
+    center_y_mm: float
+    length_mm: float = Field(gt=0)
+    width_mm: float = Field(gt=0)
+    orientation: Literal["x", "y"]
+
+    @model_validator(mode="after")
+    def finite(self) -> "ThroughSlotOperation":
+        if any(not math.isfinite(value) for value in (self.center_x_mm, self.center_y_mm, self.length_mm, self.width_mm)):
+            raise ValueError("slot values must be finite")
+        if self.length_mm < self.width_mm:
+            raise ValueError("slot total length must be at least its width")
+        return self
+
+
+CadOperationValue = Annotated[BasePlateOperation | ThroughHoleOperation | RectangularPocketOperation | ThroughSlotOperation, Field(discriminator="operation_type")]
 
 
 class CadPartProgram(Model):
@@ -105,6 +122,13 @@ class CadPartProgram(Model):
                     raise ValueError("pocket footprint must lie inside base plate")
                 if operation.depth_mm >= base.thickness_mm:
                     raise ValueError("pocket depth must be less than base thickness")
+            elif isinstance(operation, ThroughSlotOperation):
+                half_major = operation.length_mm / 2
+                half_minor = operation.width_mm / 2
+                half_x = half_major if operation.orientation == "x" else half_minor
+                half_y = half_minor if operation.orientation == "x" else half_major
+                if operation.center_x_mm - half_x < 0 or operation.center_x_mm + half_x > base.length_mm or operation.center_y_mm - half_y < 0 or operation.center_y_mm + half_y > base.width_mm:
+                    raise ValueError("through slot must lie inside base plate")
             else:
                 raise ValueError("unsupported CAD operation")
         return self
