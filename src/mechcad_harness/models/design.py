@@ -59,6 +59,7 @@ class AuthoritativeParameter(Model):
             SupportedConstraintKey.OUTPUT_INTERFACE: ("constraint", "CON-TRANSMISSION-OUTPUT-INTERFACE"),
             SupportedConstraintKey.PACKAGING_ENVELOPE: ("constraint", "CON-TRANSMISSION-PACKAGING-ENVELOPE"),
             SupportedConstraintKey.AZIMUTH_DRIVE_MOUNT_INTERFACE: ("constraint", "CON-AZIMUTH-DRIVE-MOUNT-INTERFACE"),
+            SupportedConstraintKey.AZIMUTH_MOUNT_PLATE_DESIGN_REQUIREMENTS: ("constraint", "CON-AZIMUTH-MOUNT-PLATE-DESIGN-REQUIREMENTS"),
         }[self.key]
         if (self.anchor.kind, self.anchor.id) != expected:
             raise ValueError("authoritative parameter key/anchor mismatch")
@@ -77,6 +78,7 @@ class DesignState(Model):
     constraints: list[Constraint] = Field(default_factory=list)
     load_cases: list[LoadCase] = Field(default_factory=list)
     authoritative_parameters: list[AuthoritativeParameter] = Field(default_factory=list)
+    azimuth_mount_plates: list[dict] = Field(default_factory=list)
 
     @field_validator("created_at")
     @classmethod

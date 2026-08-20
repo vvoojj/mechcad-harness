@@ -68,5 +68,34 @@ class AzimuthDriveMountInterfaceValue(Model):
             raise ValueError("mount point IDs must be unique")
         return self
 
+    def to_domain(self):
+        from mechcad_harness.azimuth_mount_plate import AzimuthDriveMountInterface
+        return AzimuthDriveMountInterface.model_validate(self.model_dump(exclude={"kind"}))
 
-AuthoritativeValue = Annotated[Union[OutputAngularSpeedValue, MotorCharacteristicsValue, OutputInterfaceValue, PackagingEnvelopeValue, AzimuthDriveMountInterfaceValue], Field(discriminator="kind")]
+
+class PlateThicknessPolicyValue(Model):
+    allowed_thicknesses_mm: tuple[float, ...]
+    minimum_thickness_mm: float
+
+
+class AzimuthMotorMountPlateDesignRequirementsValue(Model):
+    kind: Literal["azimuth.mount_plate_design_requirements"]
+    minimum_edge_margin_mm: float
+    minimum_hole_ligament_mm: float
+    plate_thickness_policy: PlateThicknessPolicyValue
+    mounting_hole_radial_clearance_mm: float | None = None
+    central_radial_clearance_mm: float | None = None
+    provenance: str = "M7B1B_TEST_FIXTURE_ONLY"
+
+    @classmethod
+    def from_domain(cls, requirements):
+        return cls(kind="azimuth.mount_plate_design_requirements", **requirements.model_dump(mode="json"))
+
+    def to_domain(self):
+        from mechcad_harness.azimuth_mount_plate import AzimuthMotorMountPlateDesignRequirements, PlateThicknessPolicy
+        payload = self.model_dump(exclude={"kind"})
+        payload["plate_thickness_policy"] = PlateThicknessPolicy.model_validate(payload["plate_thickness_policy"])
+        return AzimuthMotorMountPlateDesignRequirements(**payload)
+
+
+AuthoritativeValue = Annotated[Union[OutputAngularSpeedValue, MotorCharacteristicsValue, OutputInterfaceValue, PackagingEnvelopeValue, AzimuthDriveMountInterfaceValue, AzimuthMotorMountPlateDesignRequirementsValue], Field(discriminator="kind")]

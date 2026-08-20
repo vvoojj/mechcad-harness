@@ -56,6 +56,7 @@ class ConstraintRequestMaterializer:
         SupportedConstraintKey.MOTOR_CHARACTERISTICS: ("requirements", "REQ-TRANSMISSION-MOTOR-CHARACTERISTICS"),
         SupportedConstraintKey.OUTPUT_INTERFACE: ("constraints", "CON-TRANSMISSION-OUTPUT-INTERFACE"),
         SupportedConstraintKey.PACKAGING_ENVELOPE: ("constraints", "CON-TRANSMISSION-PACKAGING-ENVELOPE"),
+        SupportedConstraintKey.AZIMUTH_MOUNT_PLATE_DESIGN_REQUIREMENTS: ("constraints", "CON-AZIMUTH-MOUNT-PLATE-DESIGN-REQUIREMENTS"),
     }
 
     def __init__(self, store: ConstraintRequestStore | None = None):

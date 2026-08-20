@@ -220,4 +220,5 @@ def _anchor_for(key):
         "transmission.output_interface": ("constraint", "CON-TRANSMISSION-OUTPUT-INTERFACE"),
         "transmission.packaging_envelope": ("constraint", "CON-TRANSMISSION-PACKAGING-ENVELOPE"),
         "azimuth.drive_mount_interface": ("constraint", "CON-AZIMUTH-DRIVE-MOUNT-INTERFACE"),
+        "azimuth.mount_plate_design_requirements": ("constraint", "CON-AZIMUTH-MOUNT-PLATE-DESIGN-REQUIREMENTS"),
     }[key.value]

@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -11,6 +13,8 @@ from mechcad_harness.models.common import Model
 
 
 M7B1_TEST_FIXTURE_ONLY = "M7B1_TEST_FIXTURE_ONLY"
+M7B1B_TEST_FIXTURE_ONLY = "M7B1B_TEST_FIXTURE_ONLY"
+AZIMUTH_MOUNT_PLATE_SYNTHESIS_VERSION = "azimuth-mount-plate-synthesis@1.0"
 
 
 class XYPoint(Model):
@@ -95,6 +99,83 @@ class AzimuthDriveMountInterface(Model):
 AzimuthDriveMountInterfaceValue = AzimuthDriveMountInterface
 
 
+class PlateThicknessPolicy(Model):
+    allowed_thicknesses_mm: tuple[float, ...] = Field(min_length=1)
+    minimum_thickness_mm: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_policy(self):
+        if any(not math.isfinite(value) or value <= 0 for value in self.allowed_thicknesses_mm):
+            raise ValueError("thickness values must be finite and positive")
+        if len(set(self.allowed_thicknesses_mm)) != len(self.allowed_thicknesses_mm):
+            raise ValueError("thickness values must be unique")
+        if not any(value >= self.minimum_thickness_mm for value in self.allowed_thicknesses_mm):
+            raise ValueError("thickness policy has no satisfying stock thickness")
+        return self
+
+    @property
+    def canonical_allowed_thicknesses_mm(self):
+        return tuple(sorted(self.allowed_thicknesses_mm))
+
+    def select(self) -> float:
+        return next(value for value in self.canonical_allowed_thicknesses_mm if value >= self.minimum_thickness_mm)
+
+
+class AzimuthMotorMountPlateDesignRequirements(Model):
+    minimum_edge_margin_mm: float = Field(ge=0)
+    minimum_hole_ligament_mm: float = Field(ge=0)
+    plate_thickness_policy: PlateThicknessPolicy
+    mounting_hole_radial_clearance_mm: float | None = Field(default=None, ge=0)
+    central_radial_clearance_mm: float | None = Field(default=None, ge=0)
+    provenance: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def finite_requirements(self):
+        values = (self.minimum_edge_margin_mm, self.minimum_hole_ligament_mm, self.mounting_hole_radial_clearance_mm, self.central_radial_clearance_mm)
+        if any(value is not None and not math.isfinite(value) for value in values):
+            raise ValueError("design requirements must be finite")
+        return self
+
+
+class SynthesisStatus(StrEnum):
+    NOT_READY = "not_ready"
+    INFEASIBLE = "infeasible"
+    SUCCESS = "success"
+
+
+class SynthesisInfeasibility(Model):
+    code: Literal["minimum_ligament", "central_ligament", "missing_requirement"]
+    message: str = Field(min_length=1)
+    feature_pair: tuple[str, str] | None = None
+
+
+class AzimuthMountPlateSynthesisResult(Model):
+    status: SynthesisStatus
+    hardware_interface_hash: str
+    design_requirements_hash: str
+    synthesis_version: str = AZIMUTH_MOUNT_PLATE_SYNTHESIS_VERSION
+    design_variables: dict[str, float] = {}
+    derived_features: dict[str, float] = {}
+    edge_margins_mm: dict[str, float] = {}
+    minimum_ligament_mm: float | None = None
+    minimum_ligament_pair: tuple[str, str] | None = None
+    spec: "AzimuthMotorMountPlateSpec | None" = None
+    domain_spec_hash: str | None = None
+    synthesis_hash: str
+    infeasibility: SynthesisInfeasibility | None = None
+    proposal: object | None = None
+
+
+def design_requirements_hash(requirements: AzimuthMotorMountPlateDesignRequirements) -> str:
+    return _hash_payload(requirements.model_dump(mode="json"))
+
+
+def interface_hash(interface: AzimuthDriveMountInterface) -> str:
+    payload = interface.model_dump(mode="json")
+    payload["mount_points"] = sorted(payload["mount_points"], key=lambda point: point["hole_id"])
+    return _hash_payload(payload)
+
+
 class AzimuthMotorMountPlateSpec(Model):
     part_id: str = Field(min_length=1)
     plate_length_mm: float = Field(gt=0)
@@ -164,6 +245,102 @@ def hole_ligament_mm(first: XYPoint, first_diameter_mm: float, second: XYPoint, 
 def mount_plate_spec_hash(spec: AzimuthMotorMountPlateSpec) -> str:
     encoded = json.dumps(spec.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def synthesize_azimuth_motor_mount_plate(interface: AzimuthDriveMountInterface, requirements: AzimuthMotorMountPlateDesignRequirements, *, part_id="azimuth_motor_mount_plate") -> AzimuthMountPlateSynthesisResult:
+    interface = interface.model_copy(update={"mount_points": tuple(sorted(interface.mount_points, key=lambda point: point.hole_id))})
+    hardware_hash = interface_hash(interface)
+    requirements_hash = design_requirements_hash(requirements)
+    missing = []
+    if requirements.mounting_hole_radial_clearance_mm is None and any(point.external_mating_requirement is None for point in interface.mount_points):
+        missing.append("mounting_hole_radial_clearance_mm")
+    central_external = interface.external_minimum_central_opening_diameter_mm()
+    if central_external is None and requirements.central_radial_clearance_mm is None:
+        missing.append("central_radial_clearance_mm")
+    if missing:
+        return _synthesis_result(SynthesisStatus.NOT_READY, hardware_hash, requirements_hash, infeasibility=SynthesisInfeasibility(code="missing_requirement", message="missing authoritative synthesis requirements: " + ", ".join(missing)))
+    motor_features = []
+    for point in interface.mount_points:
+        diameter = point.external_mating_requirement.diameter_mm if point.external_mating_requirement else point.physical_interface.physical_hole_diameter_mm if isinstance(point.physical_interface, ThroughMountHole) else point.physical_interface.nominal_thread_diameter_mm + 2 * requirements.mounting_hole_radial_clearance_mm
+        if point.external_mating_requirement is None and isinstance(point.physical_interface, ThreadedMountHole):
+            diameter = point.physical_interface.nominal_thread_diameter_mm + 2 * requirements.mounting_hole_radial_clearance_mm
+        motor_features.append((point.hole_id, point.x_mm, point.y_mm, diameter))
+    central_diameter = max(central_external or 0, (interface.central_keepout_diameter_mm or 0) + 2 * (requirements.central_radial_clearance_mm or 0))
+    features = [(name, x, y, diameter) for name, x, y, diameter in motor_features] + [("central_clearance", 0.0, 0.0, central_diameter)]
+    for index, first in enumerate(features):
+        for second in features[index + 1:]:
+            ligament = hole_ligament_mm(XYPoint(x_mm=first[1], y_mm=first[2]), first[3], XYPoint(x_mm=second[1], y_mm=second[2]), second[3])
+            if ligament < requirements.minimum_hole_ligament_mm:
+                return _synthesis_result(SynthesisStatus.INFEASIBLE, hardware_hash, requirements_hash, infeasibility=SynthesisInfeasibility(code="central_ligament" if "central_clearance" in (first[0], second[0]) else "minimum_ligament", message="minimum hole ligament is infeasible", feature_pair=(first[0], second[0])))
+    min_x = min(x - diameter / 2 for _, x, _, diameter in features) - requirements.minimum_edge_margin_mm
+    max_x = max(x + diameter / 2 for _, x, _, diameter in features) + requirements.minimum_edge_margin_mm
+    min_y = min(y - diameter / 2 for _, _, y, diameter in features) - requirements.minimum_edge_margin_mm
+    max_y = max(y + diameter / 2 for _, _, y, diameter in features) + requirements.minimum_edge_margin_mm
+    motor_center = XYPoint(x_mm=-min_x, y_mm=-min_y)
+    spec = AzimuthMotorMountPlateSpec(part_id=part_id, plate_length_mm=max_x - min_x, plate_width_mm=max_y - min_y, plate_thickness_mm=requirements.plate_thickness_policy.select(), motor_center_x_mm=motor_center.x_mm, motor_center_y_mm=motor_center.y_mm, drive_mount_interface=interface, provenance=requirements.provenance)
+    measurements = _synthesis_measurements(spec, interface, motor_features, central_diameter)
+    result = _synthesis_result(SynthesisStatus.SUCCESS, hardware_hash, requirements_hash, design_variables={"plate_length_mm": spec.plate_length_mm, "plate_width_mm": spec.plate_width_mm, "plate_thickness_mm": spec.plate_thickness_mm, "motor_center_x_mm": spec.motor_center_x_mm, "motor_center_y_mm": spec.motor_center_y_mm}, derived_features={"central_opening_diameter_mm": central_diameter}, edge_margins_mm=measurements[0], minimum_ligament_mm=measurements[1][0], minimum_ligament_pair=measurements[1][1], spec=spec, domain_spec_hash=mount_plate_spec_hash(spec))
+    return result.model_copy(update={"synthesis_hash": _synthesis_hash(result)})
+
+
+def _synthesis_measurements(spec, interface, motor_features, central_diameter):
+    holes = [(point.hole_id, XYPoint(x_mm=spec.motor_center_x_mm + point.x_mm, y_mm=spec.motor_center_y_mm + point.y_mm), diameter) for point, (_, _, _, diameter) in zip(interface.mount_points, motor_features)]
+    holes.append(("central_clearance", XYPoint(x_mm=spec.motor_center_x_mm, y_mm=spec.motor_center_y_mm), central_diameter))
+    margins = {name: hole_edge_margin_mm(point, diameter, spec.plate_length_mm, spec.plate_width_mm) for name, point, diameter in holes}
+    ligaments = [(hole_ligament_mm(first[1], first[2], second[1], second[2]), (first[0], second[0])) for index, first in enumerate(holes) for second in holes[index + 1:]]
+    return margins, min(ligaments, key=lambda item: item[0])
+
+
+def _synthesis_result(status, hardware_hash, requirements_hash, *, design_variables=None, derived_features=None, edge_margins_mm=None, minimum_ligament_mm=None, minimum_ligament_pair=None, spec=None, domain_spec_hash=None, infeasibility=None):
+    payload = {"status": status.value, "hardware_interface_hash": hardware_hash, "design_requirements_hash": requirements_hash, "synthesis_version": AZIMUTH_MOUNT_PLATE_SYNTHESIS_VERSION, "design_variables": design_variables or {}, "derived_features": derived_features or {}, "domain_spec_hash": domain_spec_hash, "infeasibility": infeasibility.model_dump(mode="json") if infeasibility else None}
+    return AzimuthMountPlateSynthesisResult(status=status, hardware_interface_hash=hardware_hash, design_requirements_hash=requirements_hash, design_variables=design_variables or {}, derived_features=derived_features or {}, edge_margins_mm=edge_margins_mm or {}, minimum_ligament_mm=minimum_ligament_mm, minimum_ligament_pair=minimum_ligament_pair, spec=spec, domain_spec_hash=domain_spec_hash, synthesis_hash=_hash_payload(payload), infeasibility=infeasibility)
+
+
+def _synthesis_hash(result):
+    return _hash_payload({"hardware_interface_hash": result.hardware_interface_hash, "design_requirements_hash": result.design_requirements_hash, "synthesis_version": result.synthesis_version, "design_variables": result.design_variables, "domain_spec_hash": result.domain_spec_hash})
+
+
+def _hash_payload(value):
+    return f"sha256:{hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()}"
+
+
+def build_azimuth_mount_plate_proposal(result: AzimuthMountPlateSynthesisResult, *, project_id: str, source_revision: int, source_state_hash: str):
+    from uuid import NAMESPACE_URL, uuid5
+    from mechcad_harness.changes import ChangeOperation, OperationType
+    from mechcad_harness.models import ChangeProposal, ProposalStatus
+
+    if result.status is not SynthesisStatus.SUCCESS or result.spec is None:
+        raise ValueError("only successful synthesis can produce a proposal")
+    path = f"/azimuth_mount_plates/{result.spec.part_id}"
+    value = result.spec.model_dump(mode="json")
+    operation = ChangeOperation(operation=OperationType.ADD, path=path, value=value)
+    identity = _hash_payload({"project_id": project_id, "source_revision": source_revision, "source_state_hash": source_state_hash, "hardware_interface_hash": result.hardware_interface_hash, "design_requirements_hash": result.design_requirements_hash, "synthesis_version": result.synthesis_version, "synthesis_hash": result.synthesis_hash, "domain_spec_hash": result.domain_spec_hash})
+    return ChangeProposal(id=f"CP-{uuid5(NAMESPACE_URL, identity)}", title="Synthesize azimuth motor mount plate", status=ProposalStatus.DRAFT, base_revision=source_revision, base_state_hash=source_state_hash, actor="mechcad-azimuth-synthesis", operations=[operation])
+
+
+class AzimuthMountPlateSynthesisService:
+    def synthesize(self, state, *, source_revision: int, source_state_hash: str, project_id: str = "unbound"):
+        from mechcad_harness.agents.constraint_requests import ConstraintRequestMaterializer
+        from mechcad_harness.engineering.keys import SupportedConstraintKey
+
+        if state.revision != source_revision:
+            return _synthesis_result(SynthesisStatus.NOT_READY, "unbound", "unbound", infeasibility=SynthesisInfeasibility(code="missing_requirement", message="stale source revision"))
+        if source_state_hash == "" or state.revision <= 0:
+            return _synthesis_result(SynthesisStatus.NOT_READY, "unbound", "unbound", infeasibility=SynthesisInfeasibility(code="missing_requirement", message="invalid source state binding"))
+        materializer = ConstraintRequestMaterializer()
+        try:
+            if not materializer.is_satisfied(SupportedConstraintKey.AZIMUTH_DRIVE_MOUNT_INTERFACE, state):
+                return _synthesis_result(SynthesisStatus.NOT_READY, "unbound", "unbound", infeasibility=SynthesisInfeasibility(code="missing_requirement", message="azimuth.drive_mount_interface"))
+            if not materializer.is_satisfied(SupportedConstraintKey.AZIMUTH_MOUNT_PLATE_DESIGN_REQUIREMENTS, state):
+                return _synthesis_result(SynthesisStatus.NOT_READY, "unbound", "unbound", infeasibility=SynthesisInfeasibility(code="missing_requirement", message="azimuth.mount_plate_design_requirements"))
+        except ValueError as exc:
+            return _synthesis_result(SynthesisStatus.NOT_READY, "unbound", "unbound", infeasibility=SynthesisInfeasibility(code="missing_requirement", message=str(exc)))
+        drive = next(parameter.value for parameter in state.authoritative_parameters if parameter.key is SupportedConstraintKey.AZIMUTH_DRIVE_MOUNT_INTERFACE).to_domain()
+        requirements = next(parameter.value for parameter in state.authoritative_parameters if parameter.key is SupportedConstraintKey.AZIMUTH_MOUNT_PLATE_DESIGN_REQUIREMENTS)
+        result = synthesize_azimuth_motor_mount_plate(drive, requirements.to_domain())
+        if result.status is SynthesisStatus.SUCCESS:
+            return result.model_copy(update={"proposal": build_azimuth_mount_plate_proposal(result, project_id=project_id, source_revision=source_revision, source_state_hash=source_state_hash)})
+        return result
 
 
 def compile_azimuth_motor_mount_plate(spec: AzimuthMotorMountPlateSpec) -> CadPartProgram:

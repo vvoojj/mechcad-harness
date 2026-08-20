@@ -5,6 +5,8 @@ ownership:
     owner: mechcad-requirements
   - path: /authoritative_parameters
     owner: mechcad-resolution
+  - path: /azimuth_mount_plates/*
+    owner: mechcad-azimuth-synthesis
   - path: /materials
     owner: mechcad-materials
   - path: /components/*/transmission
