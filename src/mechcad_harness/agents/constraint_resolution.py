@@ -9,7 +9,7 @@ from uuid import NAMESPACE_URL, uuid5
 from pydantic import Field, model_validator
 
 from mechcad_harness.engineering.keys import SupportedConstraintKey
-from mechcad_harness.engineering.values import AuthoritativeValue, AzimuthDriveMountInterfaceValue, AzimuthMotorMountPlateDesignRequirementsValue, MotorCharacteristicsValue, OutputAngularSpeedValue, OutputInterfaceValue, PackagingEnvelopeValue
+from mechcad_harness.engineering.values import AuthoritativeValue, AzimuthDriveMountInterfaceValue, AzimuthMotorMountPlateDesignRequirementsValue, MotorCharacteristicsValue, OutputAngularSpeedValue, OutputInterfaceValue, PackagingEnvelopeValue, YagiPayloadCarrierRequirementsValue
 from mechcad_harness.models.common import Model
 from .constraint_requests import ConstraintRequestLifecycle
 
@@ -58,7 +58,11 @@ class AzimuthMotorMountPlateDesignRequirementsAnswer(AzimuthMotorMountPlateDesig
     kind: Literal["azimuth.mount_plate_design_requirements"] = "azimuth.mount_plate_design_requirements"
 
 
-TypedResolutionAnswer = Annotated[Union[OutputAngularSpeedAnswer, MotorCharacteristicsAnswer, OutputInterfaceAnswer, PackagingEnvelopeAnswer, AzimuthDriveMountInterfaceAnswer, AzimuthMotorMountPlateDesignRequirementsAnswer], Field(discriminator="kind")]  # type: ignore
+class YagiPayloadCarrierRequirementsAnswer(YagiPayloadCarrierRequirementsValue):
+    kind: Literal["yagi.payload_carrier_requirements"] = "yagi.payload_carrier_requirements"
+
+
+TypedResolutionAnswer = Annotated[Union[OutputAngularSpeedAnswer, MotorCharacteristicsAnswer, OutputInterfaceAnswer, PackagingEnvelopeAnswer, AzimuthDriveMountInterfaceAnswer, AzimuthMotorMountPlateDesignRequirementsAnswer, YagiPayloadCarrierRequirementsAnswer], Field(discriminator="kind")]  # type: ignore
 
 
 class ConstraintResolutionAnswer(Model):
@@ -256,6 +260,10 @@ def canonical_value_for_answer(key: SupportedConstraintKey, answer):
         if not isinstance(answer, AzimuthMotorMountPlateDesignRequirementsAnswer):
             raise ValueError("answer type does not match key")
         return AzimuthMotorMountPlateDesignRequirementsValue(**answer.model_dump())
+    if key is SupportedConstraintKey.YAGI_PAYLOAD_CARRIER_REQUIREMENTS:
+        if not isinstance(answer, YagiPayloadCarrierRequirementsAnswer):
+            raise ValueError("answer type does not match key")
+        return YagiPayloadCarrierRequirementsValue(**answer.model_dump())
     if not isinstance(answer, PackagingEnvelopeAnswer):
         raise ValueError("answer type does not match key")
     return PackagingEnvelopeValue(**answer.model_dump())

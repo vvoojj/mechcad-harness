@@ -7,6 +7,8 @@ ownership:
     owner: mechcad-resolution
   - path: /azimuth_mount_plates/*
     owner: mechcad-azimuth-synthesis
+  - path: /yagi_payload_carrier_requirements/*
+    owner: mechcad-yagi-carrier
   - path: /materials
     owner: mechcad-materials
   - path: /components/*/transmission

@@ -60,6 +60,7 @@ class AuthoritativeParameter(Model):
             SupportedConstraintKey.PACKAGING_ENVELOPE: ("constraint", "CON-TRANSMISSION-PACKAGING-ENVELOPE"),
             SupportedConstraintKey.AZIMUTH_DRIVE_MOUNT_INTERFACE: ("constraint", "CON-AZIMUTH-DRIVE-MOUNT-INTERFACE"),
             SupportedConstraintKey.AZIMUTH_MOUNT_PLATE_DESIGN_REQUIREMENTS: ("constraint", "CON-AZIMUTH-MOUNT-PLATE-DESIGN-REQUIREMENTS"),
+            SupportedConstraintKey.YAGI_PAYLOAD_CARRIER_REQUIREMENTS: ("requirement", "REQ-YAGI-PAYLOAD-CARRIER-REQUIREMENTS"),
         }[self.key]
         if (self.anchor.kind, self.anchor.id) != expected:
             raise ValueError("authoritative parameter key/anchor mismatch")
@@ -79,6 +80,7 @@ class DesignState(Model):
     load_cases: list[LoadCase] = Field(default_factory=list)
     authoritative_parameters: list[AuthoritativeParameter] = Field(default_factory=list)
     azimuth_mount_plates: list[dict] = Field(default_factory=list)
+    yagi_payload_carrier_requirements: list[dict] = Field(default_factory=list)
 
     @field_validator("created_at")
     @classmethod

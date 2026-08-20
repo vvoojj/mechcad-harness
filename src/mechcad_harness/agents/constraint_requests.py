@@ -57,6 +57,7 @@ class ConstraintRequestMaterializer:
         SupportedConstraintKey.OUTPUT_INTERFACE: ("constraints", "CON-TRANSMISSION-OUTPUT-INTERFACE"),
         SupportedConstraintKey.PACKAGING_ENVELOPE: ("constraints", "CON-TRANSMISSION-PACKAGING-ENVELOPE"),
         SupportedConstraintKey.AZIMUTH_MOUNT_PLATE_DESIGN_REQUIREMENTS: ("constraints", "CON-AZIMUTH-MOUNT-PLATE-DESIGN-REQUIREMENTS"),
+        SupportedConstraintKey.YAGI_PAYLOAD_CARRIER_REQUIREMENTS: ("requirements", "REQ-YAGI-PAYLOAD-CARRIER-REQUIREMENTS"),
     }
 
     def __init__(self, store: ConstraintRequestStore | None = None):

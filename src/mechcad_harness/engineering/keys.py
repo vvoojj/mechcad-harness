@@ -8,3 +8,4 @@ class SupportedConstraintKey(StrEnum):
     PACKAGING_ENVELOPE = "transmission.packaging_envelope"
     AZIMUTH_DRIVE_MOUNT_INTERFACE = "azimuth.drive_mount_interface"
     AZIMUTH_MOUNT_PLATE_DESIGN_REQUIREMENTS = "azimuth.mount_plate_design_requirements"
+    YAGI_PAYLOAD_CARRIER_REQUIREMENTS = "yagi.payload_carrier_requirements"

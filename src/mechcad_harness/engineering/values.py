@@ -98,4 +98,73 @@ class AzimuthMotorMountPlateDesignRequirementsValue(Model):
         return AzimuthMotorMountPlateDesignRequirements(**payload)
 
 
-AuthoritativeValue = Annotated[Union[OutputAngularSpeedValue, MotorCharacteristicsValue, OutputInterfaceValue, PackagingEnvelopeValue, AzimuthDriveMountInterfaceValue, AzimuthMotorMountPlateDesignRequirementsValue], Field(discriminator="kind")]
+class YagiEnvelopeValue(Model):
+    semantic_id: str = Field(min_length=1)
+    frequency_class: str = Field(min_length=1)
+    length_mm: float = Field(gt=0)
+    span_mm: float = Field(gt=0)
+    depth_mm: float = Field(gt=0)
+    placeholder_mass_kg: float = Field(gt=0)
+    placeholder_wind_area_m2: float = Field(gt=0)
+    mass_semantics: Literal["engineering_placeholder"] = "engineering_placeholder"
+    wind_area_semantics: Literal["engineering_placeholder"] = "engineering_placeholder"
+    envelope_semantics: Literal["collision_envelope"] = "collision_envelope"
+
+
+class YagiPayloadCarrierRequirementsValue(Model):
+    kind: Literal["yagi.payload_carrier_requirements"]
+    frequency_families_ghz: tuple[float, ...] = Field(min_length=1)
+    minimum_antenna_count: int = Field(ge=2)
+    maximum_antenna_count: int = Field(le=3)
+    maximum_rotating_payload_kg: float = Field(gt=0)
+    envelopes: tuple[YagiEnvelopeValue, ...] = Field(min_length=5)
+    nominal_spacing_mm: float = Field(gt=0)
+    adjustable_spacing_required: bool
+    recommended_lateral_adjustment_mm: float = Field(gt=0)
+    preferred_carrier_length_mm: float = Field(gt=0)
+    required_fore_aft_travel_mm: float = Field(gt=0)
+    preferred_fore_aft_travel_mm: float = Field(gt=0)
+    preferred_com_offset_mm: float = Field(gt=0)
+    acceptable_com_offset_mm: float = Field(gt=0)
+    collision_resolution_strategies: tuple[Literal["orientation", "vertical_staggering", "increased_spacing", "longitudinal_staggering"], ...] = Field(min_length=1)
+    maximum_collision_envelope_mm: tuple[float, float, float]
+    representative_payload_mass_kg: float = Field(gt=0)
+    el_rotation_semantics: Literal["up_to_360_where_mechanically_possible"] = "up_to_360_where_mechanically_possible"
+    el_collision_sweep_degrees: tuple[float, ...] = Field(min_length=1)
+    el_axis_height_semantics: Literal["parametric"] = "parametric"
+    el_axis_height_search_range_mm: tuple[float, float]
+    az_continuous_multiturn: bool
+    az_target_revolution_time_s: float = Field(gt=0)
+    carrier_material_guidance: Literal["aluminum_extrusion"] = "aluminum_extrusion"
+    preliminary_profile_guidance: tuple[str, ...] = ("2040",)
+    preferred_profile_guidance: str = "4040"
+    interchangeable_adjustable_mounts_required: bool
+    boom_compatibility_targets: tuple[str, ...] = Field(min_length=1)
+    wind_speed_status: Literal["not_frozen"] = "not_frozen"
+    final_carrier_cross_section_status: Literal["not_structurally_accepted"] = "not_structurally_accepted"
+    exact_yagi_products_status: Literal["not_frozen"] = "not_frozen"
+    exact_boom_sections_status: Literal["not_frozen"] = "not_frozen"
+    polarization_status: Literal["not_frozen"] = "not_frozen"
+    cable_routing_status: Literal["not_frozen"] = "not_frozen"
+    provenance: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_semantics(self):
+        if self.minimum_antenna_count > self.maximum_antenna_count:
+            raise ValueError("antenna count range is invalid")
+        if self.maximum_rotating_payload_kg != 5.0:
+            raise ValueError("maximum rotating payload must preserve the hard 5 kg limit")
+        if self.required_fore_aft_travel_mm > self.preferred_fore_aft_travel_mm:
+            raise ValueError("preferred fore/aft travel must meet required travel")
+        if self.preferred_com_offset_mm > self.acceptable_com_offset_mm:
+            raise ValueError("preferred COM target must be stricter than acceptable target")
+        if self.representative_payload_mass_kg >= self.maximum_rotating_payload_kg:
+            raise ValueError("representative payload must remain distinct from hard payload limit")
+        if self.maximum_collision_envelope_mm != (850.0, 400.0, 80.0):
+            raise ValueError("maximum collision envelope must preserve the authoritative envelope")
+        if self.el_axis_height_search_range_mm != (180.0, 300.0):
+            raise ValueError("EL axis search range must preserve the authoritative range")
+        return self
+
+
+AuthoritativeValue = Annotated[Union[OutputAngularSpeedValue, MotorCharacteristicsValue, OutputInterfaceValue, PackagingEnvelopeValue, AzimuthDriveMountInterfaceValue, AzimuthMotorMountPlateDesignRequirementsValue, YagiPayloadCarrierRequirementsValue], Field(discriminator="kind")]

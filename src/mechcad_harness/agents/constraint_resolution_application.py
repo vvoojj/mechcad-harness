@@ -221,4 +221,5 @@ def _anchor_for(key):
         "transmission.packaging_envelope": ("constraint", "CON-TRANSMISSION-PACKAGING-ENVELOPE"),
         "azimuth.drive_mount_interface": ("constraint", "CON-AZIMUTH-DRIVE-MOUNT-INTERFACE"),
         "azimuth.mount_plate_design_requirements": ("constraint", "CON-AZIMUTH-MOUNT-PLATE-DESIGN-REQUIREMENTS"),
+        "yagi.payload_carrier_requirements": ("requirement", "REQ-YAGI-PAYLOAD-CARRIER-REQUIREMENTS"),
     }[key.value]
