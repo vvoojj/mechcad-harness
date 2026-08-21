@@ -11,6 +11,8 @@ ownership:
     owner: mechcad-yagi-carrier
   - path: /yagi_carriers/*
     owner: mechcad-yagi-carrier
+  - path: /yagi_collision_layouts/*
+    owner: mechcad-yagi-carrier
   - path: /materials
     owner: mechcad-materials
   - path: /components/*/transmission

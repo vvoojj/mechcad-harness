@@ -98,6 +98,18 @@ def test_tool_permission_is_explicit_and_empty_fails_closed(tmp_path):
         make_broker(controller).execute(run.run_id, task.task_id, "mechcad-calc-torque", "1.0", {"force_n": 1, "lever_arm_m": 1, "safety_factor": 1})
 
 
+@pytest.mark.parametrize("allowed_tools,version", [(("mechcad-calc-torque",), "1.0"), (("mechcad-calc-torque@2.0",), "1.0")])
+def test_versioned_tool_requires_exact_registered_permission(tmp_path, allowed_tools, version):
+    controller, run, task, _ = make_controller(tmp_path, allowed_tools=allowed_tools)
+    broker = make_broker(controller)
+    with pytest.raises(ToolPermissionError):
+        broker.execute(run.run_id, task.task_id, "mechcad-calc-torque", version, {"force_n": 1, "lever_arm_m": 1, "safety_factor": 1})
+    run_dir = controller.store.run_dir("PRJ-1", run.run_id)
+    assert not list((run_dir / "tool_calls").glob("*.json"))
+    assert not list((run_dir / "tool_results").glob("*.json"))
+    assert not list((run_dir / "evidence").glob("*.json"))
+
+
 def test_success_persists_separate_call_and_result(tmp_path):
     controller, run, task, _ = make_controller(tmp_path)
     broker = make_broker(controller)

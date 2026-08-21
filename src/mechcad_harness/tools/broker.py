@@ -33,7 +33,7 @@ class ToolBroker:
         if definition.bound_revision != run.active_revision or definition.bound_state_hash != run.active_state_hash:
             raise ToolExecutionError("task binding is stale for the active run")
         permission = f"{tool_name}@{tool_version}"
-        if permission not in definition.allowed_tools and tool_name not in definition.allowed_tools:
+        if permission not in definition.allowed_tools:
             raise ToolPermissionError(f"tool is not permitted by task: {permission}")
         registration = self.registry.resolve(tool_name, tool_version)
         if evidence_node is not None and evidence_node not in registration.evidence_nodes:

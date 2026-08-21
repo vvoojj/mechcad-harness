@@ -1,5 +1,9 @@
 # MechCAD Harness
 
+## Documentation
+
+Start with [`docs/README.md`](docs/README.md). It provides task-sized context bundles for architecture, subsystem work, domain extensions, and the later independent integration audit. Do not preload the full documentation tree unless doing architecture reconciliation or audit preparation.
+
 MechCAD Harness M0 is the typed Python foundation for a future engineering
 workflow system. It provides readable identifiers, minimal Pydantic v2 domain
 models, placeholder YAML configuration, and tests.

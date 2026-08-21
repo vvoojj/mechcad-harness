@@ -45,6 +45,7 @@ class SpurGearCadResult(Model):
     volume_mm3: float = Field(gt=0)
     center_of_mass_mm: tuple[float, float, float]
     backend_provenance: BackendProvenance
+    build123d_provenance: BackendProvenance
 
 
 class SpurGearPairCadInput(Model):

@@ -1,6 +1,7 @@
 import json
 
 from mechcad_harness.backends.freecad_assembly import FreeCADAssemblyBackend
+from mechcad_harness.backends.models import BackendProvenance
 
 
 def test_step_verification_accepts_three_or_more_valid_assembly_instances():
@@ -24,3 +25,12 @@ def test_step_verification_accepts_three_or_more_valid_assembly_instances():
 
     parsed = FreeCADAssemblyBackend._parse(Completed(), expected_hash="sha256:assembly", require_names=False)
     assert parsed.solid_count == 4
+
+
+def test_assembly_result_contract_carries_backend_provenance():
+    from mechcad_harness.backends.freecad_assembly import FreeCADAssemblyGenerationResult
+
+    fields = FreeCADAssemblyGenerationResult.model_fields
+    assert "backend_provenance" in fields
+    assert "freecad_version" in fields
+    assert fields["freecad_version"].default is None

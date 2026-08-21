@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -7,7 +8,7 @@ from mechcad_harness.models import ChangeProposal
 from .convergence import ConvergenceTracker
 from .errors import ConvergenceError, InvalidRunTransitionError, RunIntegrityError, TaskExecutionError
 from .executor import TaskExecutor, validate_result
-from .models import Run, RunPlan, TaskContext, TaskDefinition, TaskExecutionResult, TaskState, TaskStatus, RunStatus
+from .models import Run, RunPlan, SourceBinding, TaskContext, TaskDefinition, TaskExecutionResult, TaskState, TaskStatus, RunStatus
 from .persistence import RunStore
 from .scheduler import TaskScheduler
 
@@ -20,13 +21,55 @@ class RunController:
         self.evidence = evidence_store
         self.store = RunStore(workspace)
 
-    def create_run(self, project_id: str, *, max_iterations: int = 3) -> Run:
-        current = self.state_manager._read_current(project_id)
+    def create_run(
+        self,
+        project_id: str,
+        *,
+        max_iterations: int = 3,
+        expected_source: SourceBinding | None = None,
+    ) -> Run:
+        with self.state_manager.project_lock(project_id):
+            return self._create_run(
+                project_id,
+                max_iterations=max_iterations,
+                expected_source=expected_source,
+            )
+
+    def _create_run(
+        self,
+        project_id: str,
+        *,
+        max_iterations: int,
+        expected_source: SourceBinding | None,
+    ) -> Run:
+        if expected_source is None:
+            current = self.state_manager._read_current(project_id)
+            revision = current["revision"]
+            source_hash = current["state_hash"]
+        else:
+            if expected_source.project_id != project_id:
+                raise RunIntegrityError("expected source project mismatch")
+            snapshot = self.state_manager._read_snapshot(project_id, expected_source.revision)
+            if snapshot.state_hash != expected_source.state_hash:
+                raise RunIntegrityError("expected source snapshot hash mismatch")
+            try:
+                current = self.state_manager._read_current(project_id)
+            except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError, KeyError, AttributeError) as exc:
+                raise RunIntegrityError("invalid current canonical pointer") from exc
+            if (
+                not isinstance(current, dict)
+                or current.get("project_id") != expected_source.project_id
+                or current.get("revision") != expected_source.revision
+                or current.get("state_hash") != expected_source.state_hash
+            ):
+                raise RunIntegrityError("current canonical pointer does not match expected source")
+            revision = expected_source.revision
+            source_hash = expected_source.state_hash
         run_id = f"RUN-{uuid4()}"
-        run = Run(run_id=run_id, project_id=project_id, initial_revision=current["revision"],
-                  initial_state_hash=current["state_hash"], active_revision=current["revision"],
-                  active_state_hash=current["state_hash"], max_iterations=max_iterations,
-                  state_hash_history=(current["state_hash"],))
+        run = Run(run_id=run_id, project_id=project_id, initial_revision=revision,
+                  initial_state_hash=source_hash, active_revision=revision,
+                  active_state_hash=source_hash, max_iterations=max_iterations,
+                  state_hash_history=(source_hash,))
         self.store.create_manifest(run)
         self.store.write_state(run)
         self.store.append_event(project_id, run_id, "RUN_CREATED", {"revision": run.active_revision})

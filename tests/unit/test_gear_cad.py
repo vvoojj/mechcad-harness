@@ -17,6 +17,7 @@ from mechcad_harness.tools import GearworksTools, ToolBroker, ToolRegistry, Tool
 
 
 GEAR_AVAILABLE = importlib.util.find_spec("py_gearworks") is not None
+BUILD123D_AVAILABLE = importlib.util.find_spec("build123d") is not None
 
 
 def test_cad_input_validation():
@@ -42,6 +43,23 @@ def test_golden_spur_cad_exports_step_stl_and_validates_geometry(tmp_path):
         assert reference.sha256 == f"sha256:{hashlib.sha256(content).hexdigest()}"
         metadata = json.loads(path.parent.joinpath("metadata.json").read_text())
         assert metadata["backend_provenance"]["library_revision"] == "2fc2a13d82a9997a65f30c870498f0bb3be62318"
+
+
+@pytest.mark.skipif(not (GEAR_AVAILABLE and BUILD123D_AVAILABLE), reason="gear and build123d extras are not installed")
+def test_specialized_gear_records_actual_build123d_provenance(tmp_path):
+    import importlib.metadata
+
+    result = build_spur_gear_cad(SpurGearCadInput(module_mm=1, teeth=20, face_width_mm=5, pressure_angle_deg=20, requested_formats=("step",)), tmp_path, project_id="PRJ-1", run_id="RUN-1", task_id="TASK-1")
+    expected_version = importlib.metadata.version("build123d")
+    assert result.build123d_provenance.library_name == "build123d"
+    assert result.build123d_provenance.library_version == expected_version
+    assert result.backend_provenance.library_name == "py_gearworks"
+    metadata = json.loads((tmp_path / result.artifact_references[0].relative_path).parent.joinpath("metadata.json").read_text())
+    assert metadata["backend_provenance"]["library_name"] == "py_gearworks"
+    assert metadata["backend_provenance"]["library_revision"] == "2fc2a13d82a9997a65f30c870498f0bb3be62318"
+    assert metadata["build123d_provenance"]["library_name"] == "build123d"
+    assert metadata["build123d_provenance"]["library_version"] == expected_version
+    assert metadata["build123d_provenance"]["library_version"] == expected_version
 
 
 @pytest.mark.skipif(not GEAR_AVAILABLE, reason="gear extra is not installed")

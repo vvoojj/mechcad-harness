@@ -13,6 +13,7 @@ from mechcad_harness.cad_assembly import CadAssemblyProgram, assembly_hash, inst
 from mechcad_harness.cad_assembly_manifest import CadAssemblyManifest, build_assembly_manifest
 from mechcad_harness.cad_program import cad_program_hash
 from mechcad_harness.models.common import Model
+from mechcad_harness.backends.models import BackendProvenance
 
 
 ASSEMBLY_BACKEND_VERSION = "mechcad-freecad-assembly@1.0"
@@ -55,7 +56,8 @@ class FreeCADAssemblyGenerationResult(Model):
     bound_revision: int = Field(gt=0)
     bound_state_hash: str = Field(min_length=1)
     backend_version: str = Field(min_length=1)
-    freecad_version: str = Field(min_length=1)
+    freecad_version: str | None = None
+    backend_provenance: BackendProvenance | None = None
 
 
 def assembly_artifact_id(project_id, run_id, revision, state_hash, program, kind):
@@ -113,6 +115,7 @@ class FreeCADAssemblyBackend:
 
     def verify_persisted_assembly(self, program, workspace, *, project_id: str, run_id: str, revision: int, state_hash: str):
         discovery = discover_freecad().require_available()
+        runtime_provenance = self.part_backend.provenance()
         store = ArtifactStore(workspace, project_id=project_id, run_id=run_id)
         fcstd_id = assembly_artifact_id(project_id, run_id, revision, state_hash, program, "FCStd")
         step_id = assembly_artifact_id(project_id, run_id, revision, state_hash, program, "STEP")
@@ -121,7 +124,7 @@ class FreeCADAssemblyBackend:
         if fcstd is None or step is None:
             raise FreeCADArtifactVerificationError("verified assembly artifacts are missing or invalid")
         manifest = build_assembly_manifest(program, {part.part_id: self._component_artifact(store, part, workspace, project_id, run_id, revision, state_hash) for part in program.canonical_parts}, revision, state_hash)
-        return self._verify_persisted(program, workspace, project_id, run_id, revision, state_hash, discovery, fcstd, step, manifest)
+        return self._verify_persisted(program, workspace, project_id, run_id, revision, state_hash, discovery, fcstd, step, manifest, backend_provenance=fcstd.backend_provenance or runtime_provenance)
 
     @staticmethod
     def _component_artifact(store, part, workspace, project_id, run_id, revision, state_hash):
@@ -132,6 +135,7 @@ class FreeCADAssemblyBackend:
 
     def generate_assembly(self, program: CadAssemblyProgram, workspace, *, project_id: str, run_id: str, revision: int, state_hash: str) -> FreeCADAssemblyGenerationResult:
         discovery = discover_freecad().require_available()
+        backend_provenance = self.part_backend.provenance()
         store = ArtifactStore(workspace, project_id=project_id, run_id=run_id)
         part_artifacts = {}
         for part in program.canonical_parts:
@@ -144,7 +148,7 @@ class FreeCADAssemblyBackend:
         existing_fcstd = store.existing(assembly_id_fcstd)
         existing_step = store.existing(assembly_id_step)
         if existing_fcstd and existing_step:
-            return self._verify_persisted(program, workspace, project_id, run_id, revision, state_hash, discovery, existing_fcstd, existing_step, manifest)
+            return self._verify_persisted(program, workspace, project_id, run_id, revision, state_hash, discovery, existing_fcstd, existing_step, manifest, backend_provenance=existing_fcstd.backend_provenance or backend_provenance)
         with tempfile.TemporaryDirectory(prefix="mechcad-assembly-") as directory:
             fcstd_path = Path(directory) / "assembly.FCStd"
             step_path = Path(directory) / "assembly.step"
@@ -154,9 +158,9 @@ class FreeCADAssemblyBackend:
                 raise FreeCADExecutionError(result.stderr or result.stdout or "assembly generation failed")
             fcstd_content = fcstd_path.read_bytes()
             step_content = step_path.read_bytes()
-        fcstd_artifact = existing_fcstd or store.publish(assembly_id_fcstd, ArtifactType.FCSTD, "assembly.FCStd", fcstd_content, "mechcad-freecad-assembly", ASSEMBLY_BACKEND_VERSION, revision, state_hash, input_hash=manifest.assembly_hash)
-        step_artifact = existing_step or store.publish(assembly_id_step, ArtifactType.STEP, "assembly.step", step_content, "mechcad-freecad-assembly", ASSEMBLY_BACKEND_VERSION, revision, state_hash, input_hash=manifest.assembly_hash)
-        return self._verify_persisted(program, workspace, project_id, run_id, revision, state_hash, discovery, fcstd_artifact, step_artifact, manifest)
+        fcstd_artifact = existing_fcstd or store.publish(assembly_id_fcstd, ArtifactType.FCSTD, "assembly.FCStd", fcstd_content, "mechcad-freecad-assembly", ASSEMBLY_BACKEND_VERSION, revision, state_hash, backend_provenance=backend_provenance, input_hash=manifest.assembly_hash)
+        step_artifact = existing_step or store.publish(assembly_id_step, ArtifactType.STEP, "assembly.step", step_content, "mechcad-freecad-assembly", ASSEMBLY_BACKEND_VERSION, revision, state_hash, backend_provenance=backend_provenance, input_hash=manifest.assembly_hash)
+        return self._verify_persisted(program, workspace, project_id, run_id, revision, state_hash, discovery, fcstd_artifact, step_artifact, manifest, backend_provenance=backend_provenance)
 
     def _compile(self, program, part_artifacts, manifest, fcstd_path, step_path, workspace):
         records = []
@@ -172,7 +176,7 @@ class FreeCADAssemblyBackend:
         lines += ["meta = doc.addObject('App::FeaturePython', 'assembly_manifest')", "meta.addProperty('App::PropertyString', 'ManifestJson', 'Assembly')", f"meta.ManifestJson = {manifest_json!r}", "doc.recompute()", f"doc.saveAs({str(fcstd_path)!r})", f"Part.export([item for item in doc.Objects if hasattr(item, 'Shape') and not item.Shape.isNull()], {str(step_path)!r})", "FreeCAD.closeDocument(doc.Name)"]
         return "\n".join(lines) + "\n"
 
-    def _verify_persisted(self, program, workspace, project_id, run_id, revision, state_hash, discovery, fcstd_artifact, step_artifact, manifest):
+    def _verify_persisted(self, program, workspace, project_id, run_id, revision, state_hash, discovery, fcstd_artifact, step_artifact, manifest, *, backend_provenance=None):
         fcstd_path = (Path(workspace) / fcstd_artifact.relative_path).resolve()
         step_path = (Path(workspace) / step_artifact.relative_path).resolve()
         expected_json = json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
@@ -217,7 +221,8 @@ FreeCAD.closeDocument(doc.Name)
         with tempfile.TemporaryDirectory(prefix="mechcad-assembly-verify-") as directory:
             fcstd = self._parse(self.part_backend._run(discovery.executable, fcstd_script, cwd=Path(directory)), expected_hash=manifest.assembly_hash, expected_solid_count=len(program.instances))
             step = self._parse(self.part_backend._run(discovery.executable, step_script, cwd=Path(directory)), expected_hash=manifest.assembly_hash, expected_solid_count=len(program.instances), require_names=False)
-        return FreeCADAssemblyGenerationResult(fcstd=fcstd_artifact, step=step_artifact, manifest=manifest, fcstd_verification=fcstd, step_verification=step, project_id=project_id, run_id=run_id, bound_revision=revision, bound_state_hash=state_hash, backend_version=ASSEMBLY_BACKEND_VERSION, freecad_version="1.1.3")
+        backend_provenance = backend_provenance or fcstd_artifact.backend_provenance
+        return FreeCADAssemblyGenerationResult(fcstd=fcstd_artifact, step=step_artifact, manifest=manifest, fcstd_verification=fcstd, step_verification=step, project_id=project_id, run_id=run_id, bound_revision=revision, bound_state_hash=state_hash, backend_version=ASSEMBLY_BACKEND_VERSION, freecad_version=backend_provenance.library_version if backend_provenance else None, backend_provenance=backend_provenance)
 
     @staticmethod
     def _parse(result, *, expected_hash, expected_solid_count=None, require_names=True):

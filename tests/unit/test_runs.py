@@ -19,7 +19,9 @@ from mechcad_harness.runs import (
     TaskStatus,
     TaskExecutionResult,
 )
-from mechcad_harness.state import StateManager
+from mechcad_harness.runs.models import SourceBinding
+from mechcad_harness.runs.errors import RunIntegrityError
+from mechcad_harness.state import RevisionNotFoundError, StateManager
 
 
 def make_state(name="Bracket", revision=1):
@@ -67,6 +69,72 @@ def test_run_binds_exact_canonical_revision_and_manifest_is_immutable(tmp_path):
     with pytest.raises(Exception):
         controller.store.create_manifest(run.model_copy(update={"initial_revision": 9}))
     assert manifest.read_bytes() == original
+
+
+def test_create_run_accepts_matching_expected_source_and_preserves_legacy_callers(tmp_path):
+    controller, snapshot = make_controller(tmp_path)
+
+    expected = SourceBinding(project_id="PRJ-1", revision=1, state_hash=snapshot.state_hash)
+    bound = controller.create_run("PRJ-1", expected_source=expected)
+    legacy = controller.create_run("PRJ-1")
+
+    assert (bound.initial_revision, bound.initial_state_hash) == (1, snapshot.state_hash)
+    assert (legacy.initial_revision, legacy.initial_state_hash) == (1, snapshot.state_hash)
+
+
+def test_create_run_missing_project_does_not_create_project_directory(tmp_path):
+    controller, _ = make_controller(tmp_path)
+    missing_project = "PRJ-missing"
+
+    with pytest.raises(RevisionNotFoundError):
+        controller.create_run(missing_project)
+
+    assert not (tmp_path / "projects" / missing_project).exists()
+
+
+@pytest.mark.parametrize("expected, error", [
+    (SourceBinding(project_id="PRJ-1", revision=1, state_hash="sha256:" + "0" * 64), RunIntegrityError),
+    (SourceBinding(project_id="PRJ-1", revision=2, state_hash="sha256:missing"), RevisionNotFoundError),
+    (SourceBinding(project_id="OTHER", revision=1, state_hash="sha256:wrong"), RunIntegrityError),
+])
+def test_create_run_rejects_mismatched_expected_source(tmp_path, expected, error):
+    controller, snapshot = make_controller(tmp_path)
+
+    with pytest.raises(error):
+        controller.create_run("PRJ-1", expected_source=expected)
+
+
+def test_source_binding_rejects_blank_or_non_positive_values_and_is_frozen():
+    with pytest.raises(ValueError):
+        SourceBinding(project_id=" ", revision=1, state_hash="sha256:ok")
+    with pytest.raises(ValueError):
+        SourceBinding(project_id="PRJ-1", revision=0, state_hash="sha256:ok")
+    with pytest.raises(ValueError):
+        SourceBinding(project_id="PRJ-1", revision=1, state_hash=" ")
+
+    binding = SourceBinding(project_id="PRJ-1", revision=1, state_hash="sha256:ok")
+    with pytest.raises((TypeError, ValueError)):
+        binding.revision = 2
+
+
+def test_create_run_rejects_expected_source_when_current_pointer_advances(tmp_path):
+    controller, snapshot = make_controller(tmp_path)
+    controller.state_manager.create_revision("PRJ-1", make_state(name="New"))
+    expected = SourceBinding(project_id="PRJ-1", revision=1, state_hash=snapshot.state_hash)
+
+    with pytest.raises(RunIntegrityError):
+        controller.create_run("PRJ-1", expected_source=expected)
+
+
+@pytest.mark.parametrize("current_contents", ["not-json\n", "[]\n", '{"project_id": "PRJ-1"}\n'])
+def test_create_run_normalizes_malformed_expected_source_current_pointer(tmp_path, current_contents):
+    controller, snapshot = make_controller(tmp_path)
+    current = tmp_path / "projects/PRJ-1/current.json"
+    current.write_text(current_contents, encoding="utf-8")
+    expected = SourceBinding(project_id="PRJ-1", revision=1, state_hash=snapshot.state_hash)
+
+    with pytest.raises(RunIntegrityError):
+        controller.create_run("PRJ-1", expected_source=expected)
 
 
 def test_manifest_contains_only_immutable_provenance(tmp_path):

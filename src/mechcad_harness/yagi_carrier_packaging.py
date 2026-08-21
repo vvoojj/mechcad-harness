@@ -43,3 +43,38 @@ def representative_yagi_carrier_assembly(spec, sliding_interface) -> CadAssembly
             CadComponentInstance(instance_id="antenna_1200", part_id="ANTENNA_ENVELOPE_1200", placement=CadRigidTransform(x_mm=-300, y_mm=75, z_mm=-30)),
         ),
     )
+
+
+def collision_resolved_yagi_carrier_assembly(spec, sliding_interface, layout) -> CadAssemblyProgram:
+    carrier = compile_yagi_carrier_packaging_geometry(spec, sliding_interface)
+    dimensions = {
+        "ANTENNA_ENVELOPE_0400": (850, 400, 60),
+        "ANTENNA_ENVELOPE_0600": (700, 320, 60),
+        "ANTENNA_ENVELOPE_1200": (600, 150, 60),
+        "ANTENNA_ENVELOPE_3300": (500, 120, 60),
+        "ANTENNA_ENVELOPE_5800": (300, 150, 80),
+    }
+    by_id = {
+        part_id: CadPartProgram(part_id=part_id, operations=(BasePlateOperation(operation_id="reference_collision_envelope", length_mm=length, width_mm=width, thickness_mm=depth),))
+        for part_id, (length, width, depth) in dimensions.items()
+    }
+    envelope_parts = tuple(by_id[placement.envelope_id] for placement in layout.placements)
+    instances = [CadComponentInstance(instance_id="carrier", part_id=carrier.part_id, placement=CadRigidTransform(x_mm=-20, y_mm=-250, z_mm=-40))]
+    for placement in layout.placements:
+        part = by_id[placement.envelope_id].operations[0]
+        instances.append(
+            CadComponentInstance(
+                instance_id=f"antenna_{placement.envelope_id.removeprefix('ANTENNA_ENVELOPE_').lower()}",
+                part_id=placement.envelope_id,
+                placement=CadRigidTransform(
+                    x_mm=-part.length_mm / 2,
+                    y_mm=placement.center_y_mm - part.width_mm / 2,
+                    z_mm=placement.relative_z_offset_mm - part.thickness_mm / 2,
+                ),
+            )
+        )
+    return CadAssemblyProgram(
+        assembly_id=f"{layout.layout_id}_reference_fixture",
+        parts=(carrier, *envelope_parts),
+        instances=tuple(instances),
+    )

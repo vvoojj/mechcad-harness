@@ -42,6 +42,35 @@ def test_gateway_persists_invocation_before_adapter_and_result_separately(tmp_pa
     assert result.response_hash.startswith("sha256:")
 
 
+def test_gateway_preserves_registered_role_and_ignores_provider_identity(tmp_path):
+    from mechcad_harness.agents import AgentIdentity, AgentRegistry, ContextBuilder
+    from mechcad_harness.agents.gateway import AgentGateway
+    from mechcad_harness.agents.models import AgentAdapterExecutionOutcome, AgentAdapterProvenance, AgentAuthoredResponsePayload
+
+    controller, run, task, _ = _controller(tmp_path)
+    registered = AgentIdentity(agent_name="mechcad-transmission", agent_version="1.0", role="transmission_engineer", protocol_version="1.0")
+    provenance = AgentAdapterProvenance(adapter_name="provider", adapter_version="1.0", provider="provider", transport="test")
+
+    class Provider:
+        identity = type("Identity", (), {"adapter_name": "provider", "adapter_version": "1.0"})()
+
+        def invoke(self, request):
+            assert request.agent == registered
+            return AgentAdapterExecutionOutcome(
+                authored_response=AgentAuthoredResponsePayload(status="succeeded", summary="ok", findings=(), issues=(), constraint_requests=(), change_proposals=()),
+                provenance=provenance,
+                execution_metadata={"agent": {"agent_name": "forged", "agent_version": "9.9", "role": "test"}},
+            )
+
+    registry = AgentRegistry()
+    registry.register(registered, Provider())
+    gateway = AgentGateway(controller, registry, ContextBuilder(controller))
+    result = gateway.invoke(run.run_id, task.task_id, registered.agent_name, registered.agent_version)
+    invocation = gateway.store.load_invocation("PRJ-1", run.run_id, result.invocation_id)
+    assert invocation.request.agent == registered
+    assert (result.agent_name, result.agent_version) == (registered.agent_name, registered.agent_version)
+
+
 def test_gateway_uses_invocation_outcome_provenance(tmp_path):
     from mechcad_harness.agents import AgentIdentity, AgentRegistry, ContextBuilder
     from mechcad_harness.agents.gateway import AgentGateway

@@ -1,6 +1,8 @@
 import json
 import os
 import tempfile
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,11 @@ from mechcad_harness.models import DesignState, Model
 
 from .errors import RevisionConflictError, RevisionNotFoundError, StateIntegrityError
 from .hashing import canonical_payload, state_hash
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 
 SCHEMA_VERSION = "m1"
@@ -27,8 +34,55 @@ class RevisionSnapshot(Model):
 
 
 class StateManager:
+    _project_locks: dict[Path, threading.RLock] = {}
+    _project_locks_guard = threading.Lock()
+    _lock_depth = threading.local()
+
     def __init__(self, workspace: str | Path):
         self.workspace = Path(workspace)
+
+    @contextmanager
+    def project_lock(self, project_id: str):
+        """Serialize state-pointer and run-creation operations for one project."""
+        project_dir = self._project_dir(project_id)
+        if not self._current_path(project_id).exists():
+            raise RevisionNotFoundError(f"current state not found for project: {project_id}")
+        lock_path = project_dir / ".state-run.lock"
+        with self._project_locks_guard:
+            lock = self._project_locks.setdefault(lock_path, threading.RLock())
+        lock.acquire()
+        depths = getattr(self._lock_depth, "values", {})
+        depth = depths.get(lock_path, 0)
+        handle = None
+        try:
+            if depth == 0:
+                project_dir.mkdir(parents=True, exist_ok=True)
+                handle = open(lock_path, "a+b")
+                try:
+                    if os.name == "nt":
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    else:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                except Exception:
+                    handle.close()
+                    raise RevisionConflictError(f"could not acquire project lock: {project_id}")
+            depths[lock_path] = depth + 1
+            self._lock_depth.values = depths
+            yield
+        finally:
+            if depth == 0 and handle is not None:
+                if os.name == "nt":
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.close()
+            if depth:
+                depths[lock_path] = depth
+            else:
+                depths.pop(lock_path, None)
+            lock.release()
 
     def _project_dir(self, project_id: str) -> Path:
         return self.workspace / "projects" / project_id
@@ -81,31 +135,32 @@ class StateManager:
         return snapshot
 
     def create_revision(self, project_id: str, state: DesignState, revision: int | None = None) -> RevisionSnapshot:
-        current = self._read_current(project_id)
-        parent_revision = current["revision"]
-        current_state = self.load_current_state(project_id)
-        if state_hash(current_state) != current["state_hash"] and revision is None:
-            raise StateIntegrityError(f"current state changed during revision creation: {project_id}")
-        next_revision = parent_revision + 1 if revision is None else revision
-        if next_revision <= parent_revision:
-            raise RevisionConflictError("new revision must be greater than current revision")
-        state = state.model_copy(update={"revision": next_revision})
-        snapshot = RevisionSnapshot(
-            project_id=project_id,
-            revision=next_revision,
-            parent_revision=parent_revision,
-            revision_id=f"{IdPrefix.REVISION.value}-{next_revision:06d}",
-            state_hash=state_hash(state),
-            schema_version=SCHEMA_VERSION,
-            state=state,
-        )
-        self._write_snapshot(snapshot)
-        self._write_atomic(self._current_path(project_id), {
-            "project_id": project_id,
-            "revision": snapshot.revision,
-            "state_hash": snapshot.state_hash,
-        })
-        return snapshot
+        with self.project_lock(project_id):
+            current = self._read_current(project_id)
+            parent_revision = current["revision"]
+            current_state = self.load_current_state(project_id)
+            if state_hash(current_state) != current["state_hash"] and revision is None:
+                raise StateIntegrityError(f"current state changed during revision creation: {project_id}")
+            next_revision = parent_revision + 1 if revision is None else revision
+            if next_revision <= parent_revision:
+                raise RevisionConflictError("new revision must be greater than current revision")
+            state = state.model_copy(update={"revision": next_revision})
+            snapshot = RevisionSnapshot(
+                project_id=project_id,
+                revision=next_revision,
+                parent_revision=parent_revision,
+                revision_id=f"{IdPrefix.REVISION.value}-{next_revision:06d}",
+                state_hash=state_hash(state),
+                schema_version=SCHEMA_VERSION,
+                state=state,
+            )
+            self._write_snapshot(snapshot)
+            self._write_atomic(self._current_path(project_id), {
+                "project_id": project_id,
+                "revision": snapshot.revision,
+                "state_hash": snapshot.state_hash,
+            })
+            return snapshot
 
     def _read_current(self, project_id: str) -> dict[str, Any]:
         path = self._current_path(project_id)
@@ -136,14 +191,15 @@ class StateManager:
         return self._read_snapshot(project_id, revision).state
 
     def promote_existing_revision(self, project_id: str, *, expected_current_revision: int, expected_current_hash: str, target_revision: int, target_hash: str) -> RevisionSnapshot:
-        current = self._read_current(project_id)
-        if current["revision"] != expected_current_revision or current["state_hash"] != expected_current_hash:
-            raise RevisionConflictError("current pointer does not match expected base")
-        snapshot = self._read_snapshot(project_id, target_revision)
-        if snapshot.state_hash != target_hash or snapshot.parent_revision != expected_current_revision:
-            raise StateIntegrityError("existing target revision does not match expected application")
-        self._write_atomic(self._current_path(project_id), {"project_id": project_id, "revision": target_revision, "state_hash": target_hash})
-        return snapshot
+        with self.project_lock(project_id):
+            current = self._read_current(project_id)
+            if current["revision"] != expected_current_revision or current["state_hash"] != expected_current_hash:
+                raise RevisionConflictError("current pointer does not match expected base")
+            snapshot = self._read_snapshot(project_id, target_revision)
+            if snapshot.state_hash != target_hash or snapshot.parent_revision != expected_current_revision:
+                raise StateIntegrityError("existing target revision does not match expected application")
+            self._write_atomic(self._current_path(project_id), {"project_id": project_id, "revision": target_revision, "state_hash": target_hash})
+            return snapshot
 
     def verify_revision(self, project_id: str, revision: int) -> bool:
         self._read_snapshot(project_id, revision)

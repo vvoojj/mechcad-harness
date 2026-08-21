@@ -25,7 +25,7 @@ class ArtifactStore:
             raise ValueError(f"{name} must be a single safe identifier")
         return path.name
 
-    def publish(self, artifact_id, artifact_type, filename, content, producer_tool_name, producer_tool_version, bound_revision, bound_state_hash, *, backend_provenance=None, input_hash=None):
+    def publish(self, artifact_id, artifact_type, filename, content, producer_tool_name, producer_tool_version, bound_revision, bound_state_hash, *, backend_provenance=None, build123d_provenance=None, input_hash=None):
         relative_filename = PurePosixPath(str(filename).replace("\\", "/"))
         if relative_filename.is_absolute() or len(relative_filename.parts) != 1 or relative_filename.name in {"", ".", ".."}:
             raise ValueError("artifact filename must be a single safe relative name")
@@ -45,7 +45,7 @@ class ArtifactStore:
                 except Exception:
                     pass
             raise FileExistsError(f"artifact conflict: {artifact_id}")
-        artifact = EngineeringArtifact(artifact_id=artifact_id, project_id=self.project_id, run_id=self.run_id, task_id=self.task_id, artifact_type=artifact_type, media_type=MEDIA_TYPES[artifact_type], relative_path=artifact_path.relative_to(self.workspace).as_posix(), sha256=digest, size_bytes=len(content), producer_tool_name=producer_tool_name, producer_tool_version=producer_tool_version, backend_provenance=backend_provenance, bound_revision=bound_revision, bound_state_hash=bound_state_hash, input_hash=input_hash)
+        artifact = EngineeringArtifact(artifact_id=artifact_id, project_id=self.project_id, run_id=self.run_id, task_id=self.task_id, artifact_type=artifact_type, media_type=MEDIA_TYPES[artifact_type], relative_path=artifact_path.relative_to(self.workspace).as_posix(), sha256=digest, size_bytes=len(content), producer_tool_name=producer_tool_name, producer_tool_version=producer_tool_version, backend_provenance=backend_provenance, build123d_provenance=build123d_provenance, bound_revision=bound_revision, bound_state_hash=bound_state_hash, input_hash=input_hash)
         self._atomic_bytes(artifact_path, content)
         self._atomic_text(metadata_path, json.dumps(artifact.model_dump(mode="json"), sort_keys=True, separators=(",", ":")) + "\n")
         return artifact

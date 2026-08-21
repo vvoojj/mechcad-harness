@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import ConfigDict, Field, field_validator
 
 from mechcad_harness.models import Evidence
 from mechcad_harness.models.common import Model
@@ -37,6 +37,19 @@ class TaskStatus(StrEnum):
     BLOCKED = "blocked"
     STALE = "stale"
     SKIPPED = "skipped"
+
+
+class SourceBinding(Model):
+    model_config = ConfigDict(frozen=True)
+
+    project_id: str = Field(min_length=1)
+    revision: int = Field(gt=0)
+    state_hash: str = Field(min_length=1)
+
+    @field_validator("project_id", "state_hash")
+    @classmethod
+    def validate_strings(cls, value: str) -> str:
+        return nonempty(value)
 
 
 class Run(Model):

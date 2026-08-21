@@ -31,9 +31,7 @@ class AgentGateway:
             raise ValueError("agent task state binding mismatch")
         context = self.context_builder.build(run_id, task_id, selected_evidence_ids=tuple(selected_evidence_ids), selected_requirement_ids=tuple(selected_requirement_ids), selected_constraint_ids=tuple(selected_constraint_ids))
         adapter = self.registry.get(agent_name, agent_version)
-        from .models import AgentIdentity
-
-        identity = AgentIdentity(agent_name=agent_name, agent_version=agent_version, role="test", protocol_version="1.0")
+        identity = self.registry.get_identity(agent_name, agent_version)
         contract = response_contract or (AgentAuthoredResponseContract.TOOL_REQUESTS_ALLOWED if mediation_mode is AgentToolMediationMode.ENABLED else AgentAuthoredResponseContract.TOOL_REQUESTS_FORBIDDEN)
         if mediation_mode is AgentToolMediationMode.ENABLED and contract is not AgentAuthoredResponseContract.TOOL_REQUESTS_ALLOWED:
             raise ValueError("enabled mediation requires TOOL_REQUESTS_ALLOWED")

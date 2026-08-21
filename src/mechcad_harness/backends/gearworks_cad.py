@@ -4,6 +4,7 @@ from uuid import uuid4
 from mechcad_harness.artifacts import ArtifactStore, ArtifactType
 from mechcad_harness.backends.adapters import PyGearworksAdapter
 from mechcad_harness.backends.errors import BackendCompatibilityError
+from mechcad_harness.backends.models import BackendProvenance
 from mechcad_harness.cad import ArtifactReference, SpurGearCadInput, SpurGearPairCadInput, SpurGearPairCadResult, SpurGearCadResult
 
 
@@ -26,6 +27,14 @@ def build_spur_gear_cad(value: SpurGearCadInput, workspace, producer_tool_name="
     gear, metadata = adapter.spur_geometry(value.model_copy(update={"internal": False}))
     try:
         from build123d import Cylinder, Mode
+        from importlib.metadata import version as package_version
+
+        build123d_provenance = BackendProvenance(
+            backend_name="build123d",
+            backend_adapter_version="build123d-runtime",
+            library_name="build123d",
+            library_version=package_version("build123d"),
+        )
 
         part = gear.build_part()
         if value.bore_diameter_mm is not None:
@@ -49,9 +58,9 @@ def build_spur_gear_cad(value: SpurGearCadInput, workspace, producer_tool_name="
                 export_stl(part, temporary)
             content = temporary.read_bytes()
             temporary.unlink()
-            artifact = store.publish(f"ART-{uuid4()}", artifact_type, f"gear.{requested}", content, producer_tool_name, producer_tool_version, bound_revision, bound_state_hash, backend_provenance=provenance, input_hash=input_hash)
+            artifact = store.publish(f"ART-{uuid4()}", artifact_type, f"gear.{requested}", content, producer_tool_name, producer_tool_version, bound_revision, bound_state_hash, backend_provenance=provenance, build123d_provenance=build123d_provenance, input_hash=input_hash)
             references.append(ArtifactReference(artifact_id=artifact.artifact_id, artifact_type=requested, relative_path=artifact.relative_path, sha256=artifact.sha256, size_bytes=artifact.size_bytes))
-        return SpurGearCadResult(geometry_summary={"module_mm": value.module_mm, "teeth": value.teeth, "pitch_diameter_mm": 2 * float(gear.pitch_radius), "outside_diameter_mm": 2 * metadata["addendum_radius_mm"], "face_width_mm": value.face_width_mm, "bore_diameter_mm": value.bore_diameter_mm or 0.0}, artifact_references=tuple(references), bounding_box_mm=bounds, volume_mm3=volume, center_of_mass_mm=center, backend_provenance=provenance)
+        return SpurGearCadResult(geometry_summary={"module_mm": value.module_mm, "teeth": value.teeth, "pitch_diameter_mm": 2 * float(gear.pitch_radius), "outside_diameter_mm": 2 * metadata["addendum_radius_mm"], "face_width_mm": value.face_width_mm, "bore_diameter_mm": value.bore_diameter_mm or 0.0}, artifact_references=tuple(references), bounding_box_mm=bounds, volume_mm3=volume, center_of_mass_mm=center, backend_provenance=provenance, build123d_provenance=build123d_provenance)
     except Exception as exc:
         if isinstance(exc, (ValueError, BackendCompatibilityError)):
             raise

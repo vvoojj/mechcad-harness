@@ -27,6 +27,7 @@ class EngineeringArtifact(Model):
     producer_tool_name: str = Field(min_length=1)
     producer_tool_version: str = Field(min_length=1)
     backend_provenance: BackendProvenance | None = None
+    build123d_provenance: BackendProvenance | None = None
     bound_revision: int = Field(gt=0)
     bound_state_hash: str = Field(min_length=1)
     input_hash: str | None = None

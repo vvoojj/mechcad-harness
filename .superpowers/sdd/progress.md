@@ -1,0 +1,6 @@
+Task 1: complete (uncommitted worktree; review required Task 3 boundary fix)
+Task 3: complete (uncommitted worktree, review clean)
+Task 2: complete (uncommitted worktree, review clean)
+M8B-2 Task 1: complete (uncommitted worktree, review approved; minor test-strengthening findings recorded)
+M8B-2 Task 2: complete (uncommitted worktree, review clean)
+M8B-2 Task 3: complete (uncommitted worktree, final review clean)
