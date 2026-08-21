@@ -12,6 +12,7 @@ from mechcad_harness.backends.freecad import FreeCADBackend, FreeCADArtifactVeri
 from mechcad_harness.cad_assembly import CadAssemblyProgram, assembly_hash, instance_object_name
 from mechcad_harness.cad_assembly_manifest import CadAssemblyManifest, build_assembly_manifest
 from mechcad_harness.cad_program import cad_program_hash
+from mechcad_harness.imported_component import ImportedCadComponent, imported_component_hash
 from mechcad_harness.models.common import Model
 from mechcad_harness.backends.models import BackendProvenance
 
@@ -138,10 +139,20 @@ class FreeCADAssemblyBackend:
         backend_provenance = self.part_backend.provenance()
         store = ArtifactStore(workspace, project_id=project_id, run_id=run_id)
         part_artifacts = {}
+
         for part in program.canonical_parts:
             part_result = self.part_backend.generate_program(part, workspace, project_id=project_id, run_id=run_id, revision=revision, state_hash=state_hash)
             self.verify_component_artifact(part_result.fcstd, workspace, expected_part_hash=cad_program_hash(part), expected_artifact_id=part_result.fcstd.artifact_id)
             part_artifacts[part.part_id] = part_result.fcstd
+
+        for comp in program.canonical_imported_components:
+            artifact = store.existing(comp.artifact_id)
+            if artifact is None:
+                raise FreeCADArtifactVerificationError(f"imported component artifact not found: {comp.artifact_id}")
+            if artifact.sha256 != comp.artifact_hash:
+                raise FreeCADArtifactVerificationError(f"imported component artifact hash mismatch: {comp.artifact_id}")
+            part_artifacts[comp.component_id] = artifact
+
         manifest = build_assembly_manifest(program, part_artifacts, revision, state_hash)
         assembly_id_fcstd = assembly_artifact_id(project_id, run_id, revision, state_hash, program, "FCStd")
         assembly_id_step = assembly_artifact_id(project_id, run_id, revision, state_hash, program, "STEP")
@@ -165,13 +176,43 @@ class FreeCADAssemblyBackend:
     def _compile(self, program, part_artifacts, manifest, fcstd_path, step_path, workspace):
         records = []
         for instance in program.canonical_instances:
-            artifact = part_artifacts[instance.part_id]
-            axis, angle = _quaternion_to_axis_angle(instance.placement.rotation_quaternion)
-            records.append((instance, str((Path(workspace) / artifact.relative_path).resolve()), axis, angle))
+            if instance.part_id in part_artifacts:
+                artifact = part_artifacts[instance.part_id]
+                axis, angle = _quaternion_to_axis_angle(instance.placement.rotation_quaternion)
+                records.append((instance, str((Path(workspace) / artifact.relative_path).resolve()), axis, angle, False))
+            else:
+                for comp in program.imported_components:
+                    if comp.component_id == instance.part_id:
+                        artifact = part_artifacts[comp.component_id]
+                        axis, angle = _quaternion_to_axis_angle(instance.placement.rotation_quaternion)
+                        records.append((instance, str((Path(workspace) / artifact.relative_path).resolve()), axis, angle, True))
+                        break
+
         lines = ["import FreeCAD, Part, json", f"doc = FreeCAD.newDocument({program.assembly_id!r})"]
-        for instance, source_path, axis, angle in records:
+        for instance, source_path, axis, angle, is_imported in records:
             name = instance_object_name(instance.instance_id)
-            lines += [f"source = FreeCAD.openDocument({source_path!r})", "source_objects = [item for item in source.Objects if hasattr(item, 'Shape') and not item.Shape.isNull()]", "if not source_objects: raise RuntimeError('source part shape missing')", f"obj = doc.addObject('Part::Feature', {name!r})", "obj.Shape = source_objects[0].Shape.copy()", f"obj.Placement.Base = FreeCAD.Vector({instance.placement.x_mm!r}, {instance.placement.y_mm!r}, {instance.placement.z_mm!r})", f"obj.Placement.Rotation = FreeCAD.Rotation(FreeCAD.Vector({axis[0]!r}, {axis[1]!r}, {axis[2]!r}), {math.degrees(angle)!r})", "FreeCAD.closeDocument(source.Name)"]
+            if is_imported:
+                lines += [
+                    f"Part.insert({source_path!r}, doc.Name)",
+                    f"imported_objects = [item for item in doc.Objects if hasattr(item, 'Shape') and not item.Shape.isNull()]",
+                    "if not imported_objects: raise RuntimeError('imported STEP shape missing')",
+                    f"obj = imported_objects[0]",
+                    f"obj.Label = {name!r}",
+                    f"obj.Placement.Base = FreeCAD.Vector({instance.placement.x_mm!r}, {instance.placement.y_mm!r}, {instance.placement.z_mm!r})",
+                    f"obj.Placement.Rotation = FreeCAD.Rotation(FreeCAD.Vector({axis[0]!r}, {axis[1]!r}, {axis[2]!r}), {math.degrees(angle)!r})"
+                ]
+            else:
+                lines += [
+                    f"source = FreeCAD.openDocument({source_path!r})",
+                    "source_objects = [item for item in source.Objects if hasattr(item, 'Shape') and not item.Shape.isNull()]",
+                    "if not source_objects: raise RuntimeError('source part shape missing')",
+                    f"obj = doc.addObject('Part::Feature', {name!r})",
+                    "obj.Shape = source_objects[0].Shape.copy()",
+                    f"obj.Placement.Base = FreeCAD.Vector({instance.placement.x_mm!r}, {instance.placement.y_mm!r}, {instance.placement.z_mm!r})",
+                    f"obj.Placement.Rotation = FreeCAD.Rotation(FreeCAD.Vector({axis[0]!r}, {axis[1]!r}, {axis[2]!r}), {math.degrees(angle)!r})",
+                    "FreeCAD.closeDocument(source.Name)"
+                ]
+
         manifest_json = json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
         lines += ["meta = doc.addObject('App::FeaturePython', 'assembly_manifest')", "meta.addProperty('App::PropertyString', 'ManifestJson', 'Assembly')", f"meta.ManifestJson = {manifest_json!r}", "doc.recompute()", f"doc.saveAs({str(fcstd_path)!r})", f"Part.export([item for item in doc.Objects if hasattr(item, 'Shape') and not item.Shape.isNull()], {str(step_path)!r})", "FreeCAD.closeDocument(doc.Name)"]
         return "\n".join(lines) + "\n"

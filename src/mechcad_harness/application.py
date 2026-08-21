@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from collections.abc import Callable
 from typing import Iterable
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -13,9 +14,24 @@ from mechcad_harness.runs import Run, RunController, SourceBinding, TaskDefiniti
 from mechcad_harness.runs.errors import RunIntegrityError
 from mechcad_harness.state import StateManager, state_hash
 from mechcad_harness.state.errors import StateIntegrityError
+from mechcad_harness.cad_compilation import CadCompilationResult, CadCompilationService, MountingPlateDesignSpec
+from mechcad_harness.cad_assembly import CadAssemblyProgram, assembly_hash
+from mechcad_harness.assembly_service import CadAssemblyGenerationService, default_assembly_service
+from mechcad_harness.imported_component import ImportedCadComponent, resolve_imported_component
 from mechcad_harness.tools import BuiltinTools, ToolBroker, ToolRegistration, ToolRegistry
 from mechcad_harness.models.common import Model
 from mechcad_harness.agents.roundtrip import TransmissionToolRoundTripCoordinator, TransmissionToolRoundTripResult
+from mechcad_harness.kinematic_sweep import (
+    CadKinematicSweepRequest,
+    CadKinematicSweepResult,
+    CadKinematicSweepService,
+    RevoluteAxis,
+)
+from mechcad_harness.transient_assembly_analysis import (
+    TransientAssemblyAnalysisRequest,
+    TransientAssemblyAnalysisService,
+)
+from mechcad_harness.transient_freecad_measurement import FreeCADTransientAssemblyMeasurementProvider
 
 
 class ProductionStateBinding(Model):
@@ -83,6 +99,7 @@ class ProductionApplication:
         "evidence_store",
         "change_engine",
         "context_builder",
+        "cad_compiler",
         "standard_tool_permissions",
         "project_id",
     })
@@ -106,6 +123,12 @@ class ProductionApplication:
         evidence_store: EvidenceStore,
         change_engine: ChangeEngine,
         context_builder: ContextBuilder,
+        kinematic_measure: Callable[
+            [TransientAssemblyAnalysisRequest, CadAssemblyProgram],
+            tuple[tuple[str, str, float, float], ...],
+        ]
+        | FreeCADTransientAssemblyMeasurementProvider
+        | None = None,
     ):
         object.__setattr__(self, "project_id", project_id)
         self.state_manager = state_manager
@@ -117,10 +140,19 @@ class ProductionApplication:
         self.evidence_store = evidence_store
         self.change_engine = change_engine
         self.context_builder = context_builder
+        self.cad_compiler = CadCompilationService(state_manager)
+        self.assembly_service = default_assembly_service(state_manager)
         self.standard_tool_permissions = tuple(
             f"{registration.name}@{registration.version}"
             for registration in BuiltinTools.registrations()
         )
+        if kinematic_measure is None or isinstance(kinematic_measure, FreeCADTransientAssemblyMeasurementProvider):
+            provider = kinematic_measure or FreeCADTransientAssemblyMeasurementProvider()
+            self._kinematic_measurement_provider = provider
+            self.kinematic_measure = provider.exact_measure
+        else:
+            self._kinematic_measurement_provider = None
+            self.kinematic_measure = kinematic_measure
         object.__setattr__(self, "_dependencies_initialized", True)
 
     def __setattr__(self, name, value):
@@ -138,6 +170,12 @@ class ProductionApplication:
         ownership_path: str | Path,
         dependency_path: str | Path,
         additional_tool_registrations: Iterable[ToolRegistration] = (),
+        kinematic_measure: Callable[
+            [TransientAssemblyAnalysisRequest, CadAssemblyProgram],
+            tuple[tuple[str, str, float, float], ...],
+        ]
+        | FreeCADTransientAssemblyMeasurementProvider
+        | None = None,
     ) -> "ProductionApplication":
         if not project_id.strip():
             raise ValueError("project_id must not be empty")
@@ -178,6 +216,7 @@ class ProductionApplication:
             evidence_store=evidence_store,
             change_engine=change_engine,
             context_builder=context_builder,
+            kinematic_measure=kinematic_measure,
         )
 
     def load_state(self) -> ProductionStateBinding:
@@ -257,3 +296,80 @@ class ProductionApplication:
             self._IDENTITY.agent_version,
             selected_requirement_ids=tuple(selected_requirement_ids),
         )
+
+    def compile_design_spec(
+        self,
+        *,
+        source_revision: int,
+        source_state_hash: str,
+        spec: MountingPlateDesignSpec,
+    ) -> CadCompilationResult:
+        return self.cad_compiler.compile_mounting_plate(
+            project_id=self.project_id,
+            source_revision=source_revision,
+            source_state_hash=source_state_hash,
+            spec=spec,
+        )
+
+    def build_assembly_with_imported_components(
+        self,
+        *,
+        source_revision: int,
+        source_state_hash: str,
+        assembly_id: str,
+        generated_parts: tuple[CadPartProgram, ...] = (),
+        imported_components: tuple[ImportedCadComponent, ...] = (),
+        instances: tuple[CadComponentInstance, ...] = (),
+        run_id: str,
+    ):
+        binding = self.assembly_service.validate_source(
+            self.project_id, source_revision, source_state_hash
+        )
+
+        program = CadAssemblyProgram(
+            assembly_id=assembly_id,
+            parts=generated_parts,
+            imported_components=imported_components,
+            instances=instances,
+        )
+
+        workspace = str(self.state_manager.workspace)
+        return self.assembly_service.generate_assembly_with_imported(
+            project_id=binding.project_id,
+            run_id=run_id,
+            revision=binding.revision,
+            state_hash=binding.state_hash,
+            program=program,
+            workspace=workspace,
+        )
+
+    def analyze_assembly_kinematics(
+        self,
+        *,
+        source_revision: int,
+        source_state_hash: str,
+        assembly: CadAssemblyProgram,
+        axis: RevoluteAxis,
+        moving_instance_ids: tuple[str, ...],
+        stationary_instance_ids: tuple[str, ...],
+        sample_angles_deg: tuple[float, ...],
+    ) -> CadKinematicSweepResult:
+        binding = self.assembly_service.validate_source(
+            self.project_id, source_revision, source_state_hash
+        )
+
+        source_assembly_hash = assembly_hash(assembly)
+        request = CadKinematicSweepRequest(
+            source_assembly_id=assembly.assembly_id,
+            source_assembly_hash=source_assembly_hash,
+            axis=axis,
+            sample_angles_deg=sample_angles_deg,
+            moving_instance_ids=moving_instance_ids,
+            stationary_instance_ids=stationary_instance_ids,
+        )
+
+        measure = self.kinematic_measure
+
+        transient_service = TransientAssemblyAnalysisService(measure)
+        sweep_service = CadKinematicSweepService(transient_analysis_service=transient_service)
+        return sweep_service.execute(request, assembly)
