@@ -53,7 +53,7 @@ accepted DesignState [A] -> typed Domain DesignSpec -> deterministic compiler
 -> ArtifactStore
 ```
 
-This is the general persisted project-CAD path. FreeCAD realizes and verifies generic part and assembly programs.
+This is the general persisted project-CAD path. FreeCAD realizes and verifies generic part and assembly programs. After M9 this path is **live-verified** on real FreeCAD (1.1.3): generated `CadPartProgram` realization, persisted FCStd/STEP, and fresh reload are all executed, not merely architecturally connected.
 
 ## G. Specialized Parametric Geometry
 
@@ -130,7 +130,127 @@ source CadAssemblyProgram/hash [A,X] -> normalized RevoluteAxis and ordered angl
 -> ordered samples and aggregate result [V]
 ```
 
-The result is discrete. `continuous_sweep_verified` remains false.
+The result is discrete. `continuous_sweep_verified` remains false. After M9 the
+measurement is **live-verified** through the real FreeCAD
+`FreeCADTransientAssemblyMeasurementProvider.exact_measure` (`common().Volume`
+and `distToShape()`), not only the deterministic test provider.
+
+## M2. Continuous Single-Axis Clearance Proof (M10-1)
+
+```text
+source CadAssemblyProgram/hash [A,X] -> normalized RevoluteAxis and angle interval
+-> radial bound (bounding-box corners -> point-to-axis distance -> max)
+-> conservative bisection: midpoint exact evaluation + chord-displacement motion bound
+-> each leaf: d_ref - B >= required_clearance + guard
+-> ContinuousSingleAxisProofStatus (VERIFIED_CLEAR / COLLISION_WITNESS / NOT_PROVEN)
+-> ContinuousSingleAxisProofResult + ContinuousIntervalCertificate per leaf
+-> ContinuousProofExecutionProvenance / Evidence
+```
+
+The proof is conservative: every certified interval has a mathematical guarantee
+that the exact distance minus the chord-displacement motion bound exceeds the
+required clearance. Touching triggers COLLISION_WITNESS (not positive clearance).
+The discrete sweep result (`continuous_sweep_verified`) is not modified by this
+proof; it remains a separate entrypoint.
+
+## M3. Generic Multi-Joint Forward Kinematics (M10-2)
+
+```text
+KinematicModel (rooted acyclic tree of RevoluteJointModel) [A]
+  + JointConfiguration (joint_id -> angle_deg) [A]
+  + source CadAssemblyProgram/hash [A,X]
+  -> fail-closed topology validation (unique IDs, existence, single parent,
+     no cycles, reachability) -> deterministic BFS evaluation order
+  -> per joint: T_joint(q) = Translate(p) ∘ Rotate(u,q) ∘ Translate(-p)
+  -> T_world_child(q) = T_world_parent(q) ∘ T_joint(q) ∘ T_parent_child_home
+  -> instance world transforms + transformed CadAssemblyProgram
+  -> KinematicForwardKinematicsResult
+     (model_hash / configuration_hash / transformed_assembly_hash / result_hash)
+  -> ProductionApplication.evaluate_multi_joint_configuration
+     -> Evidence (kind: analysis.multi_joint_kinematics)
+```
+
+Core forward kinematics has **no FreeCAD dependency**; it reuses the quaternion
+helpers from `kinematic_sweep.py` only. The result is discrete (one explicit
+configuration) and performs **no** collision, clearance, or continuous
+verification. `transformed_assembly_hash` reuses `assembly_hash()` over the
+updated `CadAssemblyProgram`. M10-3 is the intended consumer of the transformed
+assembly for real FreeCAD exact measurement.
+
+## M4. Exact Discrete Multi-Joint Collision Sweep (M10-3)
+
+```text
+source-bound CadAssemblyProgram/hash + KinematicModel + ordered configurations [A,X]
+  -> MultiJointKinematicsService for each configuration
+  -> transient transformed assembly [D,X]
+  -> FreeCADTransientAssemblyMeasurementProvider
+  -> real common().Volume / distToShape() for ordered moving/stationary pairs
+  -> exact pair classifications and distance summaries
+  -> MultiJointCollisionSweepResult [V]
+  -> AnalysisExecutionProvenance + one trusted Evidence record
+```
+
+`MultiJointDiscreteCollisionSweepService` evaluates every requested
+configuration from the unchanged source assembly. It preserves configuration
+and pair order, fails closed on validation/provider/measurement/result or
+Evidence failure, and never publishes partial per-configuration artifacts.
+The production application owns source binding, provider composition, trusted
+runtime provenance, and atomic Evidence persistence. The result is an exact
+discrete sweep only; `continuous_path_verified=False` remains explicit.
+
+## O. Production Application Flow (M8B / M8C / M9 / M10-3)
+
+```text
+DesignState [A] -> MountingPlateDesignSpec (pre-accepted caller contract)
+  -> ProductionApplication.compile_design_spec
+  -> CadCompilationService -> CadPartProgram
+
+Run/Task -> ToolBroker -> real producer (mechcad-build-spur-gear-cad@1.0)
+  -> ArtifactStore.publish -> EngineeringArtifact
+  -> resolve_imported_component -> ImportedCadComponent
+
+CadPartProgram + ImportedCadComponent
+  -> CadAssemblyProgram
+  -> ProductionApplication.build_assembly_with_imported_components
+  -> CadAssemblyGenerationService -> FreeCADAssemblyBackend
+  -> FCStd / STEP -> ArtifactStore -> fresh reload
+
+ProductionApplication.analyze_assembly_kinematics
+  -> CadKinematicSweepService -> TransientAssemblyAnalysisService
+  -> FreeCADTransientAssemblyMeasurementProvider.exact_measure
+
+ProductionApplication.analyze_multi_joint_collision_sweep
+  -> MultiJointDiscreteCollisionSweepService
+  -> MultiJointKinematicsService -> TransientAssemblyAnalysisService
+  -> FreeCADTransientAssemblyMeasurementProvider.exact_measure
+  -> trusted AnalysisExecutionProvenance / Evidence
+  -> common().Volume / distToShape()
+  -> CadKinematicSweepResult
+  -> AnalysisExecutionProvenance / Evidence
+```
+
+The deterministic test provider is a composition-boundary injection only and is
+not the normal production execution path. The production application owns
+provider composition; an ordinary analysis caller cannot pass a trusted
+exact-measurement callback.
+
+## M5. Conservative Continuous Multi-Joint Path Proof (M10-4)
+
+```text
+typed ordered MultiJointPath
+  -> trusted local geometry extent boundary
+  -> pure M10-2 topology reach bounds
+  -> direct M10-2 FK from unchanged source assembly
+  -> transient FreeCAD exact midpoint/waypoint measurement
+  -> adaptive scalar certificates using hierarchical motion bounds
+  -> VERIFIED_CLEAR / COLLISION_WITNESS / NOT_PROVEN
+  -> one final trusted Evidence record
+```
+
+M10-4 proves only the requested piecewise-linear path. It does not mutate
+canonical state, create per-midpoint evidence/artifacts, or certify a
+configuration-space region. M10-3 results remain discrete-only with
+`continuous_path_verified=False`.
 
 ## N. Domain Extension
 

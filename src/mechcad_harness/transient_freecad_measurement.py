@@ -17,6 +17,7 @@ from mechcad_harness.backends.models import BackendProvenance
 from mechcad_harness.cad_assembly import CadAssemblyProgram, assembly_hash
 from mechcad_harness.imported_component import ImportedCadComponent
 from mechcad_harness.transient_assembly_analysis import TransientAssemblyAnalysisRequest
+from mechcad_harness.multi_joint_continuous_path import TrustedLocalGeometryExtent
 
 
 class FreeCADTransientAssemblyMeasurementProvider:
@@ -122,6 +123,203 @@ class FreeCADTransientAssemblyMeasurementProvider:
         if not path.is_file():
             raise FreeCADExecutionError(f"imported artifact file is missing: {component.artifact_id}")
         return path
+
+    def geometry_radial_bounds(
+        self,
+        program: CadAssemblyProgram,
+        axis,
+        moving_instance_ids: tuple[str, ...],
+    ) -> dict[str, float]:
+        """Compute conservative radial bounds for each moving instance.
+
+        Returns a dict mapping instance_id to the conservative upper bound on
+        the distance from any point of that instance's geometry to the revolute
+        axis line. Uses FreeCAD bounding box corner distances.
+        """
+        if self.execute is not None:
+            raise FreeCADExecutionError("geometry radial bounds require real FreeCAD geometry")
+        discovery = discover_freecad().require_available()
+        moving_ids = set(moving_instance_ids)
+        moving_part_ids = {inst.part_id for inst in program.canonical_instances if inst.instance_id in moving_ids}
+        imported_ids = {comp.component_id for comp in program.canonical_imported_components}
+        with tempfile.TemporaryDirectory(prefix="mechcad-radial-") as directory:
+            workspace = Path(directory)
+            part_paths = {}
+            for part in program.canonical_parts:
+                if not any(inst.part_id == part.part_id and inst.instance_id in moving_ids for inst in program.canonical_instances):
+                    continue
+                fcstd_path = workspace / f"{part.part_id}.FCStd"
+                step_path = workspace / f"{part.part_id}.step"
+                completed = self.backend._run(
+                    discovery.executable,
+                    self.backend.compile_program(part, str(fcstd_path), str(step_path)),
+                    cwd=workspace,
+                )
+                if completed.returncode != 0 or not fcstd_path.is_file():
+                    raise FreeCADExecutionError(completed.stderr or completed.stdout or "radial bound part compilation failed")
+                part_paths[part.part_id] = fcstd_path
+            imported_paths = {}
+            for component in program.canonical_imported_components:
+                if component.component_id in moving_part_ids:
+                    imported_paths[component.component_id] = self._resolve_imported_artifact_path(component)
+            records = []
+            for instance in program.canonical_instances:
+                if instance.instance_id not in moving_ids:
+                    continue
+                w, x, y, z = instance.placement.rotation_quaternion
+                angle = 2 * math.degrees(math.acos(max(-1.0, min(1.0, w))))
+                scale = math.sqrt(max(0.0, 1.0 - w * w))
+                inst_axis = (0.0, 0.0, 1.0) if scale <= 1e-12 else (x / scale, y / scale, z / scale)
+                if instance.part_id in imported_ids:
+                    records.append((instance.instance_id, True, str(imported_paths[instance.part_id]), instance.placement.x_mm, instance.placement.y_mm, instance.placement.z_mm, inst_axis, angle))
+                else:
+                    records.append((instance.instance_id, False, str(part_paths[instance.part_id]), instance.placement.x_mm, instance.placement.y_mm, instance.placement.z_mm, inst_axis, angle))
+            script = self._radial_script(records, axis)
+            completed = self.backend._run(discovery.executable, script, cwd=workspace)
+            if completed.returncode != 0:
+                raise FreeCADExecutionError(completed.stderr or completed.stdout or "radial bound computation failed")
+            line = next((l for l in completed.stdout.splitlines() if l.startswith("M10_RADIAL=")), None)
+            if line is None:
+                raise FreeCADExecutionError("radial bound output missing")
+            payload = json.loads(line.removeprefix("M10_RADIAL="))
+            return {instance_id: float(value) for instance_id, value in payload["radii"].items()}
+
+    def trusted_local_geometry_extents(
+        self,
+        program: CadAssemblyProgram,
+        instance_ids: tuple[str, ...],
+    ) -> dict[str, TrustedLocalGeometryExtent]:
+        """Return trusted component-local extents for the M10-4 topology layer."""
+        radii = self._component_local_geometry_radii(program, instance_ids)
+        instances = {instance.instance_id: instance for instance in program.canonical_instances}
+        return {
+            instance_id: TrustedLocalGeometryExtent(
+                instance_id=instance_id,
+                component_identity=f"{program.assembly_id}:{instances[instance_id].part_id}",
+                local_radius_mm=radius,
+            )
+            for instance_id, radius in radii.items()
+        }
+
+    def _component_local_geometry_radii(
+        self,
+        program: CadAssemblyProgram,
+        instance_ids: tuple[str, ...],
+    ) -> dict[str, float]:
+        """Use real FreeCAD bounding-box corners in component-local coordinates."""
+        if self.execute is not None:
+            raise FreeCADExecutionError("trusted geometry extents require real FreeCAD geometry")
+        discovery = discover_freecad().require_available()
+        selected = set(instance_ids)
+        with tempfile.TemporaryDirectory(prefix="mechcad-local-extent-") as directory:
+            workspace = Path(directory)
+            part_paths = {}
+            for part in program.canonical_parts:
+                if not any(instance.instance_id in selected and instance.part_id == part.part_id for instance in program.canonical_instances):
+                    continue
+                fcstd_path = workspace / f"{part.part_id}.FCStd"
+                step_path = workspace / f"{part.part_id}.step"
+                completed = self.backend._run(discovery.executable, self.backend.compile_program(part, str(fcstd_path), str(step_path)), cwd=workspace)
+                if completed.returncode != 0 or not fcstd_path.is_file():
+                    raise FreeCADExecutionError(completed.stderr or completed.stdout or "local extent compilation failed")
+                part_paths[part.part_id] = fcstd_path
+            imported_paths = {
+                component.component_id: self._resolve_imported_artifact_path(component)
+                for component in program.canonical_imported_components
+                if any(instance.instance_id in selected and instance.part_id == component.component_id for instance in program.canonical_instances)
+            }
+            records = [
+                (
+                    instance.instance_id,
+                    instance.part_id in imported_paths,
+                    str(
+                        imported_paths[instance.part_id]
+                        if instance.part_id in imported_paths
+                        else part_paths[instance.part_id]
+                    ),
+                )
+                for instance in program.canonical_instances
+                if instance.instance_id in selected and (instance.part_id in part_paths or instance.part_id in imported_paths)
+            ]
+            completed = self.backend._run(discovery.executable, self._local_extent_script(records), cwd=workspace)
+            if completed.returncode != 0:
+                raise FreeCADExecutionError(completed.stderr or completed.stdout or "local extent measurement failed")
+            line = next((item for item in completed.stdout.splitlines() if item.startswith("M10_LOCAL_EXTENT=")), None)
+            if line is None:
+                raise FreeCADExecutionError("local extent output missing")
+            return {key: float(value) for key, value in json.loads(line.removeprefix("M10_LOCAL_EXTENT="))["radii"].items()}
+
+    @staticmethod
+    def _local_extent_script(records) -> str:
+        return "\n".join([
+            "import FreeCAD, Part, json",
+            f"records = {records!r}",
+            "radii = {}",
+            "for instance_id, is_imported, path in records:",
+            "    source = FreeCAD.newDocument('ImportedLocalExtent') if is_imported else FreeCAD.openDocument(path)",
+            "    if is_imported: Part.insert(path, source.Name)",
+            "    candidates = [obj for obj in source.Objects if hasattr(obj, 'Shape') and not obj.Shape.isNull()]",
+            "    if not candidates: raise RuntimeError('local extent shape missing')",
+            "    box = candidates[0].Shape.BoundBox",
+            "    corners = [(box.XMin, box.YMin, box.ZMin), (box.XMin, box.YMin, box.ZMax), (box.XMin, box.YMax, box.ZMin), (box.XMin, box.YMax, box.ZMax), (box.XMax, box.YMin, box.ZMin), (box.XMax, box.YMin, box.ZMax), (box.XMax, box.YMax, box.ZMin), (box.XMax, box.YMax, box.ZMax)]",
+            "    radii[instance_id] = max((x*x + y*y + z*z) ** 0.5 for x, y, z in corners) + 1e-9",
+            "    FreeCAD.closeDocument(source.Name)",
+            "print('M10_LOCAL_EXTENT=' + json.dumps({'radii': radii}, sort_keys=True))",
+        ])
+
+    @staticmethod
+    def _radial_script(records, axis) -> str:
+        return "\n".join([
+            "import FreeCAD, Part, json",
+            "doc = FreeCAD.newDocument('RadialBound')",
+            "shapes = {}",
+            f"records = {records!r}",
+            "for instance_id, is_imported, path, x, y, z, axis, angle in records:",
+            "    if is_imported:",
+            "        source = FreeCAD.newDocument('ImportedStep')",
+            "        Part.insert(path, source.Name)",
+            "        candidates = [obj for obj in source.Objects if hasattr(obj, 'Shape') and not obj.Shape.isNull()]",
+            "        if not candidates: raise RuntimeError('imported step shape missing')",
+            "        shape = candidates[0].Shape.copy()",
+            "        FreeCAD.closeDocument(source.Name)",
+            "    else:",
+            "        source = FreeCAD.openDocument(path)",
+            "        candidates = [obj for obj in source.Objects if hasattr(obj, 'Shape') and not obj.Shape.isNull()]",
+            "        if not candidates: raise RuntimeError('part shape missing')",
+            "        shape = candidates[0].Shape.copy()",
+            "        FreeCAD.closeDocument(source.Name)",
+            "    shape.Placement.Base = FreeCAD.Vector(x, y, z)",
+            "    shape.Placement.Rotation = FreeCAD.Rotation(FreeCAD.Vector(*axis), angle)",
+            "    if shape.isNull() or not shape.isValid(): raise RuntimeError('shape invalid')",
+            "    shapes[instance_id] = shape",
+            f"Ox, Oy, Oz = {axis.origin_x_mm!r}, {axis.origin_y_mm!r}, {axis.origin_z_mm!r}",
+            f"Ux, Uy, Uz = {axis.direction_x!r}, {axis.direction_y!r}, {axis.direction_z!r}",
+            "radii = {}",
+            "for instance_id, shape in shapes.items():",
+            "    box = shape.BoundBox",
+            "    corners = [",
+            "        FreeCAD.Vector(box.XMin, box.YMin, box.ZMin),",
+            "        FreeCAD.Vector(box.XMin, box.YMin, box.ZMax),",
+            "        FreeCAD.Vector(box.XMin, box.YMax, box.ZMin),",
+            "        FreeCAD.Vector(box.XMin, box.YMax, box.ZMax),",
+            "        FreeCAD.Vector(box.XMax, box.YMin, box.ZMin),",
+            "        FreeCAD.Vector(box.XMax, box.YMin, box.ZMax),",
+            "        FreeCAD.Vector(box.XMax, box.YMax, box.ZMin),",
+            "        FreeCAD.Vector(box.XMax, box.YMax, box.ZMax),",
+            "    ]",
+            "    max_d = 0.0",
+            "    for c in corners:",
+            "        rx, ry, rz = c.x - Ox, c.y - Oy, c.z - Oz",
+            "        cx = ry * Uz - rz * Uy",
+            "        cy = rz * Ux - rx * Uz",
+            "        cz = rx * Uy - ry * Ux",
+            "        dist = (cx*cx + cy*cy + cz*cz) ** 0.5",
+            "        if dist > max_d: max_d = dist",
+            "    radii[instance_id] = float(max_d)",
+            "print('M10_RADIAL=' + json.dumps({'radii': radii}, sort_keys=True))",
+            "FreeCAD.closeDocument(doc.Name)",
+            "",
+        ])
 
     @staticmethod
     def _measurement_script(

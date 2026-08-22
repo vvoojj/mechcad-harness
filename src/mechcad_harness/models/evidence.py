@@ -1,7 +1,10 @@
 from pydantic import Field
 
 from .common import StateBinding
-from mechcad_harness.analysis_provenance import AnalysisExecutionProvenance
+from mechcad_harness.analysis_provenance import (
+    AnalysisExecutionProvenance,
+    ContinuousProofExecutionProvenance,
+)
 from mechcad_harness.backends.models import BackendProvenance
 
 
@@ -17,3 +20,8 @@ class Evidence(StateBinding):
     output_hash: str | None = None
     backend_provenance: BackendProvenance | None = None
     analysis_execution_provenance: AnalysisExecutionProvenance | None = None
+    continuous_proof_execution_provenance: ContinuousProofExecutionProvenance | None = None
+    continuous_multi_joint_clearance_proof_result_payload: dict[str, object] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )

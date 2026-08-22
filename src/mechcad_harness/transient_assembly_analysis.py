@@ -12,7 +12,8 @@ class TransientAssemblyAnalysisRequest(Model):
     source_assembly_hash: str = Field(min_length=1)
     transformed_assembly_hash: str = Field(min_length=1)
     sweep_request_hash: str = Field(min_length=1)
-    sample_angle_deg: float
+    sample_angle_deg: float | None = None
+    sample_id: str | None = None
     pairs: tuple[tuple[str, str], ...] = Field(min_length=1)
 
 
@@ -20,7 +21,8 @@ class TransientAssemblyAnalysisResult(Model):
     source_assembly_hash: str = Field(min_length=1)
     transformed_assembly_hash: str = Field(min_length=1)
     sweep_request_hash: str = Field(min_length=1)
-    sample_angle_deg: float
+    sample_angle_deg: float | None = None
+    sample_id: str | None = None
     measurements: tuple[tuple[str, str, float, float], ...] = Field(min_length=1)
 
 
@@ -40,5 +42,6 @@ class TransientAssemblyAnalysisService:
             transformed_assembly_hash=request.transformed_assembly_hash,
             sweep_request_hash=request.sweep_request_hash,
             sample_angle_deg=request.sample_angle_deg,
+            sample_id=request.sample_id,
             measurements=measurements,
         )

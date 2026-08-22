@@ -8,7 +8,60 @@ MechCAD Harness M0 is the typed Python foundation for a future engineering
 workflow system. It provides readable identifiers, minimal Pydantic v2 domain
 models, placeholder YAML configuration, and tests.
 
-## M0 Boundary
+## Current Architecture Status (M8 / M9 / M10)
+
+The repository has advanced well beyond M0. The current accepted baseline is
+**M8 + M9 + M10-1 + M10-2 + M10-3 + M10-4**.
+
+- **M8** established the production architecture: production orchestration
+  (`ProductionApplication` composition root), source-bound `DesignSpec` →
+  `CadPartProgram` compilation, trusted imported STEP artifacts
+  (`ImportedCadComponent` via `ArtifactStore`), generic mixed assembly
+  (`CadAssemblyProgram`), and the production kinematic entrypoint
+  (`ProductionApplication.analyze_assembly_kinematics`).
+- **M9** live-verified the critical edges on real FreeCAD (1.1.3): real
+  `CadPartProgram` realization, a real trusted imported STEP artifact, a live
+  mixed FreeCAD assembly, fresh reload, exact `common().Volume` /
+  `distToShape()` collision/clearance measurement, a real discrete kinematic
+  sweep, and trusted durable analysis-execution provenance.
+- **M10-1** adds conservative continuous single-axis clearance proof with
+  `VERIFIED_CLEAR`, `COLLISION_WITNESS`, and `NOT_PROVEN` outcomes.
+- **M10-2** adds deterministic multi-joint forward kinematics over a rooted
+  acyclic revolute-joint tree, producing instance world transforms and a
+  transformed `CadAssemblyProgram` without a FreeCAD dependency in core FK.
+- **M10-3** adds exact discrete multi-joint collision evaluation through real
+  FreeCAD geometry measurement with deterministic identities and trusted
+  provider/backend/runtime provenance.
+- **M10-4** adds conservative continuous clearance proof along one explicit
+  piecewise-linear multi-joint joint-space path, with exact FreeCAD midpoint
+  measurements, topology-derived reach bounds, and fail-closed proof outcomes.
+- **M10-5** closes the complete M10 motion stack through live system acceptance:
+  shared FK/discrete/continuous result equality, durable proof reload, trusted
+  provenance, source immutability, and full regression verification.
+
+**Current system status: `M10_FULLY_CLOSED_LIVE_VERIFIED`.**
+
+**Current hard limitation:** M10-3 remains discrete-only with
+`continuous_path_verified = False`. M10-4 verifies only one explicitly
+requested piecewise-linear path, not arbitrary configuration-space regions or
+general trajectories. FEA, materials
+selection, manufacturing approval, tolerance verification, optimization, and
+automatic synthesis/selection are not implemented.
+
+The milestone sections below (M0 → M6B) are retained as historical
+documentation of how the system evolved; they are not the current capability
+baseline. For current-state documentation, start with:
+
+- [`docs/architecture/MECHCAD_PROJECT_OVERVIEW.md`](docs/architecture/MECHCAD_PROJECT_OVERVIEW.md)
+- [`docs/architecture/MECHCAD_CAPABILITY_MATRIX.md`](docs/architecture/MECHCAD_CAPABILITY_MATRIX.md)
+- [`docs/architecture/MECHCAD_RUNTIME_FLOW.md`](docs/architecture/MECHCAD_RUNTIME_FLOW.md)
+- [`docs/audit/MECHCAD_M9_SYSTEM_ACCEPTANCE.md`](docs/audit/MECHCAD_M9_SYSTEM_ACCEPTANCE.md)
+- [`docs/audit/MECHCAD_M10_2_COMPLETION_REPORT.md`](docs/audit/MECHCAD_M10_2_COMPLETION_REPORT.md)
+- [`docs/audit/MECHCAD_M10_3_COMPLETION_REPORT.md`](docs/audit/MECHCAD_M10_3_COMPLETION_REPORT.md)
+- [`docs/audit/MECHCAD_M10_4_COMPLETION_REPORT.md`](docs/audit/MECHCAD_M10_4_COMPLETION_REPORT.md)
+- [`docs/audit/MECHCAD_POST_M8_M9_DOCUMENTATION_RECONCILIATION.md`](docs/audit/MECHCAD_POST_M8_M9_DOCUMENTATION_RECONCILIATION.md)
+
+## M0 Boundary (historical)
 
 M0 deliberately excludes agents, OpenCode integration, CAD, FreeCAD, FEA,
 scheduling, dependency execution, LLM workflows, databases, persistence, and

@@ -37,6 +37,26 @@ def test_transient_analysis_binds_source_and_transformed_hashes_and_preserves_pa
     assert result.measurements == (("moving", "stationary", 3.0, 0.0),)
 
 
+def test_transient_analysis_preserves_optional_opaque_sample_marker():
+    assembly = _assembly()
+    identity = assembly_hash(assembly)
+    request = TransientAssemblyAnalysisRequest(
+        source_assembly_hash=identity,
+        transformed_assembly_hash=identity,
+        sweep_request_hash="sha256:request",
+        sample_angle_deg=None,
+        sample_id="opaque-sample",
+        pairs=(("moving", "stationary"),),
+    )
+
+    result = TransientAssemblyAnalysisService(
+        lambda received_request, program: (("moving", "stationary", 0.0, 1.0),)
+    ).analyze(request, assembly)
+
+    assert result.sample_angle_deg is None
+    assert result.sample_id == "opaque-sample"
+
+
 def test_transient_analysis_fails_closed_for_hash_or_pair_mismatch():
     assembly = _assembly()
     source_hash = assembly_hash(assembly)

@@ -69,7 +69,11 @@ class EvidenceStore:
         if not self.graph.knows(evidence.kind):
             raise EvidenceIntegrityError(f"unknown dependency node: {evidence.kind}")
         path = self._project_dir(project_id) / "evidence" / f"{evidence.id}.json"
-        self._write_exclusive(path, evidence.model_dump(mode="json"), EvidenceConflictError)
+        payload = evidence.model_dump(mode="json")
+        provenance = payload.get("analysis_execution_provenance")
+        if provenance is not None and provenance.get("model_hash") is None:
+            del provenance["model_hash"]
+        self._write_exclusive(path, payload, EvidenceConflictError)
 
     def load_evidence(self, project_id: str, evidence_id: str):
         path = self._project_dir(project_id) / "evidence" / f"{evidence_id}.json"

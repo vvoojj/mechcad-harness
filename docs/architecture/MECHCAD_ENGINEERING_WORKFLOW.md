@@ -76,6 +76,8 @@ Reasoning Result           Semantic / Typed Engineering Request
 
 Authority enters at requirements and accepted state. Agents may reason, identify missing inputs, and propose changes. Deterministic tools calculate derived values. Only `ChangeEngine` may apply an accepted change to canonical state. CAD, analysis, artifacts, and evidence are derived outputs. Verification can reject or mark outputs unresolved, but does not silently promote them.
 
+The current production entrypoints that turn accepted state into derived CAD/assembly/analysis are owned by `ProductionApplication` (M8B/M8C/M10): `compile_design_spec` (source-bound `DesignSpec` -> `CadPartProgram`), `build_assembly_with_imported_components` (generated + trusted imported -> `CadAssemblyProgram` -> FreeCAD), `analyze_assembly_kinematics` (discrete exact sweep), `evaluate_multi_joint_configuration` (deterministic FK), `analyze_multi_joint_collision_sweep` (exact discrete multi-joint collision), and `prove_continuous_multi_joint_path_clearance` (explicit-path conservative proof). M9 and M10 live-verified these paths on real FreeCAD; they remain derived outputs and never mutate canonical state.
+
 An engineering agent must not arbitrarily import or execute an engineering library. Agent-authored semantic requests pass through trusted mediation and tool/service boundaries. A deterministic internal service may call its implementation library behind its own trusted adapter boundary; this contract does not require every backend-internal call to re-enter ToolBroker.
 
 ## Engineering Decision Rules
@@ -109,4 +111,4 @@ Missing data returns `ConstraintRequest`; conflicting authority returns `Issue`;
 
 **Stage B - Connected readiness:** use a motor-driven rotary bracket to prove requirements -> bounded agent -> deterministic tool/provider -> Evidence -> proposal -> new revision -> part CAD -> assembly -> discrete kinematic verification. This stage audits selected `TARGET_NEXT` wiring without assuming it already exists.
 
-**Stage C - Future:** structural approval, FEA, continuous-motion proof, dynamics, and manufacturing outputs. These are not present baseline acceptance gates.
+**Stage C - Future:** whole configuration-space certification, structural approval, FEA, dynamics, and manufacturing outputs. The accepted M10 explicit-path continuous proof is current; these broader capabilities are not present baseline acceptance gates.

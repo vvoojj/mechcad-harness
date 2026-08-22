@@ -31,6 +31,8 @@ MechCAD is a deterministic, provenance-aware, multi-agent mechanical-engineering
 10. **Validation:** results are checked for schema, source identity, freshness, geometry, and domain acceptance criteria.
 11. **Artifact / Evidence Management:** facts and files are hashed, bound, immutable, and refreshable.
 12. **Domain Extensions:** domain-specific meaning stays above generic state machinery and backend contracts.
+13. **Production Orchestration (M8B):** `ProductionApplication.create(...)` is the trusted composition root that owns the production service graph (`StateManager`, `EvidenceStore`, `OwnershipPolicy`, `ChangeEngine`, `RunController`, `ToolRegistry` → `ToolBroker`, `AgentRegistry` → injected adapter, `ContextBuilder` → `AgentGateway` → `AgentToolMediator` → `ToolBroker`). It owns trusted identities/permissions and the composition of analysis providers; it does not add a second canonical-mutation API.
+14. **Production CAD / Assembly / Kinematics (M8C → M9):** M8 connected source-bound `DesignSpec` → `CadPartProgram` compilation, trusted `ImportedCadComponent` resolution through `ArtifactStore`, generic mixed `CadAssemblyProgram`, and the `ProductionApplication.analyze_assembly_kinematics` entrypoint. M9 live-verified the runtime edges on real FreeCAD: `CadPartProgram` realization, real trusted imported STEP, live mixed assembly, fresh reload, exact `common().Volume` / `distToShape()`, real discrete kinematic sweep, and durable trusted analysis-execution provenance (`M9_FULLY_CLOSED_LIVE_VERIFIED`).
 
 ## Authority Rules
 
@@ -150,14 +152,44 @@ A generated specialized gear-pair CAD result consists of two generated gear arti
 
 M7C provides `RevoluteAxis`, `CadRigidTransform`, `CadKinematicSweepRequest`, ordered samples, exact pair results, and aggregate classification. The axis must be normalized and non-zero; frame identity, moving/stationary partition, source assembly hash, transformed assembly hash, quaternion composition, and pair ordering are deterministic. Current discrete sampling has `continuous_sweep_verified = False`. Samples do not create revisions or durable public CAD artifacts.
 
+M10-2 additionally provides `KinematicModel`, `JointConfiguration`, and
+`KinematicForwardKinematicsResult` for deterministic forward kinematics over a
+rooted acyclic tree of revolute joints. Axis frames are parent-instance local;
+home parent-to-child transforms come from source assembly placements. The
+result contains instance world transforms and a transformed
+`CadAssemblyProgram`, with separate model, configuration, transformed-assembly,
+and result identities. Core FK is FreeCAD-independent and makes no collision,
+clearance, or continuous-verification claim.
+
+M10-3 provides `MultiJointCollisionSweepRequest` and
+`MultiJointCollisionSweepResult` for exact discrete collision evaluation over
+ordered multi-joint configurations. Each configuration is evaluated from the
+unchanged source assembly through the M10-2 transformed assembly path, then
+measured by the composed FreeCAD provider using `common().Volume` and
+`distToShape()`. Pair order, configuration/model/transformed-assembly/request/
+result identities, exact classifications, and trusted provider/backend/runtime
+provenance are deterministic and persisted atomically with one Evidence record.
+The result is discrete-only and does not establish interpolated or continuous
+multi-axis clearance.
+
+M10-4 provides `MultiJointPath` and
+`MultiJointContinuousClearanceProofResult` for conservative continuous clearance
+proof along one explicitly requested ordered piecewise-linear raw joint-space
+path. Trusted local geometry extents and pure topology-derived reach bounds feed
+hierarchical telescoping pair bounds around exact FreeCAD waypoint and midpoint
+measurements. Only complete leaf coverage produces `VERIFIED_CLEAR`; exact
+interference/touching/requested-clearance violations produce `COLLISION_WITNESS`,
+and unresolved budgets produce `NOT_PROVEN`. M10-4 does not certify a
+configuration-space region.
+
 ## Maturity
 
-**FOUNDATION / REQUIRED_CURRENT:** state/revision/change/ownership/dependency/run/tool/Evidence foundations; AgentGateway, fake and OpenCode adapters, bounded transmission reasoning, strict structured response, tool mediation, torque/Evidence round-trip foundation, constraint discovery/materialization/satisfaction/resolution; narrow engineering providers; generic CAD programs and rigid assemblies; exact collision, transient measurement, and discrete single-axis kinematics.
+**FOUNDATION / REQUIRED_CURRENT:** state/revision/change/ownership/dependency/run/tool/Evidence foundations; AgentGateway, fake and OpenCode adapters, bounded transmission reasoning, strict structured response, tool mediation, torque/Evidence round-trip foundation, constraint discovery/materialization/satisfaction/resolution; narrow engineering providers; generic CAD programs and rigid assemblies; exact collision, transient measurement, discrete single-axis kinematics, single-axis continuous proof, generic multi-joint discrete forward kinematics, exact discrete multi-joint collision evaluation, and explicit-path continuous multi-joint clearance proof.
 
-**TARGET_NEXT:** one connected universal mechanical workflow across the current foundations, broader domain services, canonical transmission/material selection, generic multi-joint chains, controlled load cases, and stronger provider wiring proof.
+**TARGET_NEXT:** one connected universal mechanical workflow across the current foundations, broader domain services, canonical transmission/material selection, controlled load cases, and stronger provider wiring proof.
 
-**FUTURE:** FEA, dynamics, continuous proof, manufacturing, optimization, and broad multi-agent convergence.
+**FUTURE:** whole configuration-space certification, FEA, dynamics, manufacturing, optimization, and broad multi-agent convergence.
 
 ## Generic Acceptance Scenario
 
-A motor-driven rotary bracket is the universal target fixture. **Stage A - baseline conformance** audits every `FOUNDATION` and `REQUIRED_CURRENT` capability independently. **Stage B - connected readiness** selects `TARGET_NEXT` wiring to prove requirements -> agent -> tool/provider -> Evidence -> proposal -> revision -> part CAD -> assembly -> discrete kinematic verification. **Stage C - future** adds structural approval, FEA, continuous proof, dynamics, and manufacturing; those are not current gates.
+A motor-driven rotary bracket is the universal target fixture. **Stage A - baseline conformance** audits every `FOUNDATION` and `REQUIRED_CURRENT` capability independently. **Stage B - connected readiness** selects `TARGET_NEXT` wiring to prove requirements -> agent -> tool/provider -> Evidence -> proposal -> revision -> part CAD -> assembly -> discrete kinematic verification. **Stage C - future** adds whole configuration-space certification, structural approval, FEA, dynamics, and manufacturing; the accepted M10 explicit-path proof is current but these broader claims are not current gates.

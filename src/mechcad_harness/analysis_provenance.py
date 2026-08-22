@@ -31,7 +31,30 @@ class AnalysisExecutionProvenance(Model):
     request_hash: str = Field(min_length=1)
     result_hash: str = Field(min_length=1)
     source_assembly_hash: str = Field(min_length=1)
+    model_hash: str | None = None
     sweep_version: str = Field(min_length=1)
+    provider_name: str = Field(min_length=1)
+    provider_version: str = Field(min_length=1)
+    execution_mode: str = Field(min_length=1)
+    backend_provenance: BackendProvenance | None = None
+    recorded_at: datetime = Field(default_factory=utc_now)
+
+
+class ContinuousProofExecutionProvenance(Model):
+    """Trusted execution provenance binding a continuous single-axis clearance
+    proof result to the exact measurement provider and backend/runtime.
+
+    Companion to ``AnalysisExecutionProvenance`` for continuous proof, using
+    ``proof_algorithm_version`` instead of ``sweep_version``.
+    """
+
+    request_hash: str = Field(min_length=1)
+    result_hash: str = Field(min_length=1)
+    source_assembly_hash: str = Field(min_length=1)
+    model_hash: str | None = None
+    path_hash: str | None = None
+    proof_algorithm_version: str = Field(min_length=1)
+    reach_bound_algorithm_version: str | None = None
     provider_name: str = Field(min_length=1)
     provider_version: str = Field(min_length=1)
     execution_mode: str = Field(min_length=1)

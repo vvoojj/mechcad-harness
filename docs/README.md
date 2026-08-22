@@ -11,8 +11,8 @@ This is the documentation entry point for MechCAD. Do not preload every document
 | Understand an engineering workflow | [Engineering Workflow](architecture/MECHCAD_ENGINEERING_WORKFLOW.md) | [Runtime Flow](architecture/MECHCAD_RUNTIME_FLOW.md) |
 | Add or review an agent | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md) | [Subsystem Contracts](architecture/MECHCAD_SUBSYSTEM_CONTRACTS.md), relevant M6 specs/plans |
 | Add or review a deterministic tool | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md) | M5/M5.5 specs, provider source, relevant tests |
-| Add or review CAD | [Runtime Flow](architecture/MECHCAD_RUNTIME_FLOW.md) | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md), M7 records, CAD source/tests |
-| Add or review kinematics | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md) | [Runtime Flow](architecture/MECHCAD_RUNTIME_FLOW.md), M7C/M7D records |
+| Add or review CAD | [Runtime Flow](architecture/MECHCAD_RUNTIME_FLOW.md) | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md), M8C-1/M8C-2 records, CAD source/tests |
+| Add or review kinematics | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md) | [Runtime Flow](architecture/MECHCAD_RUNTIME_FLOW.md), M8C-3/M9-3/M10-2 records |
 | Add a mechanical domain | [Domain Extension Guide](architecture/MECHCAD_DOMAIN_EXTENSION_GUIDE.md) | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md), [Capability Matrix](architecture/MECHCAD_CAPABILITY_MATRIX.md) |
 | Determine capability maturity | [Capability Matrix](architecture/MECHCAD_CAPABILITY_MATRIX.md) | [Documentation Gaps](architecture/MECHCAD_DOCUMENTATION_GAPS.md), cited specs/plans |
 | Perform the independent integration audit | [Integration Audit](audit/MECHCAD_INTEGRATION_AUDIT.md) | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md), [Capability Matrix](architecture/MECHCAD_CAPABILITY_MATRIX.md), cited implementation/tests |
@@ -39,7 +39,8 @@ For an implementation/integration audit, load:
 1. [Integration Audit Procedure](audit/MECHCAD_INTEGRATION_AUDIT.md)
 2. [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md)
 3. [Capability Matrix](architecture/MECHCAD_CAPABILITY_MATRIX.md)
-4. Only the source files, tests, manifests, and accepted specs named by the capability under review
+4. [M9 System Acceptance](audit/MECHCAD_M9_SYSTEM_ACCEPTANCE.md), [M10-2 Completion](audit/MECHCAD_M10_2_COMPLETION_REPORT.md), and [M8C Closure](audit/MECHCAD_M8C_SYSTEM_CLOSURE_AUDIT.md)
+5. Only the source files, tests, manifests, and accepted specs named by the capability under review
 
 Do not treat this guide, a filename, an import, or an isolated test as runtime integration evidence. Leave audit verdict fields as `TO_BE_AUDITED` until the audit is actually performed.
 
