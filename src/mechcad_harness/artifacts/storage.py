@@ -66,6 +66,29 @@ class ArtifactStore:
             return None
         return None
 
+    def existing_in_project(self, artifact_id: str) -> "EngineeringArtifact | None":
+        # Project-scoped trusted lookup that reuses the run-scoped `existing`
+        # boundary (type, byte SHA-256, size, relative-path, existence checks)
+        # instead of duplicating filesystem-layout knowledge. Succeeds only
+        # when exactly one matching artifact resolves across the project's runs.
+        root = self.workspace / "projects" / self.project_id / "runs"
+        if not root.is_dir():
+            return None
+        matches = []
+        for run_dir in sorted(root.glob("*")):
+            if not run_dir.is_dir():
+                continue
+            try:
+                sub_store = ArtifactStore(self.workspace, project_id=self.project_id, run_id=run_dir.name)
+            except ValueError:
+                continue
+            artifact = sub_store.existing(artifact_id)
+            if artifact is not None:
+                matches.append(artifact)
+        if len(matches) != 1:
+            return None
+        return matches[0]
+
     def _atomic_bytes(self, path, content):
         fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.{uuid4().hex}.", suffix=".tmp")
         try:

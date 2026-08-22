@@ -1,9 +1,36 @@
 import pytest
 
+from mechcad_harness.artifacts import ArtifactStore, ArtifactType
 from mechcad_harness.cad_assembly import CadAssemblyProgram, CadComponentInstance, assembly_hash
 from mechcad_harness.cad_program import BasePlateOperation, CadPartProgram
+from mechcad_harness.imported_component import ImportedCadComponent
 from mechcad_harness.transient_assembly_analysis import TransientAssemblyAnalysisRequest
 from mechcad_harness.transient_freecad_measurement import FreeCADTransientAssemblyMeasurementProvider
+
+
+def _publish_step(workspace, project_id, run_id, artifact_id, content=b"STEP-BYTES", artifact_type=ArtifactType.STEP):
+    store = ArtifactStore(workspace, project_id=project_id, run_id=run_id)
+    return store.publish(
+        artifact_id,
+        artifact_type,
+        f"{artifact_id}.{artifact_type.value}",
+        content,
+        "producer",
+        "1.0",
+        1,
+        "sha256:" + "a" * 64,
+    )
+
+
+def _imported(artifact_id, artifact_hash):
+    return ImportedCadComponent(
+        component_id="c1",
+        artifact_id=artifact_id,
+        artifact_hash=artifact_hash,
+        format="step",
+        source_revision=1,
+        source_state_hash="sha256:" + "b" * 64,
+    )
 
 
 def _assembly():
@@ -80,3 +107,52 @@ def test_provider_uses_temporary_workspace_without_artifact_store(monkeypatch):
     assert provider.exact_measure(request, program) == (("moving", "stationary", 0.0, 1.0),)
     assert [(received_request, transformed) for received_request, transformed, _ in workspaces] == [(request, program)]
     assert not hasattr(provider, "artifact_store")
+
+
+def test_artifact_store_existing_in_project_resolves_single_and_fails_closed(tmp_path):
+    from mechcad_harness.artifacts.storage import ArtifactStore as _Store
+
+    artifact = _publish_step(tmp_path, "PRJ-X", "RUN-1", "ART-single")
+    store = _Store(tmp_path, project_id="PRJ-X", run_id="RUN-1")
+    resolved = store.existing_in_project("ART-single")
+    assert resolved is not None
+    assert resolved.artifact_id == "ART-single"
+    assert store.existing_in_project("ART-missing") is None
+
+    # Ambiguous: same artifact_id published under two runs -> fails closed.
+    _publish_step(tmp_path, "PRJ-X", "RUN-2", "ART-single")
+    assert store.existing_in_project("ART-single") is None
+
+
+def test_provider_resolves_imported_artifact_through_trusted_store(tmp_path):
+    artifact = _publish_step(tmp_path, "PRJ-X", "RUN-1", "ART-resolve")
+    provider = FreeCADTransientAssemblyMeasurementProvider(workspace=tmp_path, project_id="PRJ-X")
+    path = provider._resolve_imported_artifact_path(_imported(artifact.artifact_id, artifact.sha256))
+    assert path.is_file()
+    assert path.read_bytes() == b"STEP-BYTES"
+
+
+def test_provider_rejects_imported_artifact_when_store_missing(tmp_path):
+    provider = FreeCADTransientAssemblyMeasurementProvider(workspace=tmp_path, project_id="PRJ-X")
+    with pytest.raises(Exception, match="imported artifact not found"):
+        provider._resolve_imported_artifact_path(_imported("ART-absent", "sha256:" + "0" * 64))
+
+
+def test_provider_rejects_imported_artifact_hash_mismatch(tmp_path):
+    artifact = _publish_step(tmp_path, "PRJ-X", "RUN-1", "ART-hash")
+    provider = FreeCADTransientAssemblyMeasurementProvider(workspace=tmp_path, project_id="PRJ-X")
+    with pytest.raises(Exception, match="hash mismatch"):
+        provider._resolve_imported_artifact_path(_imported(artifact.artifact_id, "sha256:" + "f" * 64))
+
+
+def test_provider_rejects_non_step_imported_artifact(tmp_path):
+    artifact = _publish_step(tmp_path, "PRJ-X", "RUN-1", "ART-json", content=b"{}", artifact_type=ArtifactType.JSON)
+    provider = FreeCADTransientAssemblyMeasurementProvider(workspace=tmp_path, project_id="PRJ-X")
+    with pytest.raises(Exception, match="not a STEP"):
+        provider._resolve_imported_artifact_path(_imported(artifact.artifact_id, artifact.sha256))
+
+
+def test_provider_requires_workspace_scope_for_imported_resolution():
+    provider = FreeCADTransientAssemblyMeasurementProvider()
+    with pytest.raises(Exception, match="requires workspace and project_id"):
+        provider._resolve_imported_artifact_path(_imported("ART-scope", "sha256:" + "0" * 64))

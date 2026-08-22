@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 
 import pytest
 
@@ -33,7 +34,10 @@ def _make_application(tmp_path, kinematic_measure=None):
         "ownership:\n  - path: /components/*\n    owner: transmission_engineer\n",
         encoding="utf-8",
     )
-    dependencies.write_text("rules: []\nedges: []\n", encoding="utf-8")
+    dependencies.write_text(
+        json.dumps({"rules": [{"when": ["/components/*"], "invalidates": ["analysis.kinematic_sweep"]}], "edges": []}),
+        encoding="utf-8",
+    )
     state = DesignState(
         id="DES-m8c3",
         revision=1,

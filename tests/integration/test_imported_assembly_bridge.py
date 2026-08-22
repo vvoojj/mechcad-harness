@@ -33,6 +33,9 @@ def _freecad_available() -> bool:
         return False
 
 
+FREECAD_CANDIDATE = r"C:\Program Files\FreeCAD 1.1\bin\freecadcmd.exe"
+
+
 def _make_part(part_id: str) -> CadPartProgram:
     return CadPartProgram(
         part_id=part_id,
@@ -181,18 +184,35 @@ class TestFreeCADAssemblyBackendImported:
         not _freecad_available(),
         reason="FreeCAD not available"
     )
-    def test_backend_with_imported_components(self):
+    def test_backend_with_imported_components(self, monkeypatch):
+        monkeypatch.setenv("MECHCAD_FREECADCMD", FREECAD_CANDIDATE)
         with tempfile.TemporaryDirectory() as tmpdir:
             store = ArtifactStore(tmpdir, project_id="test-project", run_id="test-run")
-            artifact_hash = _create_test_step_artifact(store, "ART-gear-1")
-            
-            imported = resolve_imported_component(
-                artifact_id="ART-gear-1",
-                artifact_hash=artifact_hash,
-                store=store,
-                component_id="gear-1",
+            # Valid generic STEP produced by the supported generic FreeCAD backend
+            # (a plate), not a synthetic header-only fixture. Preserves generic
+            # imported-component semantics.
+            from mechcad_harness.backends.freecad import FreeCADBackend
+            from mechcad_harness.cad_program import BasePlateOperation, CadPartProgram
+
+            imported_program = CadPartProgram(
+                part_id="imported-plate",
+                operations=(BasePlateOperation(operation_id="base", length_mm=8, width_mm=8, thickness_mm=4),),
             )
-            
+            generated = FreeCADBackend().generate_program(
+                imported_program,
+                tmpdir,
+                project_id="test-project",
+                run_id="test-run",
+                revision=1,
+                state_hash="sha256:" + "b" * 64,
+            )
+            imported = resolve_imported_component(
+                artifact_id=generated.step.artifact_id,
+                artifact_hash=generated.step.sha256,
+                store=store,
+                component_id="imported-plate",
+            )
+
             part = _make_part("plate")
             program = CadAssemblyProgram(
                 assembly_id="test-assembly",
@@ -200,10 +220,10 @@ class TestFreeCADAssemblyBackendImported:
                 imported_components=(imported,),
                 instances=(
                     CadComponentInstance(instance_id="inst-plate", part_id="plate"),
-                    CadComponentInstance(instance_id="inst-gear", part_id="gear-1"),
+                    CadComponentInstance(instance_id="inst-imported", part_id="imported-plate"),
                 ),
             )
-            
+
             backend = FreeCADAssemblyBackend()
             result = backend.generate_assembly(
                 program,
@@ -213,7 +233,7 @@ class TestFreeCADAssemblyBackendImported:
                 revision=1,
                 state_hash="sha256:" + "b" * 64,
             )
-            
+
             assert result.fcstd is not None
             assert result.step is not None
             assert result.fcstd_verification.shape_valid

@@ -174,19 +174,17 @@ class FreeCADAssemblyBackend:
         return self._verify_persisted(program, workspace, project_id, run_id, revision, state_hash, discovery, fcstd_artifact, step_artifact, manifest, backend_provenance=backend_provenance)
 
     def _compile(self, program, part_artifacts, manifest, fcstd_path, step_path, workspace):
+        imported_ids = {comp.component_id for comp in program.canonical_imported_components}
         records = []
         for instance in program.canonical_instances:
-            if instance.part_id in part_artifacts:
+            if instance.part_id in imported_ids:
+                artifact = part_artifacts[instance.part_id]
+                axis, angle = _quaternion_to_axis_angle(instance.placement.rotation_quaternion)
+                records.append((instance, str((Path(workspace) / artifact.relative_path).resolve()), axis, angle, True))
+            elif instance.part_id in part_artifacts:
                 artifact = part_artifacts[instance.part_id]
                 axis, angle = _quaternion_to_axis_angle(instance.placement.rotation_quaternion)
                 records.append((instance, str((Path(workspace) / artifact.relative_path).resolve()), axis, angle, False))
-            else:
-                for comp in program.imported_components:
-                    if comp.component_id == instance.part_id:
-                        artifact = part_artifacts[comp.component_id]
-                        axis, angle = _quaternion_to_axis_angle(instance.placement.rotation_quaternion)
-                        records.append((instance, str((Path(workspace) / artifact.relative_path).resolve()), axis, angle, True))
-                        break
 
         lines = ["import FreeCAD, Part, json", f"doc = FreeCAD.newDocument({program.assembly_id!r})"]
         for instance, source_path, axis, angle, is_imported in records:
@@ -194,12 +192,13 @@ class FreeCADAssemblyBackend:
             if is_imported:
                 lines += [
                     f"Part.insert({source_path!r}, doc.Name)",
-                    f"imported_objects = [item for item in doc.Objects if hasattr(item, 'Shape') and not item.Shape.isNull()]",
+                    "imported_objects = [item for item in doc.Objects if hasattr(item, 'Shape') and not item.Shape.isNull()]",
                     "if not imported_objects: raise RuntimeError('imported STEP shape missing')",
-                    f"obj = imported_objects[0]",
-                    f"obj.Label = {name!r}",
+                    f"obj = doc.addObject('Part::Feature', {name!r})",
+                    "obj.Shape = imported_objects[0].Shape.copy()",
                     f"obj.Placement.Base = FreeCAD.Vector({instance.placement.x_mm!r}, {instance.placement.y_mm!r}, {instance.placement.z_mm!r})",
-                    f"obj.Placement.Rotation = FreeCAD.Rotation(FreeCAD.Vector({axis[0]!r}, {axis[1]!r}, {axis[2]!r}), {math.degrees(angle)!r})"
+                    f"obj.Placement.Rotation = FreeCAD.Rotation(FreeCAD.Vector({axis[0]!r}, {axis[1]!r}, {axis[2]!r}), {math.degrees(angle)!r})",
+                    "for _tmp in imported_objects:\n    doc.removeObject(_tmp.Name)",
                 ]
             else:
                 lines += [

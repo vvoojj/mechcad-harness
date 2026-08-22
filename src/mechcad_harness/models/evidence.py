@@ -1,6 +1,7 @@
 from pydantic import Field
 
 from .common import StateBinding
+from mechcad_harness.analysis_provenance import AnalysisExecutionProvenance
 from mechcad_harness.backends.models import BackendProvenance
 
 
@@ -15,3 +16,4 @@ class Evidence(StateBinding):
     input_hash: str | None = None
     output_hash: str | None = None
     backend_provenance: BackendProvenance | None = None
+    analysis_execution_provenance: AnalysisExecutionProvenance | None = None

@@ -1,5 +1,6 @@
 import json
 
+import importlib.util
 import pytest
 
 from mechcad_harness.backends import (
@@ -65,8 +66,10 @@ def test_package_inspection_uses_trusted_distribution_mapping():
     available = inspect_distribution("setuptools")
     assert available.status is BackendHealthStatus.AVAILABLE
     assert available.detected_version
-    missing = inspect_distribution("py_gearworks")
-    assert missing.status is BackendHealthStatus.UNAVAILABLE
+    gearworks_installed = importlib.util.find_spec("py_gearworks") is not None
+    assert inspect_distribution("py_gearworks").status is (
+        BackendHealthStatus.AVAILABLE if gearworks_installed else BackendHealthStatus.UNAVAILABLE
+    )
     with pytest.raises(Exception):
         inspect_distribution("arbitrary.module.path")
 

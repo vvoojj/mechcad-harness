@@ -32,6 +32,13 @@ from mechcad_harness.transient_assembly_analysis import (
     TransientAssemblyAnalysisService,
 )
 from mechcad_harness.transient_freecad_measurement import FreeCADTransientAssemblyMeasurementProvider
+from mechcad_harness.analysis_provenance import (
+    AnalysisExecutionProvenance,
+    DETERMINISTIC_EXECUTION_MODE,
+    DETERMINISTIC_PROVIDER_NAME,
+    DETERMINISTIC_PROVIDER_VERSION,
+)
+from mechcad_harness.models.evidence import Evidence
 
 
 class ProductionStateBinding(Model):
@@ -147,7 +154,10 @@ class ProductionApplication:
             for registration in BuiltinTools.registrations()
         )
         if kinematic_measure is None or isinstance(kinematic_measure, FreeCADTransientAssemblyMeasurementProvider):
-            provider = kinematic_measure or FreeCADTransientAssemblyMeasurementProvider()
+            provider = kinematic_measure or FreeCADTransientAssemblyMeasurementProvider(
+                workspace=self.state_manager.workspace,
+                project_id=project_id,
+            )
             self._kinematic_measurement_provider = provider
             self.kinematic_measure = provider.exact_measure
         else:
@@ -372,4 +382,75 @@ class ProductionApplication:
 
         transient_service = TransientAssemblyAnalysisService(measure)
         sweep_service = CadKinematicSweepService(transient_analysis_service=transient_service)
-        return sweep_service.execute(request, assembly)
+        sweep = sweep_service.execute(request, assembly)
+
+        self._record_kinematic_sweep_provenance(
+            request=request,
+            sweep=sweep,
+            source_revision=source_revision,
+            source_state_hash=source_state_hash,
+        )
+        return sweep
+
+    def _record_kinematic_sweep_provenance(self, *, request, sweep, source_revision, source_state_hash) -> None:
+        # Trust boundary: provider/backend identity is derived from the composed
+        # provider object, never from caller-supplied provenance fields.
+        provider = self._kinematic_measurement_provider
+        if isinstance(provider, FreeCADTransientAssemblyMeasurementProvider):
+            provenance = AnalysisExecutionProvenance(
+                request_hash=request.request_hash,
+                result_hash=sweep.result_hash,
+                source_assembly_hash=request.source_assembly_hash,
+                sweep_version=request.sweep_version,
+                provider_name=provider.provider_name,
+                provider_version=provider.provider_version,
+                execution_mode=provider.execution_mode,
+                backend_provenance=provider.provenance(),
+            )
+        else:
+            provenance = AnalysisExecutionProvenance(
+                request_hash=request.request_hash,
+                result_hash=sweep.result_hash,
+                source_assembly_hash=request.source_assembly_hash,
+                sweep_version=request.sweep_version,
+                provider_name=DETERMINISTIC_PROVIDER_NAME,
+                provider_version=DETERMINISTIC_PROVIDER_VERSION,
+                execution_mode=DETERMINISTIC_EXECUTION_MODE,
+                backend_provenance=None,
+            )
+
+        import hashlib
+
+        evidence_id = f"EVD-KSWEEP-{hashlib.sha256((request.request_hash + sweep.result_hash).encode()).hexdigest()[:24]}"
+        evidence = Evidence(
+            id=evidence_id,
+            kind="analysis.kinematic_sweep",
+            summary="Trusted execution provenance for CadKinematicSweepResult",
+            revision=source_revision,
+            state_hash=source_state_hash,
+            producer_type="kinematic_sweep_provider",
+            producer_name=provenance.provider_name,
+            producer_version=provenance.provider_version,
+            producer_result_id=sweep.result_hash,
+            input_hash=request.request_hash,
+            output_hash=sweep.result_hash,
+            backend_provenance=provenance.backend_provenance,
+            analysis_execution_provenance=provenance,
+        )
+        try:
+            self.evidence_store.load_evidence(self.project_id, evidence_id)
+        except Exception:
+            self.evidence_store.write_evidence(self.project_id, evidence)
+
+    def get_kinematic_sweep_evidence(self, result_hash: str):
+        evidence_dir = self.state_manager.workspace / "projects" / self.project_id / "evidence"
+        if not evidence_dir.is_dir():
+            return None
+        for path in sorted(evidence_dir.glob("*.json")):
+            try:
+                evidence = self.evidence_store.load_evidence(self.project_id, path.stem)
+            except Exception:
+                continue
+            if evidence.kind == "analysis.kinematic_sweep" and evidence.producer_result_id == result_hash:
+                return evidence
+        return None
