@@ -63,7 +63,7 @@ Accepted typed design specifications compile into backend-independent `CadPartPr
 
 ## 14. Analysis Architecture
 
-Current foundations cover exact interference/clearance, transient assembly measurement, transmission calculations, material/mass estimates, and preliminary section properties. Structural load/stress, FEA, dynamics, and manufacturing validation remain `TARGET_NEXT` or `FUTURE` unless a later specification establishes them.
+Current foundations cover exact interference/clearance, transient assembly measurement, transmission calculations, material/mass estimates, preliminary section properties, and the bounded M11 source-bound single-body linear-static structural path. M11-3 provides trusted mesh/solver execution and M11-4 provides trusted FRD/DAT interpretation, typed criterion outcomes, and a separate fixed-cantilever analytical-validation API. Broad structural approval, general FEA, dynamics, and manufacturing validation remain `TARGET_NEXT` or `FUTURE`.
 
 ## 15. Kinematic Architecture
 
@@ -97,7 +97,7 @@ acceptance marker is `M10_FULLY_CLOSED_LIVE_VERIFIED`.
 
 ## 20. Future Capabilities
 
-**FUTURE:** whole configuration-space certification, generalized autonomous constraint solving beyond the accepted bounded resolution loop, FEA, dynamics/MuJoCo integration, wind and environmental loads, manufacturing output, optimization, and broad multi-agent engineering convergence.
+**FUTURE:** whole configuration-space certification, generalized autonomous constraint solving beyond the accepted bounded resolution loop, broad structural approval and general FEA beyond the bounded M11 path, dynamics/MuJoCo integration, wind and environmental loads, manufacturing output, optimization, mesh convergence, and broad multi-agent engineering convergence.
 
 ## 21. Reference Projects / Domain Examples
 
@@ -243,13 +243,15 @@ dynamics, FEA, or manufacturing certification.
 - `continuous_sweep_verified = False` (ordinary discrete sweeps remain
   discrete-only; continuous proof is a separate entrypoint)
 - M10-3 verifies ordered discrete configurations only; M10-4 verifies only one
-  explicit continuous path. Whole configuration-space proof, FEA, materials,
+  explicit continuous path. Whole configuration-space proof, broad FEA beyond
+  the bounded M11 path, materials,
   manufacturing, and optimization remain future
 
 ## 24. Next Planning Boundary
 
 M10-1 through M10-4 and the M10-5 system acceptance are implemented and
-live-verified. Whole configuration-space continuous clearance, FEA, materials
+live-verified. Whole configuration-space continuous clearance, broad FEA beyond
+the bounded M11 path, materials
 selection, manufacturing approval, tolerance verification, optimization, and
 automatic synthesis/selection remain later-stage and are not current
 capability. The next milestone requires a separate design/specification cycle.
@@ -279,7 +281,7 @@ capability. The next milestone requires a separate design/specification cycle.
 | M7C generic kinematics | Accepted discrete foundation | Project description section 18; M7C plan/closure evidence | UPDATE | Continuous verification remains future. |
 | M7D domain kinematic integration | Completed reference adapter | M7D specs/plans; project description section 18 | DOMAIN_EXAMPLE_ONLY | Thin Yagi adapter over generic M7C, not core architecture. |
 | MuJoCo | Future simulation backend | No accepted current contract identified | FUTURE | Do not claim current integration. |
-| FEA | Future structural backend | README/M5.5C exclusions | FUTURE | Section properties are not FEA. |
+| FEA | Bounded current structural backend plus future generalization | M11-3/M11-4 reports; README/M5.5C exclusions | UPDATE | Source-bound single-body mesh/solve/result interpretation is current; section properties are not a general FEA or structural-approval claim. |
 | Multi-agent engineering goals | Future orchestration | M6/M7 boundaries | FUTURE | Existing agent identities do not prove multi-agent execution. |
 
 The historical/current project brief reviewed for this reconciliation is `docs/MechCAD_Harness_Project_Description.md`. It preserves the original universal intent while explicitly updating stale roadmap statements. Its implementation-status assertions establish baseline maturity for documentation purposes but do not replace the independent runtime audit.

@@ -243,6 +243,15 @@ def test_production_state_binding_returns_a_safe_nested_state_snapshot(tmp_path)
     assert later.state_hash == state_hash(later.state)
 
 
+def test_production_state_binding_accessor_returns_deep_copy_for_nested_state(tmp_path):
+    application = build_application(tmp_path, CountingAdapter())
+    binding = application.load_state()
+
+    binding.state.components[0].name = "mutated"
+
+    assert binding.state.components[0].name == "Bracket"
+
+
 def test_application_exposes_composed_services_without_execution_api(tmp_path):
     from mechcad_harness.agents import ContextBuilder
     from mechcad_harness.changes import ChangeEngine

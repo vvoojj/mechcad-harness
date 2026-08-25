@@ -184,6 +184,55 @@ class TestFreeCADAssemblyBackendImported:
         not _freecad_available(),
         reason="FreeCAD not available"
     )
+    def test_backend_with_imported_only_components(self, monkeypatch):
+        monkeypatch.setenv("MECHCAD_FREECADCMD", FREECAD_CANDIDATE)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = ArtifactStore(tmpdir, project_id="test-project", run_id="test-run")
+            from mechcad_harness.backends.freecad import FreeCADBackend
+
+            source = _make_part("imported-source")
+            generated = FreeCADBackend().generate_program(
+                source,
+                tmpdir,
+                project_id="test-project",
+                run_id="test-run",
+                revision=1,
+                state_hash="sha256:" + "b" * 64,
+            )
+            imported = resolve_imported_component(
+                artifact_id=generated.step.artifact_id,
+                artifact_hash=generated.step.sha256,
+                store=store,
+                component_id="imported-body",
+            )
+            program = CadAssemblyProgram(
+                assembly_id="imported-only-assembly",
+                imported_components=(imported,),
+                instances=(
+                    CadComponentInstance(instance_id="body-a", part_id="imported-body"),
+                    CadComponentInstance(instance_id="body-b", part_id="imported-body", placement=CadRigidTransform(x_mm=20)),
+                ),
+            )
+
+            result = FreeCADAssemblyBackend().generate_assembly(
+                program,
+                tmpdir,
+                project_id="test-project",
+                run_id="test-run",
+                revision=1,
+                state_hash="sha256:" + "b" * 64,
+            )
+
+            assert result.manifest.parts == ()
+            assert len(result.manifest.imported_components) == 1
+            assert len(result.manifest.instances) == 2
+            assert result.fcstd_verification.shape_valid
+            assert result.step_verification.shape_valid
+
+    @pytest.mark.skipif(
+        not _freecad_available(),
+        reason="FreeCAD not available"
+    )
     def test_backend_with_imported_components(self, monkeypatch):
         monkeypatch.setenv("MECHCAD_FREECADCMD", FREECAD_CANDIDATE)
         with tempfile.TemporaryDirectory() as tmpdir:

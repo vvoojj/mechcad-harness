@@ -186,10 +186,20 @@ configuration-space region.
 
 **FOUNDATION / REQUIRED_CURRENT:** state/revision/change/ownership/dependency/run/tool/Evidence foundations; AgentGateway, fake and OpenCode adapters, bounded transmission reasoning, strict structured response, tool mediation, torque/Evidence round-trip foundation, constraint discovery/materialization/satisfaction/resolution; narrow engineering providers; generic CAD programs and rigid assemblies; exact collision, transient measurement, discrete single-axis kinematics, single-axis continuous proof, generic multi-joint discrete forward kinematics, exact discrete multi-joint collision evaluation, and explicit-path continuous multi-joint clearance proof.
 
+The accepted M11 bounded structural path is also current: M11-2 provides the
+typed source-bound single-body linear-static authority model; M11-3 provides
+trusted FreeCAD geometry, Gmsh C3D10 meshing, deterministic CalculiX deck
+lowering, per-case execution, and raw artifact provenance; and M11-4 provides
+trusted FRD/DAT/LOG interpretation, typed criterion outcomes, and separate
+predeclared fixed-cantilever analytical validation. These milestones do not
+constitute general structural approval or unrestricted FEA.
+
 **TARGET_NEXT:** one connected universal mechanical workflow across the current foundations, broader domain services, canonical transmission/material selection, controlled load cases, and stronger provider wiring proof.
 
-**FUTURE:** whole configuration-space certification, FEA, dynamics, manufacturing, optimization, and broad multi-agent convergence.
+**FUTURE:** whole configuration-space certification, broad structural approval
+and unrestricted FEA beyond the bounded M11 path, mesh convergence, dynamics,
+manufacturing, optimization, and broad multi-agent convergence.
 
 ## Generic Acceptance Scenario
 
-A motor-driven rotary bracket is the universal target fixture. **Stage A - baseline conformance** audits every `FOUNDATION` and `REQUIRED_CURRENT` capability independently. **Stage B - connected readiness** selects `TARGET_NEXT` wiring to prove requirements -> agent -> tool/provider -> Evidence -> proposal -> revision -> part CAD -> assembly -> discrete kinematic verification. **Stage C - future** adds whole configuration-space certification, structural approval, FEA, dynamics, and manufacturing; the accepted M10 explicit-path proof is current but these broader claims are not current gates.
+A motor-driven rotary bracket is the universal target fixture. **Stage A - baseline conformance** audits every `FOUNDATION` and `REQUIRED_CURRENT` capability independently. **Stage B - connected readiness** selects `TARGET_NEXT` wiring to prove requirements -> agent -> tool/provider -> Evidence -> proposal -> revision -> part CAD -> assembly -> discrete kinematic verification. **Stage C - future** adds whole configuration-space certification, broad structural approval and FEA beyond the bounded M11 path, dynamics, and manufacturing; the accepted M10 explicit-path proof and bounded M11 structural path are current but these broader claims are not current gates.

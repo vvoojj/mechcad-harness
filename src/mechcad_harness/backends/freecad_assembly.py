@@ -124,7 +124,15 @@ class FreeCADAssemblyBackend:
         step = store.existing(step_id)
         if fcstd is None or step is None:
             raise FreeCADArtifactVerificationError("verified assembly artifacts are missing or invalid")
-        manifest = build_assembly_manifest(program, {part.part_id: self._component_artifact(store, part, workspace, project_id, run_id, revision, state_hash) for part in program.canonical_parts}, revision, state_hash)
+        component_artifacts = {
+            part.part_id: self._component_artifact(store, part, workspace, project_id, run_id, revision, state_hash)
+            for part in program.canonical_parts
+        }
+        component_artifacts.update({
+            component.component_id: self._imported_component_artifact(store, component)
+            for component in program.canonical_imported_components
+        })
+        manifest = build_assembly_manifest(program, component_artifacts, revision, state_hash)
         return self._verify_persisted(program, workspace, project_id, run_id, revision, state_hash, discovery, fcstd, step, manifest, backend_provenance=fcstd.backend_provenance or runtime_provenance)
 
     @staticmethod
@@ -133,6 +141,30 @@ class FreeCADAssemblyBackend:
         artifact_id = freecad_program_artifact_id(project_id, run_id, revision, state_hash, part, "FCStd")
         artifact = store.existing(artifact_id)
         return FreeCADAssemblyBackend.verify_component_artifact(artifact, workspace, expected_part_hash=cad_program_hash(part), expected_artifact_id=artifact_id)
+
+    @staticmethod
+    def _imported_component_artifact(store, component):
+        artifact = store.existing(component.artifact_id)
+        if artifact is None:
+            raise FreeCADArtifactVerificationError(
+                f"imported component artifact not found or invalid: {component.component_id}"
+            )
+        if artifact.artifact_type.value != component.format:
+            raise FreeCADArtifactVerificationError(
+                f"imported component artifact format mismatch: {component.component_id}"
+            )
+        if artifact.sha256 != component.artifact_hash:
+            raise FreeCADArtifactVerificationError(
+                f"imported component artifact hash mismatch: {component.component_id}"
+            )
+        if (
+            artifact.bound_revision != component.source_revision
+            or artifact.bound_state_hash != component.source_state_hash
+        ):
+            raise FreeCADArtifactVerificationError(
+                f"imported component source binding mismatch: {component.component_id}"
+            )
+        return artifact
 
     def generate_assembly(self, program: CadAssemblyProgram, workspace, *, project_id: str, run_id: str, revision: int, state_hash: str) -> FreeCADAssemblyGenerationResult:
         discovery = discover_freecad().require_available()
@@ -146,12 +178,7 @@ class FreeCADAssemblyBackend:
             part_artifacts[part.part_id] = part_result.fcstd
 
         for comp in program.canonical_imported_components:
-            artifact = store.existing(comp.artifact_id)
-            if artifact is None:
-                raise FreeCADArtifactVerificationError(f"imported component artifact not found: {comp.artifact_id}")
-            if artifact.sha256 != comp.artifact_hash:
-                raise FreeCADArtifactVerificationError(f"imported component artifact hash mismatch: {comp.artifact_id}")
-            part_artifacts[comp.component_id] = artifact
+            part_artifacts[comp.component_id] = self._imported_component_artifact(store, comp)
 
         manifest = build_assembly_manifest(program, part_artifacts, revision, state_hash)
         assembly_id_fcstd = assembly_artifact_id(project_id, run_id, revision, state_hash, program, "FCStd")
@@ -191,14 +218,15 @@ class FreeCADAssemblyBackend:
             name = instance_object_name(instance.instance_id)
             if is_imported:
                 lines += [
-                    f"Part.insert({source_path!r}, doc.Name)",
-                    "imported_objects = [item for item in doc.Objects if hasattr(item, 'Shape') and not item.Shape.isNull()]",
+                    f"source = FreeCAD.newDocument({('imported_' + name)!r})",
+                    f"Part.insert({source_path!r}, source.Name)",
+                    "imported_objects = [item for item in source.Objects if hasattr(item, 'Shape') and not item.Shape.isNull()]",
                     "if not imported_objects: raise RuntimeError('imported STEP shape missing')",
                     f"obj = doc.addObject('Part::Feature', {name!r})",
-                    "obj.Shape = imported_objects[0].Shape.copy()",
+                    "obj.Shape = Part.makeCompound([item.Shape.copy() for item in imported_objects])",
                     f"obj.Placement.Base = FreeCAD.Vector({instance.placement.x_mm!r}, {instance.placement.y_mm!r}, {instance.placement.z_mm!r})",
                     f"obj.Placement.Rotation = FreeCAD.Rotation(FreeCAD.Vector({axis[0]!r}, {axis[1]!r}, {axis[2]!r}), {math.degrees(angle)!r})",
-                    "for _tmp in imported_objects:\n    doc.removeObject(_tmp.Name)",
+                    "FreeCAD.closeDocument(source.Name)",
                 ]
             else:
                 lines += [
@@ -254,24 +282,28 @@ for obj in objects:
     shape = obj.Shape
     box = shape.BoundBox
     items.append({{"instance_id": obj.Name, "object_name": obj.Name, "x_length_mm": box.XLength, "y_length_mm": box.YLength, "z_length_mm": box.ZLength, "x_min_mm": box.XMin, "x_max_mm": box.XMax, "y_min_mm": box.YMin, "y_max_mm": box.YMax, "z_min_mm": box.ZMin, "z_max_mm": box.ZMax, "volume_mm3": shape.Volume, "shape_valid": shape.isValid()}})
-if len(items) != {len(program.instances)!r}: raise RuntimeError("assembly STEP solid count mismatch")
+if len(items) < {len(program.instances)!r}: raise RuntimeError("assembly STEP solid count below instance count")
 print("M7A2B_JSON=" + json.dumps({{"assembly_id": {program.assembly_id!r}, "assembly_hash": {manifest.assembly_hash!r}, "instances": items, "overall_bounds_mm": [max(item["x_max_mm"] for item in items)-min(item["x_min_mm"] for item in items), max(item["y_max_mm"] for item in items)-min(item["y_min_mm"] for item in items), max(item["z_max_mm"] for item in items)-min(item["z_min_mm"] for item in items)], "total_volume_mm3": sum(item["volume_mm3"] for item in items), "solid_count": len(items), "shape_valid": all(item["shape_valid"] for item in items)}}, sort_keys=True))
 FreeCAD.closeDocument(doc.Name)
 '''
         with tempfile.TemporaryDirectory(prefix="mechcad-assembly-verify-") as directory:
             fcstd = self._parse(self.part_backend._run(discovery.executable, fcstd_script, cwd=Path(directory)), expected_hash=manifest.assembly_hash, expected_solid_count=len(program.instances))
-            step = self._parse(self.part_backend._run(discovery.executable, step_script, cwd=Path(directory)), expected_hash=manifest.assembly_hash, expected_solid_count=len(program.instances), require_names=False)
+            step = self._parse(self.part_backend._run(discovery.executable, step_script, cwd=Path(directory)), expected_hash=manifest.assembly_hash, minimum_solid_count=len(program.instances), require_names=False)
         backend_provenance = backend_provenance or fcstd_artifact.backend_provenance
         return FreeCADAssemblyGenerationResult(fcstd=fcstd_artifact, step=step_artifact, manifest=manifest, fcstd_verification=fcstd, step_verification=step, project_id=project_id, run_id=run_id, bound_revision=revision, bound_state_hash=state_hash, backend_version=ASSEMBLY_BACKEND_VERSION, freecad_version=backend_provenance.library_version if backend_provenance else None, backend_provenance=backend_provenance)
 
     @staticmethod
-    def _parse(result, *, expected_hash, expected_solid_count=None, require_names=True):
+    def _parse(result, *, expected_hash, expected_solid_count=None, minimum_solid_count=None, require_names=True):
         if result.returncode != 0:
             raise FreeCADArtifactVerificationError(result.stderr or result.stdout or "assembly verification failed")
         line = next((line for line in result.stdout.splitlines() if line.startswith("M7A2B_JSON=")), None)
         if line is None:
             raise FreeCADArtifactVerificationError("assembly structured verification missing")
         payload = json.loads(line.removeprefix("M7A2B_JSON="))
-        if payload["assembly_hash"] != expected_hash or payload["solid_count"] != (expected_solid_count or payload["solid_count"]) or payload["solid_count"] <= 0 or not payload["shape_valid"]:
+        if payload["assembly_hash"] != expected_hash or payload["solid_count"] <= 0 or not payload["shape_valid"]:
             raise FreeCADArtifactVerificationError("assembly verification mismatch")
+        if expected_solid_count is not None and payload["solid_count"] != expected_solid_count:
+            raise FreeCADArtifactVerificationError("assembly verification solid count mismatch")
+        if minimum_solid_count is not None and payload["solid_count"] < minimum_solid_count:
+            raise FreeCADArtifactVerificationError("assembly verification minimum solid count mismatch")
         return FreeCADAssemblyVerification.model_validate(payload)

@@ -34,6 +34,9 @@ def _parse_config(text: str) -> dict[str, Any]:
                 key, item = value.split(":", 1)
                 current = {key.strip(): _scalar(item.strip())}
                 data[section].append(current)
+                if not item.strip():
+                    current[key.strip()] = []
+                    field = key.strip()
             else:
                 if current is None or field is None:
                     raise ValueError("list item has no parent field")

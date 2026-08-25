@@ -6,6 +6,7 @@ from mechcad_harness.engineering.keys import SupportedConstraintKey
 from mechcad_harness.engineering.values import AuthoritativeValue, MotorCharacteristicsValue, OutputAngularSpeedValue, OutputInterfaceValue, PackagingEnvelopeValue
 
 from .common import Model, NamedModel, utc_now
+from .structural import StructuralAnalysisDefinition
 
 
 class Requirement(NamedModel):
@@ -78,6 +79,9 @@ class DesignState(Model):
     interfaces: list[Interface] = Field(default_factory=list)
     constraints: list[Constraint] = Field(default_factory=list)
     load_cases: list[LoadCase] = Field(default_factory=list)
+    structural_analysis_definitions: list[StructuralAnalysisDefinition] = Field(
+        default_factory=list
+    )
     authoritative_parameters: list[AuthoritativeParameter] = Field(default_factory=list)
     azimuth_mount_plates: list[dict] = Field(default_factory=list)
     yagi_payload_carrier_requirements: list[dict] = Field(default_factory=list)
@@ -90,3 +94,10 @@ class DesignState(Model):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("created_at must be timezone-aware")
         return value
+
+    @model_validator(mode="after")
+    def validate_structural_analysis_definition_ids(self):
+        definition_ids = [definition.id for definition in self.structural_analysis_definitions]
+        if len(set(definition_ids)) != len(definition_ids):
+            raise ValueError("structural analysis definition IDs must be unique")
+        return self

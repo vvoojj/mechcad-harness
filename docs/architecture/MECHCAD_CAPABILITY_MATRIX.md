@@ -51,8 +51,8 @@ Maturity values are normative expectations, not audit verdicts. Definitions are 
 | reference domain adapter proof | domain layer | domain owner | domain layout/reference | generic service request/result | generic CAD/kinematics | no generic-layer leakage | FOUNDATION | M7B/M7D reference evidence |
 | connected rotary-bracket workflow | integration | orchestrator/domain owners | universal requirements | verified system result | selected current foundations | concrete end-to-end runtime path | TARGET_NEXT | project description Phase E |
 | multi-axis kinematic chain | kinematics | kinematics owner | parent/joints/frames | chain result | deterministic core (M10-2) or future backend | frame/joint composition; M10-2 delivers discrete forward kinematics only | REQUIRED_CURRENT | M10-2 (discrete FK); project description Phase F (continuous/trajectory future) |
-| structural analysis | structural | structural owner | loads/sections/materials | stress/deflection | future solver | acceptance and calibrated validation | FUTURE | M5.5 exclusions |
-| FEA | structural backend | structural owner | mesh/material/load | FEA result | future solver | solver provenance | FUTURE | project description |
+| structural analysis | structural | structural owner | source-bound single-body linear-static definition/request | typed displacement/stress/reaction result and bounded criterion outcomes | FreeCAD + Gmsh + CalculiX | exact source/artifact/runtime provenance; trusted FRD/DAT interpretation; fixed cantilever analytical checks | REQUIRED_CURRENT (bounded M11-3/M11-4 scope) | M11-2/M11-3/M11-4 |
+| FEA | structural backend | structural owner | source-bound single-body mesh/material/load execution | trusted raw execution manifest plus interpreted FRD/DAT result | Gmsh C3D10 + CalculiX 2.22 | byte-verified artifacts, solver/case provenance, parser integrity, analytical validation; no mesh-convergence or global safety claim | REQUIRED_CURRENT (bounded M11-3/M11-4 scope) | M11-3/M11-4 |
 | dynamics/simulation | dynamics | kinematics owner | mechanism/trajectory | dynamic result | MuJoCo if accepted | solver/version/binding | FUTURE | project description |
 | manufacturing output | manufacturing | manufacturing owner | verified design | manufacturing package | future tools | tolerances/BOM/review | FUTURE | project description |
 
@@ -109,3 +109,17 @@ sweep result. M10-2 adds discrete multi-joint forward kinematics and M10-3 adds
 exact discrete multi-joint collision evaluation. M10-4 adds explicit-path
 continuous proof; whole configuration-space proof, FEA, and manufacturing proof
 remain future capability.
+
+## M11 Traceability
+
+| Milestone | Accepted completion evidence | Current bounded capability | Normative treatment |
+|---|---|---|---|
+| M11-2 | `M11_2_STRUCTURAL_AUTHORITY_MODEL_VERIFIED` | Typed source-bound single-body linear-static definitions and requests with semantic regions, material authority, loads, supports, criteria, mesh/output settings, and deterministic identities; no solving or result acceptance. | REQUIRED_CURRENT |
+| M11-3 | `M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED` | Trusted FreeCAD source geometry and semantic-region realization, Gmsh C3D10 mesh, deterministic CalculiX deck lowering, per-case solver execution, shared-mesh multi-case manifests, and raw artifact provenance. | REQUIRED_CURRENT (bounded) |
+| M11-4 | `M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED` | Trusted FRD/DAT/LOG interpretation, typed PASS/FAIL/NOT_EVALUABLE criteria, and a separate production analytical-validation API for a predeclared fixed rectangular cantilever policy. | REQUIRED_CURRENT (bounded) |
+
+The M11 rows do not claim general structural approval. Assemblies, nonlinear
+analysis, fatigue, dynamics, thermal stress, tolerances, optimization,
+manufacturing approval, mesh convergence, structural Evidence acceptance, global
+yield/safety certification, and automatic synthesis/selection remain future or
+out of scope.

@@ -1,6 +1,6 @@
 # MechCAD Engineering Workflow
 
-**Maturity:** `FOUNDATION` and `REQUIRED_CURRENT` are current baseline audit scope; `TARGET_NEXT` is connected-readiness work; `FUTURE` covers structural approval, FEA, dynamics, manufacturing, and optimization. See `MECHCAD_SYSTEM_CONTRACT.md` for authoritative definitions.
+**Maturity:** `FOUNDATION` and `REQUIRED_CURRENT` are current baseline audit scope; `TARGET_NEXT` is connected-readiness work; `FUTURE` covers broad structural approval and FEA beyond the bounded M11 path, dynamics, manufacturing, and optimization. See `MECHCAD_SYSTEM_CONTRACT.md` for authoritative definitions.
 
 ## Generic Lifecycle
 
@@ -111,4 +111,4 @@ Missing data returns `ConstraintRequest`; conflicting authority returns `Issue`;
 
 **Stage B - Connected readiness:** use a motor-driven rotary bracket to prove requirements -> bounded agent -> deterministic tool/provider -> Evidence -> proposal -> new revision -> part CAD -> assembly -> discrete kinematic verification. This stage audits selected `TARGET_NEXT` wiring without assuming it already exists.
 
-**Stage C - Future:** whole configuration-space certification, structural approval, FEA, dynamics, and manufacturing outputs. The accepted M10 explicit-path continuous proof is current; these broader capabilities are not present baseline acceptance gates.
+**Stage C - Future:** whole configuration-space certification, broad structural approval and FEA beyond the bounded M11 path, dynamics, and manufacturing outputs. The accepted M10 explicit-path continuous proof and bounded M11 structural path are current; these broader capabilities are not present baseline acceptance gates.

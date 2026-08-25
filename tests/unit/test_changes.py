@@ -102,6 +102,13 @@ def test_unowned_and_wrong_owner_paths_fail(tmp_path):
         engine.apply_proposal("PRJ-1", proposal(manager, "PRJ-1", [unowned]))
 
 
+def test_structural_owner_can_add_definition_but_other_owner_cannot(tmp_path):
+    policy = OwnershipPolicy.from_file("config/ownership.yaml")
+    policy.check("/structural_analysis_definitions/DEF-1", "mechcad-structural")
+    with pytest.raises(OwnershipViolationError):
+        policy.check("/structural_analysis_definitions/DEF-1", "mechcad-materials")
+
+
 def test_result_is_pydantic_revalidated(tmp_path):
     manager, engine = make_engine(tmp_path)
     invalid = ChangeOperation(operation="replace", path="/components/PRT-1/name", value="")

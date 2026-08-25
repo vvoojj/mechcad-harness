@@ -12,6 +12,11 @@ class ArtifactType(StrEnum):
     STEP = "step"
     STL = "stl"
     JSON = "json"
+    MSH = "msh"
+    INP = "inp"
+    FRD = "frd"
+    DAT = "dat"
+    LOG = "log"
 
 
 class EngineeringArtifact(Model):

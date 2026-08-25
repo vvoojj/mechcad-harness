@@ -4,14 +4,15 @@
 
 Start with [`docs/README.md`](docs/README.md). It provides task-sized context bundles for architecture, subsystem work, domain extensions, and the later independent integration audit. Do not preload the full documentation tree unless doing architecture reconciliation or audit preparation.
 
-MechCAD Harness M0 is the typed Python foundation for a future engineering
-workflow system. It provides readable identifiers, minimal Pydantic v2 domain
-models, placeholder YAML configuration, and tests.
+Historically, M0 was the typed Python foundation for a future engineering
+workflow system, with readable identifiers, minimal Pydantic v2 domain models,
+placeholder YAML configuration, and tests. That description is retained only
+as project history; the current capability baseline is documented below.
 
-## Current Architecture Status (M8 / M9 / M10)
+## Current Architecture Status (M8 / M9 / M10 / M11)
 
 The repository has advanced well beyond M0. The current accepted baseline is
-**M8 + M9 + M10-1 + M10-2 + M10-3 + M10-4**.
+**M8 + M9 + M10-1 + M10-2 + M10-3 + M10-4 + M11-2 + M11-3 + M11-4**.
 
 - **M8** established the production architecture: production orchestration
   (`ProductionApplication` composition root), source-bound `DesignSpec` →
@@ -39,12 +40,26 @@ The repository has advanced well beyond M0. The current accepted baseline is
   shared FK/discrete/continuous result equality, durable proof reload, trusted
   provenance, source immutability, and full regression verification.
 
-**Current system status: `M10_FULLY_CLOSED_LIVE_VERIFIED`.**
+**Current system status: `M10_FULLY_CLOSED_LIVE_VERIFIED`,
+`M11_2_STRUCTURAL_AUTHORITY_MODEL_VERIFIED`,
+`M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED`, and
+`M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED`.**
+
+MechCAD has a bounded, live-verified structural result interpretation path for
+source-bound single-body linear-static analyses. M11-3 executes trusted
+FreeCAD 1.1.3 geometry realization, Gmsh 4.15.0 meshing, and CalculiX 2.22
+solving. M11-4 interprets trusted FRD/DAT outputs and evaluates typed criteria
+with real PASS, FAIL, and NOT_EVALUABLE outcomes. The live analytical
+validation is a separate production API using a predeclared fixed rectangular
+cantilever policy; stress is extrapolated
+nodal stress, not integration-point stress, and no global yield or safety claim
+is made. Structural Evidence acceptance and mesh convergence remain outside
+this milestone.
 
 **Current hard limitation:** M10-3 remains discrete-only with
 `continuous_path_verified = False`. M10-4 verifies only one explicitly
 requested piecewise-linear path, not arbitrary configuration-space regions or
-general trajectories. FEA, materials
+general trajectories. FEA beyond the bounded M11-4 result path, materials
 selection, manufacturing approval, tolerance verification, optimization, and
 automatic synthesis/selection are not implemented.
 

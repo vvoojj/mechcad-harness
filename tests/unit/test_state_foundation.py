@@ -1,8 +1,17 @@
 import json
 
 import pytest
+from pydantic import ValidationError
 
-from mechcad_harness.models import Component, DesignState, Evidence
+from mechcad_harness.changes import ChangeEngine, ChangeOperation, OwnershipPolicy
+from mechcad_harness.models import (
+    ChangeProposal,
+    Component,
+    DesignState,
+    Evidence,
+    ProposalStatus,
+    StructuralAnalysisDefinition,
+)
 from mechcad_harness.state import (
     StateIntegrityError,
     StateManager,
@@ -11,11 +20,129 @@ from mechcad_harness.state import (
 )
 
 
-def make_state(name: str = "Bracket") -> DesignState:
+def make_state(
+    name: str = "Bracket",
+    *,
+    structural_analysis_definitions=None,
+) -> DesignState:
     return DesignState(
         id="REV-state",
         revision=1,
         components=[Component(id="PRT-bracket", name=name)],
+        structural_analysis_definitions=structural_analysis_definitions or [],
+    )
+
+
+def make_definition(definition_id: str = "definition-1") -> StructuralAnalysisDefinition:
+    return StructuralAnalysisDefinition.model_validate(
+        {
+            "id": definition_id,
+            "name": "Static structural definition",
+            "target_body_id": "body-1",
+            "regions": [
+                {
+                    "region_id": "fixed-end",
+                    "target_body_id": "body-1",
+                    "source_feature_id": "feature:fixed-end",
+                    "semantic_role": "fixed_end",
+                    "geometry_kind": "face",
+                    "selector_kind": "semantic_feature_boundary",
+                    "selector_parameters": {"boundary": "outer"},
+                    "expected_cardinality": 1,
+                    "resolver_version": "region-resolver@1.0",
+                },
+                {
+                    "region_id": "free-end",
+                    "target_body_id": "body-1",
+                    "source_feature_id": "feature:free-end",
+                    "semantic_role": "free_end",
+                    "geometry_kind": "face",
+                    "selector_kind": "semantic_feature_boundary",
+                    "selector_parameters": {"boundary": "outer"},
+                    "expected_cardinality": 1,
+                    "resolver_version": "region-resolver@1.0",
+                },
+            ],
+            "material_assignment": {
+                "assignment_id": "assignment-1",
+                "target_body_id": "body-1",
+                "material_identity": "material:6061-t6",
+                "assignment_context": "room-temperature T6",
+                "property_snapshot": [
+                    {
+                        "property_name": "elastic_modulus",
+                        "value": 69000.0,
+                        "normalized_unit": "MPa",
+                        "source_identity": "source:material",
+                        "authority": "measured",
+                        "conversion_provenance": {
+                            "source_unit": "MPa",
+                            "normalization_rule": "already_normalized",
+                            "conversion_version": "units@1.0",
+                        },
+                    },
+                    {
+                        "property_name": "poisson_ratio",
+                        "value": 0.33,
+                        "normalized_unit": "ratio",
+                        "source_identity": "source:material",
+                        "authority": "measured",
+                        "conversion_provenance": {
+                            "source_unit": "ratio",
+                            "normalization_rule": "already_normalized",
+                            "conversion_version": "units@1.0",
+                        },
+                    },
+                ],
+            },
+            "load_cases": [
+                {
+                    "id": "case-1",
+                    "name": "Case 1",
+                    "loads": [
+                        {
+                            "kind": "resultant_force",
+                            "load_id": "force-1",
+                            "target_region_id": "free-end",
+                            "magnitude_n": 100.0,
+                            "direction_xyz": [1.0, 0.0, 0.0],
+                            "frame": "component_local",
+                            "distribution": "uniform_surface_traction_equivalent",
+                        }
+                    ],
+                }
+            ],
+            "boundary_conditions": [
+                {
+                    "support_id": "support-1",
+                    "target_region_id": "fixed-end",
+                    "applies_to_load_case_ids": ["case-1"],
+                    "frame": "component_local",
+                    "constrained_dofs": ["ux", "uy", "uz"],
+                }
+            ],
+            "acceptance_criteria": [
+                {
+                    "kind": "maximum_displacement",
+                    "criterion_id": "criterion-displacement",
+                    "load_case_id": "case-1",
+                    "assessment_region_id": "free-end",
+                    "maximum_allowed_displacement_mm": 1.0,
+                }
+            ],
+            "material_authority_policy": {
+                "allowed_authorities_by_property": [
+                    {
+                        "property_name": "elastic_modulus",
+                        "allowed_authorities": ["measured"],
+                    },
+                    {
+                        "property_name": "poisson_ratio",
+                        "allowed_authorities": ["measured"],
+                    },
+                ]
+            },
+        }
     )
 
 
@@ -44,6 +171,93 @@ def test_hash_ignores_mapping_order_but_changes_with_state():
     )
     assert state_hash(first) == state_hash(reordered)
     assert state_hash(first) != state_hash(make_state("Changed"))
+
+
+def test_structural_definition_is_canonical_state_and_affects_hash():
+    first = make_state()
+    second = first.model_copy(
+        update={"structural_analysis_definitions": [make_definition()]}
+    )
+
+    assert "structural_analysis_definitions" in DesignState.model_fields
+    assert second.created_at == first.created_at
+    assert state_hash(first) != state_hash(second)
+
+
+def test_duplicate_structural_definition_ids_fail_closed():
+    with pytest.raises(ValidationError):
+        make_state(
+            structural_analysis_definitions=[
+                make_definition("DEF-1"),
+                make_definition("DEF-1"),
+            ]
+        )
+
+
+def test_structural_definition_survives_state_json_round_trip():
+    state = make_state(structural_analysis_definitions=[make_definition()])
+    reloaded = DesignState.model_validate(json.loads(state.model_dump_json()))
+
+    assert reloaded.structural_analysis_definitions == state.structural_analysis_definitions
+    assert state_hash(reloaded) == state_hash(state)
+
+
+def test_change_engine_mutates_structural_definition_collection_items(tmp_path):
+    manager = StateManager(tmp_path)
+    manager.create_project("PRJ-structural", make_state())
+    engine = ChangeEngine(
+        manager,
+        OwnershipPolicy.from_file("config/ownership.yaml"),
+    )
+
+    def make_proposal(operation: ChangeOperation) -> ChangeProposal:
+        current = manager._read_current("PRJ-structural")
+        return ChangeProposal(
+            id="CP-structural",
+            title="change structural definition",
+            status=ProposalStatus.DRAFT,
+            base_revision=current["revision"],
+            base_state_hash=current["state_hash"],
+            actor="mechcad-structural",
+            operations=[operation],
+        )
+
+    definition = make_definition("DEF-1")
+    engine.apply_proposal(
+        "PRJ-structural",
+        make_proposal(
+            ChangeOperation(
+                operation="add",
+                path="/structural_analysis_definitions/DEF-1",
+                value=definition.model_dump(mode="json"),
+            )
+        ),
+    )
+    assert manager.load_current_state("PRJ-structural").structural_analysis_definitions[0].id == "DEF-1"
+
+    replacement = definition.model_copy(update={"name": "Replaced definition"})
+    engine.apply_proposal(
+        "PRJ-structural",
+        make_proposal(
+            ChangeOperation(
+                operation="replace",
+                path="/structural_analysis_definitions/DEF-1",
+                value=replacement.model_dump(mode="json"),
+            )
+        ),
+    )
+    assert manager.load_current_state("PRJ-structural").structural_analysis_definitions[0].name == "Replaced definition"
+
+    engine.apply_proposal(
+        "PRJ-structural",
+        make_proposal(
+            ChangeOperation(
+                operation="remove",
+                path="/structural_analysis_definitions/DEF-1",
+            )
+        ),
+    )
+    assert manager.load_current_state("PRJ-structural").structural_analysis_definitions == []
 
 
 def test_project_revisions_are_immutable_and_current_points_to_latest(tmp_path):

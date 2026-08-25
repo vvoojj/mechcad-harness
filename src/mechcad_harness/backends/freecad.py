@@ -166,7 +166,15 @@ def freecad_provenance(project_id: str, run_id: str, revision: int, state_hash: 
 
 
 class FreeCADBackend:
-    identity = BackendIdentity(name="freecad", adapter_version=FREECAD_BACKEND_VERSION, library_name="FreeCAD", capabilities=("cad.document", "cad.fcstd", "cad.step"))
+    identity = BackendIdentity(
+        name="freecad",
+        adapter_version=FREECAD_BACKEND_VERSION,
+        library_name="FreeCAD",
+        library_version="1.1.3",
+        library_source="bundled",
+        library_revision="freecad-1.1.3-bundled",
+        capabilities=("cad.document", "cad.fcstd", "cad.step"),
+    )
 
     def healthcheck(self) -> BackendHealth:
         discovery = discover_freecad()
@@ -174,7 +182,14 @@ class FreeCADBackend:
 
     def provenance(self) -> BackendProvenance:
         discovery = discover_freecad().require_available()
-        return BackendProvenance(backend_name="freecad", backend_adapter_version=FREECAD_BACKEND_VERSION, library_name="FreeCAD", library_version=_freecad_version(discovery), library_source=discovery.executable)
+        return BackendProvenance(
+            backend_name=self.identity.name,
+            backend_adapter_version=self.identity.adapter_version,
+            library_name=self.identity.library_name,
+            library_version=_freecad_version(discovery),
+            library_source=self.identity.library_source,
+            library_revision=self.identity.library_revision,
+        )
 
     @staticmethod
     def compile_program(program: CadPartProgram, fcstd_path: str, step_path: str) -> str:

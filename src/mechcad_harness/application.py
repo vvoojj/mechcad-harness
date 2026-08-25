@@ -10,6 +10,8 @@ from mechcad_harness.agents.gateway import AgentGateway
 from mechcad_harness.changes import ChangeEngine, OwnershipPolicy
 from mechcad_harness.dependency import DependencyGraph, EvidenceStore
 from mechcad_harness.dependency.errors import EvidenceIntegrityError
+from mechcad_harness.artifacts.models import ArtifactType
+from mechcad_harness.artifacts.storage import ArtifactStore
 from mechcad_harness.models import DesignState
 from mechcad_harness.runs import Run, RunController, SourceBinding, TaskDefinition
 from mechcad_harness.runs.errors import RunIntegrityError
@@ -71,6 +73,38 @@ from mechcad_harness.multi_joint_continuous_clearance import (
     MultiJointContinuousClearanceProofService,
     continuous_clearance_result_hash,
 )
+from mechcad_harness.structural.runtime import (
+    discover_calculix,
+    discover_freecad,
+    discover_gmsh,
+)
+from mechcad_harness.structural.geometry import (
+    StructuralFreeCADGeometryAdapter,
+    StructuralRegionResolver,
+)
+from mechcad_harness.structural.mesh import ParsedMesh, StructuralGmshMeshingProvider
+from mechcad_harness.structural.deck import StructuralDeckBuilder
+from mechcad_harness.structural.preflight import ConstraintPreflight
+from mechcad_harness.structural.solver import StructuralCalculiXSolverProvider
+from mechcad_harness.structural.service import StructuralAnalysisService
+from mechcad_harness.structural_request import StructuralAnalysisRequest
+from mechcad_harness.structural.results import (
+    CalculiXDatResultParser,
+    CalculiXFrdResultParser,
+    StructuralAnalysisEvaluation,
+    StructuralResultInterpreter,
+    StructuralVerificationService,
+)
+from mechcad_harness.structural.models import StructuralExecutionManifest, structural_result_hash
+from mechcad_harness.structural.validation import (
+    CantileverGeometryObservation,
+    CantileverMaterialObservation,
+    RectangularCantileverValidationPolicy,
+    StructuralAnalyticalValidationResult,
+    StructuralAnalyticalValidator,
+    cantilever_geometry_observation,
+    cantilever_material_observation,
+)
 
 
 class ProductionStateBinding(Model):
@@ -90,16 +124,16 @@ class ProductionStateBinding(Model):
 
     @model_validator(mode="after")
     def validate_state_revision(self):
-        if self.state.revision != self.revision:
+        values = object.__getattribute__(self, "__dict__")
+        if values["state"].revision != values["revision"]:
             raise ValueError("state revision does not match binding revision")
         return self
 
     def __getattribute__(self, name):
         value = super().__getattribute__(name)
-        if name == "state" and isinstance(value, DesignState):
+        if name == "state" and isinstance(value, Model):
             return value.model_copy(deep=True)
         return value
-
 
 class ProductionRunBinding(Model):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -139,6 +173,10 @@ class ProductionApplication:
         "change_engine",
         "context_builder",
         "cad_compiler",
+        "structural_service",
+        "_structural_frd_parser",
+        "_structural_dat_parser",
+        "_structural_verification_service",
         "standard_tool_permissions",
         "project_id",
         "kinematic_measure",
@@ -202,6 +240,21 @@ class ProductionApplication:
         self._kinematic_measurement_provider_attested = (
             provider_was_created_by_default_composition
         )
+        self.structural_service = StructuralAnalysisService(
+            state_manager=state_manager,
+            run_controller=run_controller,
+            workspace=state_manager.workspace,
+            geometry_adapter=StructuralFreeCADGeometryAdapter(discover_freecad()),
+            region_resolver=StructuralRegionResolver(),
+            gmsh_provider=StructuralGmshMeshingProvider(discover_gmsh()),
+            deck_builder=StructuralDeckBuilder(),
+            constraint_preflight=ConstraintPreflight(),
+            calculix_provider=StructuralCalculiXSolverProvider(discover_calculix()),
+        )
+        self._structural_frd_parser = CalculiXFrdResultParser()
+        self._structural_dat_parser = CalculiXDatResultParser()
+        self._structural_verification_service = StructuralVerificationService()
+        self._structural_requests: dict[str, StructuralAnalysisRequest] = {}
         object.__setattr__(self, "_dependencies_initialized", True)
 
     def __setattr__(self, name, value):
@@ -884,6 +937,241 @@ class ProductionApplication:
             if evidence.kind == "analysis.continuous_clearance_proof" and evidence.producer_result_id == result_hash:
                 return evidence
         return None
+
+    def execute_structural_analysis(
+        self,
+        *,
+        request: StructuralAnalysisRequest,
+    ):
+        """Trusted source-bound single-solid linear-static structural preparation
+        pipeline (M11-3): geometry admission, semantic region resolution, Gmsh
+        C3D10 meshing, deterministic CalculiX deck lowering, rigid-body constraint
+        preflight, real CalculiX execution, and durable raw-artifact provenance.
+
+        Produces only the trusted execution manifest.  Result interpretation and
+        criterion evaluation are explicit in evaluate_structural_analysis; neither
+        path publishes structural Evidence."""
+        source_before = self.load_state()
+        execution = self.structural_service.execute(request)
+        self._assert_structural_source_unchanged(source_before, "structural execution")
+        if execution.manifest is not None:
+            self._structural_requests[request.request_hash] = request
+        return execution
+
+    def _assert_structural_source_unchanged(self, source_before, operation: str) -> None:
+        source_after = self.load_state()
+        if (
+            source_after.revision != source_before.revision
+            or source_after.state_hash != source_before.state_hash
+        ):
+            raise StateIntegrityError(f"source revision/state changed during {operation}")
+
+    def evaluate_structural_analysis(
+        self,
+        *,
+        execution_manifest,
+        request: StructuralAnalysisRequest | None = None,
+        definition=None,
+    ) -> StructuralAnalysisEvaluation:
+        """Interpret one successful execution and evaluate canonical criteria.
+
+        This method deliberately has no EvidenceStore side effects.  The request
+        is retained only for the same-process execute-then-evaluate path; callers
+        may provide it explicitly when reloading a durable manifest.
+        """
+        if execution_manifest is None:
+            raise ValueError("execution manifest is required")
+        request = request or self._structural_requests.get(execution_manifest.request_hash)
+        if request is None:
+            raise ValueError("the bound structural request is required for interpretation")
+        execution_manifest = self._reload_structural_execution_manifest(execution_manifest, request)
+        if definition is None:
+            state = self.state_manager.load_revision(
+                execution_manifest.project_id, execution_manifest.revision,
+            )
+            definition = next(
+                (candidate for candidate in state.structural_analysis_definitions
+                 if candidate.id == execution_manifest.definition_id),
+                None,
+            )
+            if definition is None:
+                raise ValueError("the bound structural definition is missing")
+        source_before = self.load_state()
+        result = StructuralResultInterpreter(
+            workspace=self.state_manager.workspace,
+            project_id=self.project_id,
+            request=request,
+            definition=definition,
+            frd_parser=self._structural_frd_parser,
+            dat_parser=self._structural_dat_parser,
+        ).interpret(execution_manifest)
+        verification = self._structural_verification_service.evaluate(result, definition)
+        self._assert_structural_source_unchanged(source_before, "structural evaluation")
+        return StructuralAnalysisEvaluation(result=result, verification=verification)
+
+    def _reload_structural_execution_manifest(self, supplied_manifest, request):
+        try:
+            manifest_artifact_id = "STRUCT-JSON-" + __import__("hashlib").sha256(
+                f"{request.request_hash}|json".encode("utf-8")
+            ).hexdigest()[:16]
+            store = ArtifactStore(
+                self.state_manager.workspace,
+                project_id=supplied_manifest.project_id,
+                run_id=supplied_manifest.run_id,
+            )
+            verified = store.read_verified(
+                manifest_artifact_id,
+                expected_type=ArtifactType.JSON,
+            )
+        except Exception as exc:
+            raise ValueError("durable execution manifest is unavailable or untrusted") from exc
+        if verified is None:
+            raise ValueError("durable execution manifest is unavailable or untrusted")
+        artifact, content = verified
+        try:
+            durable_manifest = StructuralExecutionManifest.model_validate_json(content)
+        except Exception as exc:
+            raise ValueError("durable execution manifest is malformed") from exc
+        binding = request.source_binding
+        if (
+            artifact.input_hash != request.request_hash
+            or artifact.project_id != self.project_id
+            or artifact.run_id != durable_manifest.run_id
+            or artifact.bound_revision != durable_manifest.revision
+            or artifact.bound_state_hash != durable_manifest.state_hash
+            or artifact.producer_tool_name != durable_manifest.deck_builder_identity
+            or artifact.producer_tool_version != durable_manifest.deck_builder_version
+            or durable_manifest.project_id != self.project_id
+            or durable_manifest.project_id != binding.project_id
+            or durable_manifest.revision != binding.source_revision
+            or durable_manifest.state_hash != binding.source_state_hash
+            or durable_manifest.definition_id != binding.definition_id
+            or durable_manifest.definition_hash != binding.definition_hash
+            or durable_manifest.request_hash != request.request_hash
+            or durable_manifest.analytical_policy_hash != request.analytical_policy_hash
+            or durable_manifest.geometry_artifact_id != binding.geometry_artifact_id
+            or durable_manifest.geometry_artifact_hash != binding.geometry_artifact_hash
+            or durable_manifest != supplied_manifest
+        ):
+            raise ValueError("durable execution manifest does not match supplied manifest/request binding")
+        return durable_manifest
+
+    def evaluate_structural_analytical_validation(
+        self,
+        *,
+        execution_manifest,
+        evaluation: StructuralAnalysisEvaluation,
+        policy: RectangularCantileverValidationPolicy,
+        mesh: ParsedMesh,
+        geometry_observation: CantileverGeometryObservation | None,
+        material_observation: CantileverMaterialObservation | None,
+        request: StructuralAnalysisRequest | None = None,
+        definition=None,
+    ) -> StructuralAnalyticalValidationResult:
+        """Run analytical validation from authoritative persisted inputs.
+
+        Ordinary structural evaluation never selects analytical assumptions. The
+        policy is predeclared, while mesh, geometry, and material observations
+        are reloaded or rebuilt inside this application rather than trusted from
+        caller-owned snapshots.
+        """
+        if not isinstance(evaluation, StructuralAnalysisEvaluation):
+            raise TypeError("analytical validation requires a typed structural evaluation")
+        if not isinstance(policy, RectangularCantileverValidationPolicy):
+            raise TypeError("analytical validation requires a predeclared cantilever policy")
+        request = request or self._structural_requests.get(execution_manifest.request_hash)
+        if request is None:
+            raise ValueError("the bound structural request is required for analytical validation")
+        execution_manifest = self._reload_structural_execution_manifest(execution_manifest, request)
+        if definition is None:
+            state = self.state_manager.load_revision(
+                execution_manifest.project_id, execution_manifest.revision,
+            )
+            definition = next(
+                (candidate for candidate in state.structural_analysis_definitions
+                 if candidate.id == execution_manifest.definition_id),
+                None,
+            )
+            if definition is None:
+                raise ValueError("the bound structural definition is missing")
+        source_before = self.load_state()
+        interpreter = StructuralResultInterpreter(
+            workspace=self.state_manager.workspace,
+            project_id=self.project_id,
+            request=request,
+            definition=definition,
+            frd_parser=self._structural_frd_parser,
+            dat_parser=self._structural_dat_parser,
+        )
+        trusted_result = interpreter.interpret(
+            execution_manifest, request=request, definition=definition,
+        )
+        supplied_result_hash = structural_result_hash(evaluation.result)
+        if (
+            evaluation.result.result_hash != supplied_result_hash
+            or supplied_result_hash != trusted_result.result_hash
+        ):
+            raise ValueError("supplied evaluation result hash does not match fresh trusted result")
+        trusted_mesh, mesh_artifact_bytes = interpreter.load_trusted_mesh(
+            execution_manifest, request=request, definition=definition,
+        )
+        source_artifact_match = ArtifactStore(
+            self.state_manager.workspace,
+            project_id=self.project_id,
+            run_id=execution_manifest.run_id,
+        ).read_verified_in_project(
+            request.source_binding.geometry_artifact_id,
+            expected_type=ArtifactType.STEP,
+            expected_hash=request.source_binding.geometry_artifact_hash,
+        )
+        if source_artifact_match is None:
+            raise ValueError("trusted source STEP artifact is unavailable")
+        source_artifact, _source_bytes = source_artifact_match
+        if (
+            source_artifact.artifact_type is not ArtifactType.STEP
+            or source_artifact.sha256 != request.source_binding.geometry_artifact_hash
+            or source_artifact.bound_revision != request.source_binding.source_revision
+            or source_artifact.bound_state_hash != request.source_binding.source_state_hash
+            or source_artifact.project_id != request.source_binding.project_id
+            or source_artifact.backend_provenance != execution_manifest.geometry_provider_provenance
+            or not StructuralResultInterpreter._is_trusted_freecad_provenance(
+                source_artifact.backend_provenance
+            )
+        ):
+            raise ValueError("trusted source STEP artifact provenance mismatch")
+        source_path = ArtifactStore(
+            self.state_manager.workspace,
+            project_id=self.project_id,
+            run_id=execution_manifest.run_id,
+        ).path_for_in_project(source_artifact)
+        if source_path is None:
+            raise ValueError("trusted source STEP artifact is unavailable")
+        try:
+            realization = self.structural_service.geometry_adapter.realize_geometry(source_path)
+            region_map = self.structural_service.region_resolver.resolve(
+                definition.regions,
+                realization,
+                source_geometry_hash=request.source_binding.geometry_artifact_hash,
+            )
+            trusted_geometry_observation = cantilever_geometry_observation(
+                request, definition, realization, region_map,
+            )
+            trusted_material_observation = cantilever_material_observation(request, definition)
+        except Exception as exc:
+            raise ValueError("trusted analytical source observations are unavailable") from exc
+        validation = StructuralAnalyticalValidator().validate(
+            trusted_result,
+            policy,
+            request=request,
+            execution_manifest=execution_manifest,
+            mesh=trusted_mesh,
+            mesh_artifact_bytes=mesh_artifact_bytes,
+            geometry_observation=trusted_geometry_observation,
+            material_observation=trusted_material_observation,
+            definition=definition,
+        )
+        self._assert_structural_source_unchanged(source_before, "structural analytical validation")
+        return validation
 
     def evaluate_multi_joint_configuration(
         self,

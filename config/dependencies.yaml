@@ -38,6 +38,10 @@ rules:
       - /requirements/REQ-TORQUE-SAFETY/description
     invalidates:
       - analysis.transmission.torque
+  - when:
+      - /structural_analysis_definitions/*
+    invalidates:
+      - analysis.structural
 edges:
   - from: analysis.loads
     to: analysis.structural

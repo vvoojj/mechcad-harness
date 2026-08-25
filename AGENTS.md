@@ -3,7 +3,8 @@
 ## Current Accepted Baseline
 
 This repository implements the MechCAD Harness production system up to the
-accepted **M8 + M9 + M10-1 + M10-2 + M10-3 + M10-4** baseline.
+accepted **M8 + M9 + M10-1 + M10-2 + M10-3 + M10-4 + M11-2 + M11-3 + M11-4**
+baseline.
 
 - **M8 — production architecture connected:** production orchestration
   (`ProductionApplication` composition root), source-bound `DesignSpec` →
@@ -48,7 +49,40 @@ accepted **M8 + M9 + M10-1 + M10-2 + M10-3 + M10-4** baseline.
   shared FK/discrete/continuous configuration equality, durable M10-4 result
   reload, trusted provenance, source immutability, M9 foundation regressions,
   and full-suite regression safety.
-- **Current system acceptance: `M10_FULLY_CLOSED_LIVE_VERIFIED`.**
+- **M11-1 — structural/load/FEA architecture (design only):** the typed
+  M11-1 architecture and backend discovery were accepted
+  (`M11_1_STRUCTURAL_FEA_ARCHITECTURE_READY`). It is design-only and changes no
+  capability baseline. It specifies the source-bound single-body linear-static
+  structural roadmap and explicitly defers meshing, Gmsh, CalculiX, FEA
+  execution, and acceptance evaluation to later milestones.
+- **M11-2 — structural authority model (typed authority only):** MechCAD now
+  has an accepted typed structural-analysis authority model for source-bound
+  single-body linear-static definitions and requests. It adds canonical
+  `DesignState.structural_analysis_definitions` (engineering semantics only),
+  property-specific material authority, semantic regions, typed loads/supports/
+  criteria, and a source-bound `StructuralAnalysisRequest` carrying mesh/output/
+  execution settings with deterministic identities. It performs no FEA, meshing,
+  solving, or acceptance evaluation against solver output
+  (`M11_2_STRUCTURAL_AUTHORITY_MODEL_VERIFIED`).
+- **M11-3 — structural mesh/solver foundation:** source-bound single-body
+  linear-static definitions can be realized through trusted FreeCAD geometry,
+  semantic region resolution, Gmsh C3D10 meshing, deterministic CalculiX deck
+  lowering, and trusted CalculiX execution provenance. It establishes raw
+  execution artifacts only; result interpretation and analytical validation are
+  M11-4 scope.
+- **M11-4 — real structural result interpretation and analytical validation:**
+  source-bound single-body linear-static CalculiX results are interpreted
+  through the production application with trusted FRD/DAT parsers and typed
+  PASS, FAIL, and NOT_EVALUABLE criterion outcomes. A real cantilever
+  capstone was validated against declared displacement, reaction force, and
+  reaction moment checks using FreeCAD 1.1.3, Gmsh 4.15.0, and CalculiX 2.22.
+  Stress remains CalculiX extrapolated nodal stress; no global yield or safety
+  claim is made. Structural Evidence acceptance and mesh convergence remain
+  outside M11-4.
+- **Current system acceptance: `M10_FULLY_CLOSED_LIVE_VERIFIED`,
+  `M11_2_STRUCTURAL_AUTHORITY_MODEL_VERIFIED`,
+  `M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED`, and
+  `M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED`.**
 - **Current hard limitation:** ordinary M10-3 discrete sweeps retain
   `continuous_path_verified = False`; M10-4 proves only the explicitly
   requested path, not an entire configuration-space region. FEA, materials selection,
@@ -56,6 +90,12 @@ accepted **M8 + M9 + M10-1 + M10-2 + M10-3 + M10-4** baseline.
   synthesis/selection are **not** implemented. M10-2 provides multi-joint
   *discrete* forward kinematics and collision evaluation only; it does not
   general trajectories, and configuration-space certification are not implemented.
+  M11-2 provides the typed structural-analysis *authority model*; M11-3 and
+  M11-4 provide only the bounded source-bound single-body linear-static mesh,
+  solve, result interpretation, and fixed cantilever validation path. Structural
+  Evidence acceptance, mesh convergence, general structural validation,
+  assemblies, nonlinear analysis, fatigue, dynamics, thermal stress,
+  tolerances, optimization, and manufacturing approval are not implemented.
 
 ## Precedence / Discovery Rules
 
