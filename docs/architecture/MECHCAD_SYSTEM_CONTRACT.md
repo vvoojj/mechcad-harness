@@ -218,10 +218,14 @@ convergence, or a global convergence claim.
 The accepted M11 bounded structural path is also current: M11-2 provides the
 typed source-bound single-body linear-static authority model; M11-3 provides
 trusted FreeCAD geometry, Gmsh C3D10 meshing, deterministic CalculiX deck
-lowering, per-case execution, and raw artifact provenance; and M11-4 provides
+lowering, per-case execution, and raw artifact provenance; M11-4 provides
 trusted FRD/DAT/LOG interpretation, typed criterion outcomes, and separate
-predeclared fixed-cantilever analytical validation. These milestones do not
-constitute general structural approval or unrestricted FEA.
+predeclared fixed-cantilever analytical validation; M11-5 provides durable
+structural Evidence with fresh historical verification, bounded repeatability,
+and explicitly declared displacement-metric mesh-convergence studies; M11-6
+provides final system acceptance and live closure of the complete M11
+structural production chain. These milestones do not constitute general
+structural approval or unrestricted FEA.
 
 **TARGET_NEXT:** one connected universal mechanical workflow across the current foundations, broader domain services, canonical transmission/material selection, controlled load cases, and stronger provider wiring proof.
 

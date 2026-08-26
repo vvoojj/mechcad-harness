@@ -121,6 +121,7 @@ remain future capability.
 | M11-3 | `M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED` | Trusted FreeCAD source geometry and semantic-region realization, Gmsh C3D10 mesh, deterministic CalculiX deck lowering, per-case solver execution, shared-mesh multi-case manifests, and raw artifact provenance. | REQUIRED_CURRENT (bounded) |
 | M11-4 | `M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED` | Trusted FRD/DAT/LOG interpretation, typed PASS/FAIL/NOT_EVALUABLE criteria, and a separate production analytical-validation API for a predeclared fixed rectangular cantilever policy. | REQUIRED_CURRENT (bounded) |
 | M11-5 | `M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED` | Durable source-bound structural Evidence through the existing EvidenceStore; fresh historical verification/currentness; trusted PASS/FAIL/NOT_EVALUABLE outcomes; bounded repeatability; and explicitly declared ordered displacement-magnitude mesh-convergence studies. | REQUIRED_CURRENT (bounded) |
+| M11-6 | `M11_FULLY_CLOSED_LIVE_VERIFIED` | Final system acceptance and live closure of the complete M11 structural production chain, from canonical authority through real execution, interpretation, evaluation, analytical validation, durable Evidence, fresh verification, repeatability, and bounded mesh convergence. Distinct-mesh anti-regression closed. | REQUIRED_CURRENT (bounded) |
 
 The M11 rows do not claim general structural approval. Assemblies, nonlinear
 analysis, fatigue, dynamics, thermal stress, tolerances, optimization,

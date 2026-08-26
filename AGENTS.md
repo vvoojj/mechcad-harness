@@ -3,7 +3,7 @@
 ## Current Accepted Baseline
 
 This repository implements the MechCAD Harness production system up to the
-accepted **M8 + M9 + M10-1 + M10-2 + M10-3 + M10-4 + M11-2 + M11-3 + M11-4 + M11-5**
+accepted **M8 + M9 + M10-1 + M10-2 + M10-3 + M10-4 + M11-2 + M11-3 + M11-4 + M11-5 + M11-6**
 baseline.
 
 - **M8 — production architecture connected:** production orchestration
@@ -85,11 +85,19 @@ baseline.
   artifact/result/criterion/material/analytical/provenance binding. Bounded
   repeatability and explicitly declared mesh-convergence studies are supported
   for the declared displacement-magnitude response metric.
+- **M11-6 — final structural system acceptance and live closure:** the complete
+  M11 structural architecture is live-verified as one coherent production system,
+  from canonical engineering authority through real structural execution,
+  interpretation, engineering evaluation, analytical validation, durable
+  Evidence, fresh verification, repeatability, and bounded mesh convergence.
+  The distinct-mesh anti-regression is closed: declared mesh levels produce
+  genuinely distinct realized meshes.
 - **Current system acceptance: `M10_FULLY_CLOSED_LIVE_VERIFIED`,
   `M11_2_STRUCTURAL_AUTHORITY_MODEL_VERIFIED`,
-  `M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED`, and
-  `M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED`, and
-  `M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED`.**
+  `M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED`,
+  `M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED`,
+  `M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED`, and
+  `M11_FULLY_CLOSED_LIVE_VERIFIED`.**
 - **Current hard limitation:** ordinary M10-3 discrete sweeps retain
   `continuous_path_verified = False`; M10-4 proves only the explicitly
   requested path, not an entire configuration-space region. FEA, materials selection,
@@ -99,12 +107,15 @@ baseline.
   general trajectories, and configuration-space certification are not implemented.
   M11-2 provides the typed structural-analysis *authority model*; M11-3 and
   M11-4 provide only the bounded source-bound single-body linear-static mesh,
-  solve, result interpretation, and fixed cantilever validation path. Structural
-  Evidence beyond the M11-5 durable binding path, general structural validation,
-  global convergence, adaptive refinement, assemblies, nonlinear analysis,
-  fatigue, dynamics, thermal stress, tolerances, optimization, and
-  manufacturing approval are not implemented. Stress remains CalculiX
-  extrapolated nodal stress; no global yield or safety claim is made.
+  solve, result interpretation, and fixed cantilever validation path; M11-5
+  provides durable structural Evidence with bounded repeatability and explicitly
+  declared displacement-metric mesh-convergence studies; M11-6 provides final
+  system acceptance and live closure of the complete M11 structural production
+  chain. Structural Evidence beyond the M11-5 durable binding path, general
+  structural validation, global convergence, adaptive refinement, assemblies,
+  nonlinear analysis, fatigue, dynamics, thermal stress, tolerances,
+  optimization, and manufacturing approval are not implemented. Stress remains
+  CalculiX extrapolated nodal stress; no global yield or safety claim is made.
 
 ## Precedence / Discovery Rules
 

@@ -12,7 +12,7 @@ as project history; the current capability baseline is documented below.
 ## Current Architecture Status (M8 / M9 / M10 / M11)
 
 The repository has advanced well beyond M0. The current accepted baseline is
-**M8 + M9 + M10-1 + M10-2 + M10-3 + M10-4 + M11-2 + M11-3 + M11-4 + M11-5**.
+**M8 + M9 + M10-1 + M10-2 + M10-3 + M10-4 + M11-2 + M11-3 + M11-4 + M11-5 + M11-6**.
 
 - **M8** established the production architecture: production orchestration
   (`ProductionApplication` composition root), source-bound `DesignSpec` →
@@ -45,12 +45,18 @@ The repository has advanced well beyond M0. The current accepted baseline is
   strict artifact/result/criterion/material/analytical/provenance binding.
   Explicit bounded repeatability and mesh-convergence studies are supported for
   declared response metrics.
+- **M11-6** closes the complete M11 structural architecture as one coherent
+  production system, from canonical engineering authority through real
+  structural execution, interpretation, engineering evaluation, analytical
+  validation, durable Evidence, fresh verification, repeatability, and bounded
+  mesh convergence. The distinct-mesh anti-regression is closed.
 
 **Current system status: `M10_FULLY_CLOSED_LIVE_VERIFIED`,
 `M11_2_STRUCTURAL_AUTHORITY_MODEL_VERIFIED`,
-`M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED`, and
-`M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED`, and
-`M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED`.**
+`M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED`,
+`M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED`,
+`M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED`, and
+`M11_FULLY_CLOSED_LIVE_VERIFIED`.**
 
 MechCAD has a bounded, live-verified structural result interpretation path for
 source-bound single-body linear-static analyses. M11-3 executes trusted
@@ -69,8 +75,8 @@ mesh-convergence studies.
 requested piecewise-linear path, not arbitrary configuration-space regions or
 general trajectories. FEA beyond the bounded M11-4 result path, materials
 selection, manufacturing approval, tolerance verification, optimization, and
-automatic synthesis/selection are not implemented. M11-5 convergence is only
-for an explicitly declared ordered study of the supported free-end
+automatic synthesis/selection are not implemented. M11-5/M11-6 convergence is
+only for an explicitly declared ordered study of the supported free-end
 displacement-magnitude metric; it is not adaptive refinement, generic mesh
 correspondence, stress convergence, or a global convergence claim. Stress
 remains CalculiX extrapolated nodal stress, and no global yield, safety, or

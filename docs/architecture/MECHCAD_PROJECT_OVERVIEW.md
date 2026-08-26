@@ -63,7 +63,14 @@ Accepted typed design specifications compile into backend-independent `CadPartPr
 
 ## 14. Analysis Architecture
 
-Current foundations cover exact interference/clearance, transient assembly measurement, transmission calculations, material/mass estimates, preliminary section properties, and the bounded M11 source-bound single-body linear-static structural path. M11-3 provides trusted mesh/solver execution, M11-4 provides trusted FRD/DAT interpretation, typed criterion outcomes, and a separate fixed-cantilever analytical-validation API, and M11-5 provides durable structural Evidence with bounded repeatability and explicitly declared displacement-metric mesh-convergence studies. Broad structural approval, general FEA, dynamics, and manufacturing validation remain `TARGET_NEXT` or `FUTURE`.
+Current foundations cover exact interference/clearance, transient assembly measurement, transmission calculations, material/mass estimates, preliminary section properties, and the bounded M11 source-bound single-body linear-static structural path. M11-3 provides trusted mesh/solver execution, M11-4 provides trusted FRD/DAT
+interpretation, typed criterion outcomes, and a separate fixed-cantilever
+analytical-validation API, M11-5 provides durable structural Evidence with
+bounded repeatability and explicitly declared displacement-metric
+mesh-convergence studies, and M11-6 provides final system acceptance and live
+closure of the complete M11 structural production chain. Broad structural
+approval, general FEA, dynamics, and manufacturing validation remain
+`TARGET_NEXT` or `FUTURE`.
 
 ## 15. Kinematic Architecture
 
@@ -253,6 +260,18 @@ publication. Stress remains CalculiX extrapolated nodal stress; no global
 yield, safety, manufacturing, adaptive-refinement, or global convergence claim
 is made.
 
+### M11-6 - Final Structural System Acceptance
+
+M11-6 live-verifies the complete M11-1 through M11-5 structural architecture
+as one coherent production system. The acceptance covers canonical engineering
+authority, source/material binding, semantic region boundary, mesh/deck
+pipeline, solver trust boundary, result interpretation, engineering
+verification semantics, analytical validation, durable structural Evidence,
+fresh historical verification, tamper/replay protection, repeatability, mesh
+convergence, source immutability, and the distinct-mesh anti-regression
+(declared mesh levels produce genuinely distinct realized meshes). The final
+closure marker is `M11_FULLY_CLOSED_LIVE_VERIFIED`.
+
 ## 23. Current Remaining Limitations
 
 - `PREACCEPTED_CALLER_CONTRACT_ONLY`
@@ -269,8 +288,9 @@ is made.
 ## 24. Next Planning Boundary
 
 M10-1 through M10-4 and the M10-5 system acceptance are implemented and
-live-verified. Whole configuration-space continuous clearance, broad FEA beyond
-the bounded M11 path, materials
+live-verified. The M11 structural architecture (M11-1 through M11-6) is fully
+closed and live-verified. Whole configuration-space continuous clearance,
+broad FEA beyond the bounded M11 path, materials
 selection, manufacturing approval, tolerance verification, optimization, and
 automatic synthesis/selection remain later-stage and are not current
 capability. The next milestone requires a separate design/specification cycle.
