@@ -1,5 +1,6 @@
 from pathlib import Path
 import inspect
+from types import SimpleNamespace
 
 import pytest
 
@@ -200,6 +201,216 @@ def test_production_application_rejects_invalid_adapter_at_composition(tmp_path)
         )
 
 
+def test_structural_analytical_attestation_rejects_replaced_nested_discovery(tmp_path, monkeypatch):
+    from mechcad_harness.backends.provenance import provenance_from_identity
+    from mechcad_harness.structural.models import (
+        REGION_RESOLVER_IDENTITY,
+        REGION_RESOLVER_VERSION,
+    )
+    from mechcad_harness.structural.runtime import DiscoveredRuntime, FREECAD_IDENTITY
+
+    trusted_discovery = DiscoveredRuntime(
+        available=True,
+        executable="trusted-freecadcmd",
+        version=FREECAD_IDENTITY.library_version,
+        identity=FREECAD_IDENTITY,
+        provenance=provenance_from_identity(FREECAD_IDENTITY),
+    )
+    monkeypatch.setattr("mechcad_harness.application.discover_freecad", lambda: trusted_discovery)
+
+    application = build_application(tmp_path, CountingAdapter())
+    adapter = application.structural_service.geometry_adapter
+    original = adapter._discovery
+    adapter._discovery = DiscoveredRuntime(
+        available=original.available,
+        executable=original.executable,
+        version=original.version,
+        identity=original.identity,
+        provenance=original.provenance,
+    )
+    manifest = SimpleNamespace(
+        geometry_provider_provenance=provenance_from_identity(FREECAD_IDENTITY),
+        resolver_identity=REGION_RESOLVER_IDENTITY,
+        resolver_version=REGION_RESOLVER_VERSION,
+    )
+
+    with pytest.raises(ValueError, match="composed structural geometry adapter"):
+        application._assert_composed_structural_dependencies(manifest)
+
+
+def test_structural_analytical_attestation_rejects_replaced_resolver_tolerances(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from mechcad_harness.backends.provenance import provenance_from_identity
+    from mechcad_harness.structural.models import (
+        REGION_RESOLVER_IDENTITY,
+        REGION_RESOLVER_VERSION,
+    )
+    from mechcad_harness.structural.runtime import DiscoveredRuntime, FREECAD_IDENTITY
+
+    trusted_discovery = DiscoveredRuntime(
+        available=True,
+        executable="trusted-freecadcmd",
+        version=FREECAD_IDENTITY.library_version,
+        identity=FREECAD_IDENTITY,
+        provenance=provenance_from_identity(FREECAD_IDENTITY),
+    )
+    monkeypatch.setattr("mechcad_harness.application.discover_freecad", lambda: trusted_discovery)
+
+    application = build_application(tmp_path, CountingAdapter())
+    resolver = application.structural_service.region_resolver
+    resolver._tolerances = replace(resolver._tolerances)
+    manifest = SimpleNamespace(
+        geometry_provider_provenance=provenance_from_identity(FREECAD_IDENTITY),
+        resolver_identity=REGION_RESOLVER_IDENTITY,
+        resolver_version=REGION_RESOLVER_VERSION,
+    )
+
+    with pytest.raises(ValueError, match="composed structural region resolver"):
+        application._assert_composed_structural_dependencies(manifest)
+
+
+def test_structural_analytical_evaluation_rejects_unbound_source_step_metadata(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import mechcad_harness.application as application_module
+    from mechcad_harness.artifacts.models import ArtifactType
+    from mechcad_harness.artifacts.storage import ArtifactStore
+    from mechcad_harness.backends.provenance import provenance_from_identity
+    from mechcad_harness.structural.models import StructuralArtifactRef
+    from mechcad_harness.structural.evidence_models import RectangularCantileverValidationPolicy
+    from mechcad_harness.structural.results import StructuralAnalysisEvaluation
+    from mechcad_harness.structural.runtime import FREECAD_IDENTITY
+
+    application = build_application(tmp_path, CountingAdapter())
+    source_binding_values = {
+        "project_id": application.project_id,
+        "source_revision": 1,
+        "source_state_hash": application.load_state().state_hash,
+        "definition_id": "DEF-1",
+        "definition_hash": "sha256:" + "d" * 64,
+        "target_body_id": "BODY-1",
+        "source_program_hash": "sha256:" + "p" * 64,
+        "geometry_identity": "freecad:body-1",
+        "geometry_artifact_id": "STEP-1",
+        "geometry_artifact_hash": "pending",
+    }
+    store = ArtifactStore(application.state_manager.workspace, project_id=application.project_id, run_id="RUN-1")
+    source = store.publish(
+        "STEP-1",
+        ArtifactType.STEP,
+        "source.step",
+        b"ISO-10303-21;\nEND-ISO-10303-21;\n",
+        "mechcad-freecad",
+        FREECAD_IDENTITY.adapter_version,
+        1,
+        source_binding_values["source_state_hash"],
+        backend_provenance=provenance_from_identity(FREECAD_IDENTITY),
+    )
+    source_binding_values["geometry_artifact_hash"] = source.sha256
+    binding = SimpleNamespace(**source_binding_values)
+    manifest = SimpleNamespace(
+        run_id="RUN-1",
+        project_id=application.project_id,
+        revision=1,
+        state_hash=source_binding_values["source_state_hash"],
+        definition_id="DEF-1",
+        definition_hash="sha256:" + "d" * 64,
+        request_hash="request-hash",
+        geometry_artifact_id=source.artifact_id,
+        geometry_artifact_hash=source.sha256,
+        geometry_provider_provenance=provenance_from_identity(FREECAD_IDENTITY),
+        artifacts=(StructuralArtifactRef(
+            artifact_type=ArtifactType.STEP.value,
+            artifact_id=source.artifact_id,
+            sha256=source.sha256,
+            producer_identity=source.producer_tool_name,
+            producer_version=source.producer_tool_version,
+        ),),
+    )
+    request = SimpleNamespace(source_binding=binding, request_hash="request-hash")
+    result = SimpleNamespace(result_hash="result-hash")
+    monkeypatch.setattr(application, "_reload_structural_execution_manifest", lambda *_args: manifest)
+    monkeypatch.setattr(application, "_assert_composed_structural_dependencies", lambda *_args: None)
+    monkeypatch.setattr(application_module, "structural_result_hash", lambda _result: "result-hash")
+    class FakeInterpreter:
+        _is_trusted_freecad_provenance = staticmethod(lambda _provenance: True)
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def interpret(self, *_args, **_kwargs):
+            return result
+
+        def load_trusted_mesh(self, *_args, **_kwargs):
+            return object(), b"mesh"
+
+    monkeypatch.setattr(application_module, "StructuralResultInterpreter", FakeInterpreter)
+    monkeypatch.setattr(application.structural_service.geometry_adapter, "realize_geometry", lambda _path: object())
+    monkeypatch.setattr(application.structural_service.region_resolver, "resolve", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(application_module, "cantilever_geometry_observation", lambda *_args: object())
+    monkeypatch.setattr(application_module, "cantilever_material_observation", lambda *_args: object())
+    monkeypatch.setattr(
+        application_module,
+        "StructuralAnalyticalValidator",
+        lambda: SimpleNamespace(validate=lambda *_args, **_kwargs: "validation"),
+    )
+
+    with pytest.raises(ValueError, match="source STEP artifact input binding"):
+        application.evaluate_structural_analytical_validation(
+            execution_manifest=manifest,
+            evaluation=StructuralAnalysisEvaluation(result=result, verification=object()),
+            policy=RectangularCantileverValidationPolicy(
+                material_identity="MAT-1",
+                length_mm=10.0,
+                width_mm=2.0,
+                height_mm=2.0,
+                elastic_modulus_mpa=1000.0,
+                poisson_ratio=0.3,
+                resultant_force_n=(0.0, -1.0, 0.0),
+                mesh_specification_hash="sha256:" + "m" * 64,
+                free_end_region_id="free",
+                fixed_end_region_id="fixed",
+                free_end_area_mm2=4.0,
+                displacement_relative_tolerance=0.1,
+                reaction_relative_tolerance=0.1,
+            ),
+            mesh=object(),
+            geometry_observation=None,
+            material_observation=None,
+            request=request,
+            definition=SimpleNamespace(regions=()),
+        )
+
+
+def test_structural_evidence_publisher_rejects_replaced_analytical_factory(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import mechcad_harness.application as application_module
+    from mechcad_harness.backends.provenance import provenance_from_identity
+    from mechcad_harness.structural.models import REGION_RESOLVER_IDENTITY, REGION_RESOLVER_VERSION
+    from mechcad_harness.structural.runtime import DiscoveredRuntime, FREECAD_IDENTITY
+
+    trusted_discovery = DiscoveredRuntime(
+        available=True,
+        executable="trusted-freecadcmd",
+        version=FREECAD_IDENTITY.library_version,
+        identity=FREECAD_IDENTITY,
+        provenance=provenance_from_identity(FREECAD_IDENTITY),
+    )
+    monkeypatch.setattr(application_module, "discover_freecad", lambda: trusted_discovery)
+
+    application = build_application(tmp_path, CountingAdapter())
+    application._structural_evidence_publisher.analytical_validation_factory = lambda **_kwargs: None
+    manifest = SimpleNamespace(
+        geometry_provider_provenance=provenance_from_identity(FREECAD_IDENTITY),
+        resolver_identity=REGION_RESOLVER_IDENTITY,
+        resolver_version=REGION_RESOLVER_VERSION,
+    )
+
+    with pytest.raises(ValueError, match="composed analytical validation factory"):
+        application._assert_composed_structural_dependencies(manifest)
+
+
 def test_production_run_binding_keeps_source_and_run_snapshot_after_state_advances(tmp_path):
     application = build_application(tmp_path, CountingAdapter())
     binding = application.create_run()
@@ -265,6 +476,35 @@ def test_application_exposes_composed_services_without_execution_api(tmp_path):
     assert not set(dir(type(application))).intersection({
         "execute_task", "run_workflow", "invoke_agent", "start_run", "apply_change", "mutate_state",
     })
+
+
+def test_application_exposes_structural_evidence_high_level_apis_without_tool_registration(tmp_path):
+    application = build_application(tmp_path, CountingAdapter())
+
+    assert callable(application.publish_structural_evidence)
+    assert callable(application.verify_structural_evidence)
+    assert callable(application.check_structural_evidence_currentness)
+    assert not any("structural_evidence" in permission for permission in application.standard_tool_permissions)
+    assert not any("structural_evidence" in registration.name for registration in BuiltinTools.registrations())
+
+
+def test_application_structural_evidence_apis_delegate_to_composed_services(tmp_path, monkeypatch):
+    application = build_application(tmp_path, CountingAdapter())
+    evidence = object()
+    verification = object()
+    currentness = object()
+    repeatability = object()
+    monkeypatch.setattr(application._structural_evidence_publisher, "publish", lambda **kwargs: evidence)
+    monkeypatch.setattr(application._structural_evidence_verifier, "verify", lambda evidence_id: verification)
+    monkeypatch.setattr(application._structural_evidence_verifier, "currentness", lambda evidence_id: currentness)
+    monkeypatch.setattr(application._structural_repeatability_service, "compare", lambda **kwargs: repeatability)
+
+    assert application.publish_structural_evidence(execution_manifest=object()) is evidence
+    assert application.verify_structural_evidence("EVD-1") is verification
+    assert application.check_structural_evidence_currentness("EVD-1") is currentness
+    assert application.compare_structural_repeatability(
+        policy=object(), first_evidence_id="EVD-1", second_evidence_id="EVD-2"
+    ) is repeatability
 
 
 def test_application_fails_closed_if_state_advances_after_load(tmp_path):
@@ -432,3 +672,212 @@ def test_production_module_does_not_import_test_helpers():
     source = inspect.getsource(mechcad_harness.application)
     assert "tests." not in source
     assert "conftest" not in source
+
+
+def test_application_delegates_structural_mesh_convergence(tmp_path, monkeypatch):
+    from mechcad_harness.structural.evidence import StructuralMeshConvergenceStudy
+    from mechcad_harness.structural_request import MeshSpecification
+
+    application = build_application(tmp_path, CountingAdapter())
+    study = StructuralMeshConvergenceStudy(
+        policy_id="study@1",
+        mesh_specifications=tuple(
+            MeshSpecification(
+                global_target_size_mm=size,
+                quality_policy_id="quality@1",
+                mesher_settings_version="gmsh-settings@1",
+            )
+            for size in (10.0, 7.5, 5.0)
+        ),
+        load_case_id="LC-1",
+        relative_change_threshold=0.02,
+        epsilon=1e-12,
+        max_levels=3,
+        required_runtime_identities=("freecad@1",),
+    )
+    expected = object()
+
+    class RecordingService:
+        def evaluate(self, **kwargs):
+            self.kwargs = kwargs
+            return expected
+
+    service = RecordingService()
+    monkeypatch.setattr(application._structural_mesh_convergence_service, "evaluate", service.evaluate)
+
+    result = application.evaluate_structural_mesh_convergence(
+        study=study,
+        level_evidence_ids=("EVD-1", "EVD-2", "EVD-3"),
+    )
+
+    assert result is expected
+    assert service.kwargs == {
+        "study": study,
+        "level_evidence_ids": ("EVD-1", "EVD-2", "EVD-3"),
+    }
+
+
+def test_application_delegates_structural_mesh_convergence_publication(tmp_path, monkeypatch):
+    application = build_application(tmp_path, CountingAdapter())
+    expected = object()
+    calls = []
+
+    def publish(**kwargs):
+        calls.append(kwargs)
+        return expected
+
+    monkeypatch.setattr(application._structural_mesh_convergence_service, "publish", publish)
+
+    study = object()
+    result = application.publish_structural_mesh_convergence(
+        study=study,
+        level_evidence_ids=("EVD-1", "EVD-2", "EVD-3"),
+    )
+
+    assert result is expected
+    assert calls == [{
+        "study": study,
+        "level_evidence_ids": ("EVD-1", "EVD-2", "EVD-3"),
+    }]
+
+
+def test_analytical_publication_rejects_replaced_structural_dependencies(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import mechcad_harness.application as application_module
+    from mechcad_harness.artifacts.models import ArtifactType
+    from mechcad_harness.artifacts.storage import ArtifactStore
+    from mechcad_harness.backends.provenance import provenance_from_identity
+    from mechcad_harness.structural.models import REGION_RESOLVER_IDENTITY
+    from mechcad_harness.structural.runtime import FREECAD_IDENTITY
+
+    application = build_application(tmp_path, CountingAdapter())
+    trusted_provenance = provenance_from_identity(FREECAD_IDENTITY)
+    source = ArtifactStore(
+        application.state_manager.workspace,
+        project_id=application.project_id,
+        run_id="RUN-1",
+    ).publish(
+        "STEP-ANALYTICAL-TEST",
+        ArtifactType.STEP,
+        "source.step",
+        b"ISO-10303-21;\nEND-ISO-10303-21;\n",
+        "mechcad-freecad",
+        FREECAD_IDENTITY.adapter_version,
+        1,
+        application.load_state().state_hash,
+        backend_provenance=trusted_provenance,
+    )
+    request = SimpleNamespace(
+        source_binding=SimpleNamespace(
+            geometry_artifact_id=source.artifact_id,
+            geometry_artifact_hash=source.sha256,
+        )
+    )
+    manifest = SimpleNamespace(
+        run_id="RUN-1",
+        geometry_provider_provenance=trusted_provenance,
+        resolver_identity=REGION_RESOLVER_IDENTITY,
+        resolver_version="1",
+    )
+
+    class ReplacedGeometryAdapter:
+        _discovery = SimpleNamespace(provenance=trusted_provenance)
+
+        def realize_geometry(self, _source_path):
+            return object()
+
+    class ReplacedRegionResolver:
+        identity = REGION_RESOLVER_IDENTITY
+        resolver_version = "1"
+
+        def resolve(self, *_args, **_kwargs):
+            return object()
+
+    application.structural_service.geometry_adapter = ReplacedGeometryAdapter()
+    application.structural_service.region_resolver = ReplacedRegionResolver()
+    monkeypatch.setattr(application_module, "parse_trusted_msh_bytes", lambda _bytes: object())
+    monkeypatch.setattr(application_module, "cantilever_geometry_observation", lambda *_args: object())
+    monkeypatch.setattr(application_module, "cantilever_material_observation", lambda *_args: object())
+    monkeypatch.setattr(
+        application_module,
+        "StructuralAnalyticalValidator",
+        lambda: SimpleNamespace(validate=lambda *_args, **_kwargs: "validation"),
+    )
+
+    with pytest.raises(ValueError, match="trusted analytical source observations are unavailable"):
+        application._publish_structural_analytical_validation(
+            execution_manifest=manifest,
+            request=request,
+            definition=SimpleNamespace(regions=()),
+            result=object(),
+            verification=object(),
+            analytical_policy=object(),
+            mesh_artifact_bytes=b"mesh",
+        )
+
+
+def test_analytical_evaluation_rejects_replaced_nested_structural_dependencies(
+    tmp_path, monkeypatch
+):
+    import mechcad_harness.application as application_module
+    from mechcad_harness.backends.provenance import provenance_from_identity
+    from mechcad_harness.structural.evidence_models import RectangularCantileverValidationPolicy
+    from mechcad_harness.structural.models import REGION_RESOLVER_IDENTITY, REGION_RESOLVER_VERSION
+    from mechcad_harness.structural.results import StructuralAnalysisEvaluation
+    from mechcad_harness.structural.runtime import FREECAD_IDENTITY
+
+    application = build_application(tmp_path, CountingAdapter())
+    trusted_provenance = provenance_from_identity(FREECAD_IDENTITY)
+    manifest = SimpleNamespace(
+        geometry_provider_provenance=trusted_provenance,
+        resolver_identity=REGION_RESOLVER_IDENTITY,
+        resolver_version=REGION_RESOLVER_VERSION,
+    )
+    request = SimpleNamespace(request_hash="request-hash")
+    policy = RectangularCantileverValidationPolicy(
+        material_identity="MAT-1",
+        length_mm=10.0,
+        width_mm=2.0,
+        height_mm=2.0,
+        elastic_modulus_mpa=1000.0,
+        poisson_ratio=0.3,
+        resultant_force_n=(0.0, -1.0, 0.0),
+        mesh_specification_hash="mesh-spec",
+        free_end_region_id="free",
+        fixed_end_region_id="fixed",
+        free_end_area_mm2=4.0,
+        displacement_relative_tolerance=0.1,
+        reaction_relative_tolerance=0.1,
+    )
+    evaluation = StructuralAnalysisEvaluation(result=object(), verification=object())
+
+    class ReplacedGeometryAdapter:
+        _discovery = SimpleNamespace(provenance=trusted_provenance)
+
+        def realize_geometry(self, _source_path):
+            raise AssertionError("replaced geometry adapter was invoked")
+
+    class ReplacedRegionResolver:
+        identity = REGION_RESOLVER_IDENTITY
+        resolver_version = REGION_RESOLVER_VERSION
+
+        def resolve(self, *_args, **_kwargs):
+            raise AssertionError("replaced region resolver was invoked")
+
+    application.structural_service.geometry_adapter = ReplacedGeometryAdapter()
+    application.structural_service.region_resolver = ReplacedRegionResolver()
+    monkeypatch.setattr(application, "_reload_structural_execution_manifest", lambda *_args: manifest)
+    monkeypatch.setattr(application_module, "StructuralResultInterpreter", lambda **_kwargs: pytest.fail("interpreter invoked"))
+
+    with pytest.raises(ValueError, match="composed structural"):
+        application.evaluate_structural_analytical_validation(
+            execution_manifest=manifest,
+            evaluation=evaluation,
+            policy=policy,
+            mesh=object(),
+            geometry_observation=None,
+            material_observation=None,
+            request=request,
+            definition=SimpleNamespace(regions=()),
+        )

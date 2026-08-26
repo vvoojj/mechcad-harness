@@ -63,7 +63,7 @@ Accepted typed design specifications compile into backend-independent `CadPartPr
 
 ## 14. Analysis Architecture
 
-Current foundations cover exact interference/clearance, transient assembly measurement, transmission calculations, material/mass estimates, preliminary section properties, and the bounded M11 source-bound single-body linear-static structural path. M11-3 provides trusted mesh/solver execution and M11-4 provides trusted FRD/DAT interpretation, typed criterion outcomes, and a separate fixed-cantilever analytical-validation API. Broad structural approval, general FEA, dynamics, and manufacturing validation remain `TARGET_NEXT` or `FUTURE`.
+Current foundations cover exact interference/clearance, transient assembly measurement, transmission calculations, material/mass estimates, preliminary section properties, and the bounded M11 source-bound single-body linear-static structural path. M11-3 provides trusted mesh/solver execution, M11-4 provides trusted FRD/DAT interpretation, typed criterion outcomes, and a separate fixed-cantilever analytical-validation API, and M11-5 provides durable structural Evidence with bounded repeatability and explicitly declared displacement-metric mesh-convergence studies. Broad structural approval, general FEA, dynamics, and manufacturing validation remain `TARGET_NEXT` or `FUTURE`.
 
 ## 15. Kinematic Architecture
 
@@ -97,7 +97,7 @@ acceptance marker is `M10_FULLY_CLOSED_LIVE_VERIFIED`.
 
 ## 20. Future Capabilities
 
-**FUTURE:** whole configuration-space certification, generalized autonomous constraint solving beyond the accepted bounded resolution loop, broad structural approval and general FEA beyond the bounded M11 path, dynamics/MuJoCo integration, wind and environmental loads, manufacturing output, optimization, mesh convergence, and broad multi-agent engineering convergence.
+**FUTURE:** whole configuration-space certification, generalized autonomous constraint solving beyond the accepted bounded resolution loop, broad structural approval and general FEA beyond the bounded M11 path, dynamics/MuJoCo integration, wind and environmental loads, manufacturing output, optimization, global or automatic mesh convergence, and broad multi-agent engineering convergence.
 
 ## 21. Reference Projects / Domain Examples
 
@@ -234,6 +234,25 @@ immutability, M9 foundation regressions, and full-suite regression safety. It
 does not expand the accepted motion semantics or imply configuration-space,
 dynamics, FEA, or manufacturing certification.
 
+### M11-5 - Durable Structural Evidence
+
+M11-5 adds `ProductionApplication.publish_structural_evidence` and fresh,
+runtime-independent verification through the existing `EvidenceStore`. The
+typed frozen structural payload binds the source revision and definition,
+request, geometry/mesh/solver artifacts, interpreted result, criterion
+verification, material authority, analytical validation, and direct/aggregate
+provider provenance. Trusted PASS, FAIL, and NOT_EVALUABLE engineering outcomes
+remain distinct and are independently reloadable.
+
+`StructuralRepeatabilityPolicy` compares declared semantic summaries from two
+independently verified Evidence records. `StructuralMeshConvergenceStudy`
+evaluates an ordered bounded sequence of at least three normal structural
+Evidence records for the declared free-end displacement-magnitude response
+metric. Level Evidence is immutable and is not mutated by convergence-study
+publication. Stress remains CalculiX extrapolated nodal stress; no global
+yield, safety, manufacturing, adaptive-refinement, or global convergence claim
+is made.
+
 ## 23. Current Remaining Limitations
 
 - `PREACCEPTED_CALLER_CONTRACT_ONLY`
@@ -244,8 +263,8 @@ dynamics, FEA, or manufacturing certification.
   discrete-only; continuous proof is a separate entrypoint)
 - M10-3 verifies ordered discrete configurations only; M10-4 verifies only one
   explicit continuous path. Whole configuration-space proof, broad FEA beyond
-  the bounded M11 path, materials,
-  manufacturing, and optimization remain future
+  the bounded M11 path, global convergence, materials, manufacturing, and
+  optimization remain future
 
 ## 24. Next Planning Boundary
 

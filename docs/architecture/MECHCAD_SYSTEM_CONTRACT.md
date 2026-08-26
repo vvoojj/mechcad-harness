@@ -33,6 +33,7 @@ MechCAD is a deterministic, provenance-aware, multi-agent mechanical-engineering
 12. **Domain Extensions:** domain-specific meaning stays above generic state machinery and backend contracts.
 13. **Production Orchestration (M8B):** `ProductionApplication.create(...)` is the trusted composition root that owns the production service graph (`StateManager`, `EvidenceStore`, `OwnershipPolicy`, `ChangeEngine`, `RunController`, `ToolRegistry` → `ToolBroker`, `AgentRegistry` → injected adapter, `ContextBuilder` → `AgentGateway` → `AgentToolMediator` → `ToolBroker`). It owns trusted identities/permissions and the composition of analysis providers; it does not add a second canonical-mutation API.
 14. **Production CAD / Assembly / Kinematics (M8C → M9):** M8 connected source-bound `DesignSpec` → `CadPartProgram` compilation, trusted `ImportedCadComponent` resolution through `ArtifactStore`, generic mixed `CadAssemblyProgram`, and the `ProductionApplication.analyze_assembly_kinematics` entrypoint. M9 live-verified the runtime edges on real FreeCAD: `CadPartProgram` realization, real trusted imported STEP, live mixed assembly, fresh reload, exact `common().Volume` / `distToShape()`, real discrete kinematic sweep, and durable trusted analysis-execution provenance (`M9_FULLY_CLOSED_LIVE_VERIFIED`).
+15. **Durable Structural Evidence (M11-5):** the bounded source-bound single-solid linear-static structural path can publish immutable structural Evidence through the existing `EvidenceStore`, independently reload it, and preserve trusted PASS, FAIL, and NOT_EVALUABLE engineering outcomes. Exact source, artifact, result, criterion, material, analytical, and provider/parser bindings are required; bounded repeatability and explicitly declared displacement-metric mesh-convergence studies are supported.
 
 ## Authority Rules
 
@@ -182,9 +183,37 @@ interference/touching/requested-clearance violations produce `COLLISION_WITNESS`
 and unresolved budgets produce `NOT_PROVEN`. M10-4 does not certify a
 configuration-space region.
 
+## Structural Evidence Contract
+
+M11-5 adds a frozen `StructuralEvidencePayload` to the generic `Evidence`
+model. Ordinary structural Evidence is `analysis.structural`; convergence-study
+Evidence is `analysis.structural.convergence` and binds complete ordered level
+Evidence rather than representing a physical analysis result. Existing legacy
+Evidence remains valid without the optional payload.
+
+`ProductionApplication.publish_structural_evidence()` is the trusted
+publication boundary. It reconstructs the accepted M11-4 result and criterion
+verification from the immutable source definition, durable execution manifest,
+and byte-verified ArtifactStore records before writing one immutable Evidence
+record. `StructuralEvidenceVerifier` reloads and rechecks those bindings
+without runtime discovery or solver/CAD subprocesses. Integrity failure is not
+converted to an engineering `NOT_EVALUABLE` outcome.
+
+Structural Evidence currentness is separate from internal validity and is
+`CURRENT`, `STALE_RELATIVE_TO_CURRENT_STATE`, or
+`CURRENTNESS_UNAVAILABLE`. State advancement leaves historical Evidence
+verifiable against its bound revision.
+
+`StructuralRepeatabilityPolicy` compares declared semantic summaries and does
+not require raw bytes or mesh node/element correspondence. A
+`StructuralMeshConvergenceStudy` requires an ordered bounded sequence of at
+least three mesh levels for the supported free-end displacement-magnitude
+metric. This is not adaptive refinement, generic mesh correspondence, stress
+convergence, or a global convergence claim.
+
 ## Maturity
 
-**FOUNDATION / REQUIRED_CURRENT:** state/revision/change/ownership/dependency/run/tool/Evidence foundations; AgentGateway, fake and OpenCode adapters, bounded transmission reasoning, strict structured response, tool mediation, torque/Evidence round-trip foundation, constraint discovery/materialization/satisfaction/resolution; narrow engineering providers; generic CAD programs and rigid assemblies; exact collision, transient measurement, discrete single-axis kinematics, single-axis continuous proof, generic multi-joint discrete forward kinematics, exact discrete multi-joint collision evaluation, and explicit-path continuous multi-joint clearance proof.
+**FOUNDATION / REQUIRED_CURRENT:** state/revision/change/ownership/dependency/run/tool/Evidence foundations; AgentGateway, fake and OpenCode adapters, bounded transmission reasoning, strict structured response, tool mediation, torque/Evidence round-trip foundation, constraint discovery/materialization/satisfaction/resolution; narrow engineering providers; generic CAD programs and rigid assemblies; exact collision, transient measurement, discrete single-axis kinematics, single-axis continuous proof, generic multi-joint discrete forward kinematics, exact discrete multi-joint collision evaluation, explicit-path continuous multi-joint clearance proof, and durable bounded structural Evidence/repeatability/convergence.
 
 The accepted M11 bounded structural path is also current: M11-2 provides the
 typed source-bound single-body linear-static authority model; M11-3 provides
@@ -197,7 +226,7 @@ constitute general structural approval or unrestricted FEA.
 **TARGET_NEXT:** one connected universal mechanical workflow across the current foundations, broader domain services, canonical transmission/material selection, controlled load cases, and stronger provider wiring proof.
 
 **FUTURE:** whole configuration-space certification, broad structural approval
-and unrestricted FEA beyond the bounded M11 path, mesh convergence, dynamics,
+and unrestricted FEA beyond the bounded M11 path, global or automatic mesh convergence, dynamics,
 manufacturing, optimization, and broad multi-agent convergence.
 
 ## Generic Acceptance Scenario

@@ -44,6 +44,8 @@ from mechcad_harness.structural.models import (
     CALCULIX_PROVIDER_IDENTITY,
     DECK_BUILDER_IDENTITY,
     GMSH_PROVIDER_IDENTITY,
+    REGION_RESOLVER_IDENTITY,
+    REGION_RESOLVER_VERSION,
     execution_manifest_hash,
     mesh_input_hash,
 )
@@ -1960,7 +1962,9 @@ $EndElements
             library_name="FreeCAD", library_version="1.1.3", library_source="bundled",
             library_revision="freecad-1.1.3-bundled",
         ),
-        region_map_hash=region_map_hash_value, resolver_identity="resolver", resolver_version="1",
+        region_map_hash=region_map_hash_value,
+        resolver_identity=REGION_RESOLVER_IDENTITY,
+        resolver_version=REGION_RESOLVER_VERSION,
         gmsh_identity=GMSH_PROVIDER_IDENTITY, gmsh_version="4.15.0",
         mesh_specification_hash=StructuralResultInterpreter._mesh_specification_hash(request),
         mesh_artifact_id=mesh_artifact.artifact_id, mesh_artifact_hash=mesh_artifact.sha256,
@@ -2094,6 +2098,24 @@ def test_interpreter_rejects_artifact_provenance_and_foreign_gmsh_mismatch(tmp_p
     })
 
     with pytest.raises(StructuralResultIntegrityError, match="trusted Gmsh"):
+        StructuralResultInterpreter(
+            workspace=workspace, project_id="PRJ-1", request=request, definition=definition,
+        ).interpret(tampered)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("resolver_identity", "foreign-region-resolver@9"), ("resolver_version", "9")],
+)
+def test_interpreter_rejects_tampered_region_resolver_binding(tmp_path, field, value):
+    workspace, request, definition, manifest, _frd_artifact = _trusted_interpreter_case(tmp_path)
+    tampered = StructuralExecutionManifest.model_validate({
+        **manifest.model_dump(mode="json"),
+        field: value,
+        "request_manifest_hash": None,
+    })
+
+    with pytest.raises(StructuralResultIntegrityError, match="region resolver"):
         StructuralResultInterpreter(
             workspace=workspace, project_id="PRJ-1", request=request, definition=definition,
         ).interpret(tampered)

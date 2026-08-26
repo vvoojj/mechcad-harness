@@ -74,10 +74,12 @@ from mechcad_harness.multi_joint_continuous_clearance import (
     continuous_clearance_result_hash,
 )
 from mechcad_harness.structural.runtime import (
+    FREECAD_IDENTITY,
     discover_calculix,
     discover_freecad,
     discover_gmsh,
 )
+from mechcad_harness.backends.provenance import provenance_from_identity
 from mechcad_harness.structural.geometry import (
     StructuralFreeCADGeometryAdapter,
     StructuralRegionResolver,
@@ -87,15 +89,35 @@ from mechcad_harness.structural.deck import StructuralDeckBuilder
 from mechcad_harness.structural.preflight import ConstraintPreflight
 from mechcad_harness.structural.solver import StructuralCalculiXSolverProvider
 from mechcad_harness.structural.service import StructuralAnalysisService
+from mechcad_harness.structural.evidence_service import (
+    StructuralEvidencePublisher,
+    StructuralRepeatabilityService,
+    StructuralMeshConvergenceService,
+    StructuralEvidenceVerifier,
+)
+from mechcad_harness.structural.evidence import (
+    StructuralEvidenceCurrentness,
+    StructuralEvidenceVerification,
+    StructuralMeshConvergenceResult,
+    StructuralMeshConvergenceStudy,
+    StructuralRepeatabilityPolicy,
+    StructuralRepeatabilityResult,
+)
 from mechcad_harness.structural_request import StructuralAnalysisRequest
 from mechcad_harness.structural.results import (
     CalculiXDatResultParser,
     CalculiXFrdResultParser,
+    parse_trusted_msh_bytes,
     StructuralAnalysisEvaluation,
     StructuralResultInterpreter,
     StructuralVerificationService,
 )
-from mechcad_harness.structural.models import StructuralExecutionManifest, structural_result_hash
+from mechcad_harness.structural.models import (
+    REGION_RESOLVER_IDENTITY,
+    REGION_RESOLVER_VERSION,
+    StructuralExecutionManifest,
+    structural_result_hash,
+)
 from mechcad_harness.structural.validation import (
     CantileverGeometryObservation,
     CantileverMaterialObservation,
@@ -105,6 +127,36 @@ from mechcad_harness.structural.validation import (
     cantilever_geometry_observation,
     cantilever_material_observation,
 )
+
+
+def _structural_model_snapshot(value):
+    if value is None:
+        return None
+    return json.dumps(value.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+
+
+def _structural_discovery_snapshot(discovery):
+    return (
+        type(discovery),
+        discovery.available,
+        discovery.executable,
+        discovery.version,
+        id(discovery.identity),
+        _structural_model_snapshot(discovery.identity),
+        id(discovery.provenance) if discovery.provenance is not None else None,
+        _structural_model_snapshot(discovery.provenance),
+    )
+
+
+def _structural_tolerance_snapshot(tolerances):
+    return (
+        type(tolerances),
+        tolerances.policy_id,
+        tolerances.planarity_mm,
+        tolerances.area_mm2,
+        tolerances.centroid_mm,
+        tolerances.normal_abs_dot,
+    )
 
 
 class ProductionStateBinding(Model):
@@ -177,6 +229,17 @@ class ProductionApplication:
         "_structural_frd_parser",
         "_structural_dat_parser",
         "_structural_verification_service",
+        "_structural_evidence_publisher",
+        "_structural_evidence_verifier",
+        "_structural_repeatability_service",
+        "_structural_mesh_convergence_service",
+        "_composed_structural_geometry_adapter_id",
+        "_composed_structural_geometry_discovery_id",
+        "_composed_structural_geometry_discovery_snapshot",
+        "_composed_structural_region_resolver_id",
+        "_composed_structural_region_tolerances_id",
+        "_composed_structural_region_tolerances_snapshot",
+        "_composed_analytical_validation_factory",
         "standard_tool_permissions",
         "project_id",
         "kinematic_measure",
@@ -240,21 +303,81 @@ class ProductionApplication:
         self._kinematic_measurement_provider_attested = (
             provider_was_created_by_default_composition
         )
+        structural_geometry_adapter = StructuralFreeCADGeometryAdapter(discover_freecad())
+        structural_region_resolver = StructuralRegionResolver()
         self.structural_service = StructuralAnalysisService(
             state_manager=state_manager,
             run_controller=run_controller,
             workspace=state_manager.workspace,
-            geometry_adapter=StructuralFreeCADGeometryAdapter(discover_freecad()),
-            region_resolver=StructuralRegionResolver(),
+            geometry_adapter=structural_geometry_adapter,
+            region_resolver=structural_region_resolver,
             gmsh_provider=StructuralGmshMeshingProvider(discover_gmsh()),
             deck_builder=StructuralDeckBuilder(),
             constraint_preflight=ConstraintPreflight(),
             calculix_provider=StructuralCalculiXSolverProvider(discover_calculix()),
         )
+        object.__setattr__(
+            self,
+            "_composed_structural_geometry_adapter_id",
+            id(structural_geometry_adapter),
+        )
+        object.__setattr__(
+            self,
+            "_composed_structural_geometry_discovery_id",
+            id(structural_geometry_adapter._discovery),
+        )
+        object.__setattr__(
+            self,
+            "_composed_structural_geometry_discovery_snapshot",
+            _structural_discovery_snapshot(structural_geometry_adapter._discovery),
+        )
+        object.__setattr__(
+            self,
+            "_composed_structural_region_resolver_id",
+            id(structural_region_resolver),
+        )
+        object.__setattr__(
+            self,
+            "_composed_structural_region_tolerances_id",
+            id(structural_region_resolver._tolerances),
+        )
+        object.__setattr__(
+            self,
+            "_composed_structural_region_tolerances_snapshot",
+            _structural_tolerance_snapshot(structural_region_resolver._tolerances),
+        )
         self._structural_frd_parser = CalculiXFrdResultParser()
         self._structural_dat_parser = CalculiXDatResultParser()
         self._structural_verification_service = StructuralVerificationService()
         self._structural_requests: dict[str, StructuralAnalysisRequest] = {}
+        self._structural_evidence_verifier = StructuralEvidenceVerifier(
+            workspace=state_manager.workspace,
+            project_id=project_id,
+            state_manager=state_manager,
+            artifact_store=ArtifactStore(state_manager.workspace, project_id=project_id, run_id="PUBLISH"),
+            evidence_store=evidence_store,
+        )
+        self._structural_repeatability_service = StructuralRepeatabilityService(
+            self._structural_evidence_verifier
+        )
+        self._structural_mesh_convergence_service = StructuralMeshConvergenceService(
+            self._structural_evidence_verifier
+        )
+        analytical_validation_factory = self._publish_structural_analytical_validation
+        object.__setattr__(
+            self,
+            "_composed_analytical_validation_factory",
+            analytical_validation_factory,
+        )
+        self._structural_evidence_publisher = StructuralEvidencePublisher(
+            workspace=state_manager.workspace,
+            project_id=project_id,
+            state_manager=state_manager,
+            artifact_store=ArtifactStore(state_manager.workspace, project_id=project_id, run_id="PUBLISH"),
+            evidence_store=evidence_store,
+            request_resolver=lambda request_hash: self._structural_requests.get(request_hash),
+            analytical_validation_factory=analytical_validation_factory,
+        )
         object.__setattr__(self, "_dependencies_initialized", True)
 
     def __setattr__(self, name, value):
@@ -958,6 +1081,64 @@ class ProductionApplication:
             self._structural_requests[request.request_hash] = request
         return execution
 
+    def publish_structural_evidence(
+        self,
+        *,
+        execution_manifest,
+        request: StructuralAnalysisRequest | None = None,
+        analytical_policy=None,
+        execution_manifest_artifact_id: str | None = None,
+        execution_manifest_artifact_hash: str | None = None,
+    ) -> Evidence:
+        return self._structural_evidence_publisher.publish(
+            execution_manifest=execution_manifest,
+            request=request,
+            analytical_policy=analytical_policy,
+            execution_manifest_artifact_id=execution_manifest_artifact_id,
+            execution_manifest_artifact_hash=execution_manifest_artifact_hash,
+        )
+
+    def verify_structural_evidence(self, evidence_id: str) -> StructuralEvidenceVerification:
+        return self._structural_evidence_verifier.verify(evidence_id)
+
+    def check_structural_evidence_currentness(self, evidence_id: str) -> StructuralEvidenceCurrentness:
+        return self._structural_evidence_verifier.currentness(evidence_id)
+
+    def compare_structural_repeatability(
+        self,
+        *,
+        policy: StructuralRepeatabilityPolicy,
+        first_evidence_id: str,
+        second_evidence_id: str,
+    ) -> StructuralRepeatabilityResult:
+        return self._structural_repeatability_service.compare(
+            policy=policy,
+            first_evidence_id=first_evidence_id,
+            second_evidence_id=second_evidence_id,
+        )
+
+    def evaluate_structural_mesh_convergence(
+        self,
+        *,
+        study: StructuralMeshConvergenceStudy,
+        level_evidence_ids: tuple[str, ...],
+    ) -> StructuralMeshConvergenceResult:
+        return self._structural_mesh_convergence_service.evaluate(
+            study=study,
+            level_evidence_ids=level_evidence_ids,
+        )
+
+    def publish_structural_mesh_convergence(
+        self,
+        *,
+        study: StructuralMeshConvergenceStudy,
+        level_evidence_ids: tuple[str, ...],
+    ) -> Evidence:
+        return self._structural_mesh_convergence_service.publish(
+            study=study,
+            level_evidence_ids=level_evidence_ids,
+        )
+
     def _assert_structural_source_unchanged(self, source_before, operation: str) -> None:
         source_after = self.load_state()
         if (
@@ -965,6 +1146,98 @@ class ProductionApplication:
             or source_after.state_hash != source_before.state_hash
         ):
             raise StateIntegrityError(f"source revision/state changed during {operation}")
+
+    def _publish_structural_analytical_validation(
+        self,
+        *,
+        execution_manifest,
+        request,
+        definition,
+        result,
+        verification,
+        analytical_policy,
+        mesh_artifact_bytes,
+    ):
+        mesh = parse_trusted_msh_bytes(mesh_artifact_bytes)
+        store = ArtifactStore(
+            self.state_manager.workspace,
+            project_id=self.project_id,
+            run_id=execution_manifest.run_id,
+        )
+        try:
+            source_verified = store.read_verified_in_project(
+                request.source_binding.geometry_artifact_id,
+                expected_type=ArtifactType.STEP,
+                expected_hash=request.source_binding.geometry_artifact_hash,
+            )
+            if source_verified is None:
+                raise ValueError("trusted source STEP artifact is unavailable")
+            source_artifact, _source_bytes = source_verified
+            source_path = store.path_for_in_project(source_artifact)
+            if source_path is None:
+                raise ValueError("trusted source STEP artifact is unavailable")
+            self._assert_composed_structural_dependencies(execution_manifest)
+            realization = self.structural_service.geometry_adapter.realize_geometry(source_path)
+            region_map = self.structural_service.region_resolver.resolve(
+                definition.regions,
+                realization,
+                source_geometry_hash=request.source_binding.geometry_artifact_hash,
+            )
+            geometry_observation = cantilever_geometry_observation(
+                request, definition, realization, region_map,
+            )
+            material_observation = cantilever_material_observation(request, definition)
+            validation = StructuralAnalyticalValidator().validate(
+                result,
+                analytical_policy,
+                request=request,
+                execution_manifest=execution_manifest,
+                mesh=mesh,
+                mesh_artifact_bytes=mesh_artifact_bytes,
+                geometry_observation=geometry_observation,
+                material_observation=material_observation,
+                definition=definition,
+            )
+        except Exception as exc:
+            raise ValueError("trusted analytical source observations are unavailable") from exc
+        return validation, geometry_observation, material_observation
+
+    def _assert_composed_structural_dependencies(self, execution_manifest) -> None:
+        if (
+            self._structural_evidence_publisher.analytical_validation_factory
+            is not self._composed_analytical_validation_factory
+        ):
+            raise ValueError("composed analytical validation factory is untrusted")
+        geometry_adapter = self.structural_service.geometry_adapter
+        discovery = getattr(geometry_adapter, "_discovery", None)
+        adapter_provenance = getattr(
+            discovery, "provenance", None
+        )
+        if (
+            type(geometry_adapter) is not StructuralFreeCADGeometryAdapter
+            or id(geometry_adapter) != self._composed_structural_geometry_adapter_id
+            or type(discovery) is not self._composed_structural_geometry_discovery_snapshot[0]
+            or id(discovery) != self._composed_structural_geometry_discovery_id
+            or _structural_discovery_snapshot(discovery)
+            != self._composed_structural_geometry_discovery_snapshot
+            or adapter_provenance != execution_manifest.geometry_provider_provenance
+            or adapter_provenance != provenance_from_identity(FREECAD_IDENTITY)
+        ):
+            raise ValueError("composed structural geometry adapter provenance is untrusted")
+        region_resolver = self.structural_service.region_resolver
+        tolerances = getattr(region_resolver, "_tolerances", None)
+        if (
+            type(region_resolver) is not StructuralRegionResolver
+            or id(region_resolver) != self._composed_structural_region_resolver_id
+            or id(tolerances) != self._composed_structural_region_tolerances_id
+            or _structural_tolerance_snapshot(tolerances)
+            != self._composed_structural_region_tolerances_snapshot
+            or region_resolver.identity != execution_manifest.resolver_identity
+            or region_resolver.resolver_version != execution_manifest.resolver_version
+            or region_resolver.identity != REGION_RESOLVER_IDENTITY
+            or region_resolver.resolver_version != REGION_RESOLVER_VERSION
+        ):
+            raise ValueError("composed structural region resolver provenance is untrusted")
 
     def evaluate_structural_analysis(
         self,
@@ -1094,6 +1367,7 @@ class ProductionApplication:
             )
             if definition is None:
                 raise ValueError("the bound structural definition is missing")
+        self._assert_composed_structural_dependencies(execution_manifest)
         source_before = self.load_state()
         interpreter = StructuralResultInterpreter(
             workspace=self.state_manager.workspace,
@@ -1127,18 +1401,37 @@ class ProductionApplication:
         if source_artifact_match is None:
             raise ValueError("trusted source STEP artifact is unavailable")
         source_artifact, _source_bytes = source_artifact_match
+        source_refs = tuple(
+            ref for ref in execution_manifest.artifacts
+            if ref.artifact_id == source_artifact.artifact_id
+        )
         if (
             source_artifact.artifact_type is not ArtifactType.STEP
             or source_artifact.sha256 != request.source_binding.geometry_artifact_hash
             or source_artifact.bound_revision != request.source_binding.source_revision
             or source_artifact.bound_state_hash != request.source_binding.source_state_hash
             or source_artifact.project_id != request.source_binding.project_id
+            or source_artifact.producer_tool_name != "mechcad-freecad"
+            or source_artifact.producer_tool_version
+            != execution_manifest.geometry_provider_provenance.backend_adapter_version
+            or source_artifact.input_hash != request.source_binding.source_program_hash
             or source_artifact.backend_provenance != execution_manifest.geometry_provider_provenance
             or not StructuralResultInterpreter._is_trusted_freecad_provenance(
                 source_artifact.backend_provenance
             )
         ):
-            raise ValueError("trusted source STEP artifact provenance mismatch")
+            raise ValueError("trusted source STEP artifact input binding/provenance mismatch")
+        if len(source_refs) != 1:
+            raise ValueError("trusted source STEP artifact manifest reference is missing or ambiguous")
+        source_ref = source_refs[0]
+        if (
+            source_ref.artifact_type != ArtifactType.STEP.value
+            or source_ref.artifact_id != source_artifact.artifact_id
+            or source_ref.sha256 != source_artifact.sha256
+            or source_ref.producer_identity != source_artifact.producer_tool_name
+            or source_ref.producer_version != source_artifact.producer_tool_version
+        ):
+            raise ValueError("trusted source STEP artifact manifest reference mismatch")
         source_path = ArtifactStore(
             self.state_manager.workspace,
             project_id=self.project_id,

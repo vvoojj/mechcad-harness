@@ -176,6 +176,7 @@ class StructuralAnalysisService:
         try:
             parsed_mesh, mesh_manifest, msh_bytes = self.gmsh_provider.mesh(
                 step_path, region_map, mesh_spec_hash=mesh_spec_hash,
+                target_size_mm=request.mesh_specification.global_target_size_mm,
                 element_family=request.mesh_specification.element_family)
         except MeshProviderError as exc:
             raise StructuralPipelineError(
@@ -187,6 +188,7 @@ class StructuralAnalysisService:
             self.gmsh_provider.identity, mesh_manifest.gmsh_version, revision, state_hash,
             backend_provenance=self.gmsh_provider._discovery.provenance, input_hash=mesh_input_identity)
         refs: list[StructuralArtifactRef] = [
+            self._ref(artifact, artifact.producer_tool_name, artifact.producer_tool_version),
             self._ref(msh_artifact, self.gmsh_provider.identity, mesh_manifest.gmsh_version)
         ]
         produced = [msh_artifact]

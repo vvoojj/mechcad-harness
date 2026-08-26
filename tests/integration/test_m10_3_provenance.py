@@ -464,6 +464,7 @@ def test_evidence_store_preserves_legacy_persisted_shape_hash_and_id(tmp_path):
     expected = evidence.model_dump(mode="json")
     expected["analysis_execution_provenance"].pop("model_hash")
     assert persisted == expected
+    assert "subject" not in persisted
     assert "model_hash" not in persisted["analysis_execution_provenance"]
     persisted_hash = "sha256:" + sha256(
         json.dumps(persisted, sort_keys=True, separators=(",", ":")).encode("utf-8")

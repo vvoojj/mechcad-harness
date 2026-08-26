@@ -26,6 +26,8 @@ from mechcad_harness.structural.models import (
     CALCULIX_PROVIDER_IDENTITY,
     DECK_BUILDER_IDENTITY,
     GMSH_PROVIDER_IDENTITY,
+    REGION_RESOLVER_IDENTITY,
+    REGION_RESOLVER_VERSION,
     StructuralAnalysisResult,
     StructuralCaseExecutionManifest,
     StructuralCriterionResult,
@@ -42,7 +44,7 @@ from mechcad_harness.structural.models import (
     mesh_manifest_hash,
     structural_request_manifest_hash,
 )
-from mechcad_harness.structural.mesh import C3D10_LOCAL_FACES, ParsedMesh
+from mechcad_harness.structural.mesh import C3D10_LOCAL_FACES, ParsedMesh, canonical_c3d10_nodes
 from mechcad_harness.structural.deck import (
     DeckBuildError,
     cload_semantic_hash,
@@ -202,6 +204,23 @@ def _parse_node(field: str, *, line_number: int) -> int:
     return node_id
 
 
+def _parse_frd_envelope_count(record: str, marker: str, *, line_number: int) -> int:
+    count_field = record[6:-38] if len(record) >= 72 else ""
+    envelope_kind = "element" if marker.strip() == "3C" else "mesh"
+    if (
+        not record.startswith(marker)
+        or record[-38:-1] != " " * 37
+        or not record.endswith("1")
+        or not count_field.strip().isdigit()
+        or count_field != count_field.strip().rjust(len(count_field))
+    ):
+        raise _integrity(f"malformed FRD {envelope_kind} envelope at line {line_number}")
+    count = int(count_field)
+    if count <= 0:
+        raise _integrity("FRD envelope count must be positive")
+    return count
+
+
 def _parse_frd_datasets(lines: list[str], *, mesh: ParsedMesh | None = None) -> tuple[_FrdDataset, ...]:
     if len(lines) < 6 or lines[0] != "    1C" or lines[-1] != " 9999":
         raise _integrity("FRD requires the exact CalculiX envelope and final 9999 trailer")
@@ -227,19 +246,7 @@ def _parse_frd_datasets(lines: list[str], *, mesh: ParsedMesh | None = None) -> 
         raise _integrity("truncated FRD mesh envelope")
 
     mesh_header = lines[cursor]
-    if (
-        len(mesh_header) != 74
-        or mesh_header[:6] != "    2C"
-        or mesh_header[6:33] != " " * 27
-        or mesh_header[73] != "1"
-            or not mesh_header[33:36].strip().isdigit()
-            or mesh_header[33:36] != mesh_header[33:36].strip().rjust(3)
-            or mesh_header[36:73] != " " * 37
-    ):
-        raise _integrity(f"malformed FRD mesh envelope at line {cursor + 1}")
-    mesh_node_count = int(mesh_header[33:36])
-    if mesh_node_count <= 0:
-        raise _integrity("FRD mesh node count must be positive")
+    mesh_node_count = _parse_frd_envelope_count(mesh_header, "    2C", line_number=cursor + 1)
     cursor += 1
 
     mesh_nodes: set[int] = set()
@@ -260,19 +267,7 @@ def _parse_frd_datasets(lines: list[str], *, mesh: ParsedMesh | None = None) -> 
 
     if cursor < len(lines) - 1 and lines[cursor].startswith("    3C"):
         element_header = lines[cursor]
-        if (
-            len(element_header) != 74
-            or element_header[:6] != "    3C"
-            or element_header[6:33] != " " * 27
-            or not element_header[33:36].strip().isdigit()
-            or element_header[33:36] != element_header[33:36].strip().rjust(3)
-            or element_header[36:73] != " " * 37
-            or element_header[73] != "1"
-        ):
-            raise _integrity(f"malformed FRD element envelope at line {cursor + 1}")
-        element_count = int(element_header[33:36])
-        if element_count <= 0:
-            raise _integrity("FRD element count must be positive")
+        element_count = _parse_frd_envelope_count(element_header, "    3C", line_number=cursor + 1)
         cursor += 1
         seen_elements: set[int] = set()
         for _ in range(element_count):
@@ -352,12 +347,11 @@ def _parse_frd_datasets(lines: list[str], *, mesh: ParsedMesh | None = None) -> 
             len(control) != 75
             or control[:8] != "  100CL "
             or control[8:12] != " 101"
-            or control[12] != " "
-            or control[13:24] != "1.000000000"
-            or control[24:33] != " " * 9
-            or not control[33:36].strip().isdigit()
-            or control[33:36] != control[33:36].strip().rjust(3)
-            or control[36:57] != " " * 21
+                or control[12] != " "
+                or control[13:24] != "1.000000000"
+                or not control[24:36].strip().isdigit()
+                or control[24:36] != control[24:36].strip().rjust(12)
+                or control[36:57] != " " * 21
             or control[57] != "0"
             or control[58:62] != " " * 4
             or control[62] != "1"
@@ -365,7 +359,7 @@ def _parse_frd_datasets(lines: list[str], *, mesh: ParsedMesh | None = None) -> 
             or control[74] != "1"
         ):
             raise _integrity(f"unsupported FRD 100CL header at line {cursor + 2}")
-        declared_records = int(control[33:36])
+        declared_records = int(control[24:36])
         if declared_records <= 0:
             raise _integrity("FRD 100CL record count must be positive")
 
@@ -708,7 +702,7 @@ def _parse_verified_msh(content: bytes) -> ParsedMesh:
                 raise _integrity("invalid or duplicate C3D10 element")
             if any(node_id not in nodes for node_id in element_nodes):
                 raise _integrity("C3D10 references an unknown mesh node")
-            c3d10[element_id] = element_nodes
+            c3d10[element_id] = canonical_c3d10_nodes(element_nodes)
             group_name = physical_names.get((3, physical_id))
             if group_name:
                 physical_groups.append((None, group_name, 3, entity_id))
@@ -1000,6 +994,11 @@ class StructuralResultInterpreter:
             or manifest.gmsh_version != GMSH_IDENTITY.library_version
         ):
             raise StructuralResultIntegrityError("trusted Gmsh identity/version mismatch")
+        if (
+            manifest.resolver_identity != REGION_RESOLVER_IDENTITY
+            or manifest.resolver_version != REGION_RESOLVER_VERSION
+        ):
+            raise StructuralResultIntegrityError("trusted region resolver identity/version mismatch")
         if not self._is_trusted_freecad_provenance(manifest.geometry_provider_provenance):
             raise StructuralResultIntegrityError("source geometry provider provenance mismatch")
         binding = request.source_binding

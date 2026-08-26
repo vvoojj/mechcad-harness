@@ -73,6 +73,21 @@ ToolResult/analysis/CAD [D] -> normalized output -> hash and source binding
 -> EvidenceStore or ArtifactStore [X] -> freshness/replay verification [V]
 ```
 
+M11-5 extends the structural branch with a runtime-independent durable Evidence
+flow:
+
+```text
+trusted M11-4 execution/result/verification/analytical validation
+  -> explicit manifest and STEP/MSH/INP/FRD/DAT/LOG ArtifactStore verification
+  -> StructuralEvidencePayload semantic hash
+  -> existing EvidenceStore atomic persistence [X]
+  -> fresh verifier reload, integrity verification, and currentness [V]
+```
+
+The payload preserves trusted PASS, FAIL, and NOT_EVALUABLE engineering
+outcomes. Historical verification does not discover or invoke FreeCAD, Gmsh,
+CalculiX, or solver/CAD subprocesses.
+
 ## I. Torque Round Trip
 
 ```text
@@ -233,6 +248,27 @@ The deterministic test provider is a composition-boundary injection only and is
 not the normal production execution path. The production application owns
 provider composition; an ordinary analysis caller cannot pass a trusted
 exact-measurement callback.
+
+## P. Durable Structural Evidence (M11-5)
+
+```text
+ProductionApplication.publish_structural_evidence
+  -> immutable source definition/request and durable manifest binding
+  -> byte-verified structural artifacts
+  -> M11-4 result/criterion/analytical reconstruction
+  -> StructuralEvidencePayload + semantic hash
+  -> EvidenceStore
+  -> fresh StructuralEvidenceVerifier
+```
+
+`StructuralRepeatabilityPolicy` compares declared semantic summaries from two
+independently verified structural Evidence records. A
+`StructuralMeshConvergenceStudy` verifies an ordered bounded sequence of at
+least three ordinary level records, then publishes a separate convergence-study
+Evidence record containing the complete ordered level IDs and hashes. Level
+Evidence is not mutated. The supported study metric is the declared free-end
+displacement magnitude; the result is not adaptive, generic, stress, or global
+convergence.
 
 ## M5. Conservative Continuous Multi-Joint Path Proof (M10-4)
 

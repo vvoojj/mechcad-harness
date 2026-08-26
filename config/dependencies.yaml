@@ -47,3 +47,5 @@ edges:
     to: analysis.structural
   - from: analysis.structural
     to: validation.structural
+  - from: analysis.structural
+    to: analysis.structural.convergence

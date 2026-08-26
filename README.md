@@ -12,7 +12,7 @@ as project history; the current capability baseline is documented below.
 ## Current Architecture Status (M8 / M9 / M10 / M11)
 
 The repository has advanced well beyond M0. The current accepted baseline is
-**M8 + M9 + M10-1 + M10-2 + M10-3 + M10-4 + M11-2 + M11-3 + M11-4**.
+**M8 + M9 + M10-1 + M10-2 + M10-3 + M10-4 + M11-2 + M11-3 + M11-4 + M11-5**.
 
 - **M8** established the production architecture: production orchestration
   (`ProductionApplication` composition root), source-bound `DesignSpec` →
@@ -39,11 +39,18 @@ The repository has advanced well beyond M0. The current accepted baseline is
 - **M10-5** closes the complete M10 motion stack through live system acceptance:
   shared FK/discrete/continuous result equality, durable proof reload, trusted
   provenance, source immutability, and full regression verification.
+- **M11-5** adds durable structural Evidence for the bounded source-bound
+  single-solid linear-static path. Trusted PASS, FAIL, and NOT_EVALUABLE
+  engineering outcomes can be published and independently reloaded, with
+  strict artifact/result/criterion/material/analytical/provenance binding.
+  Explicit bounded repeatability and mesh-convergence studies are supported for
+  declared response metrics.
 
 **Current system status: `M10_FULLY_CLOSED_LIVE_VERIFIED`,
 `M11_2_STRUCTURAL_AUTHORITY_MODEL_VERIFIED`,
 `M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED`, and
-`M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED`.**
+`M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED`, and
+`M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED`.**
 
 MechCAD has a bounded, live-verified structural result interpretation path for
 source-bound single-body linear-static analyses. M11-3 executes trusted
@@ -53,15 +60,21 @@ with real PASS, FAIL, and NOT_EVALUABLE outcomes. The live analytical
 validation is a separate production API using a predeclared fixed rectangular
 cantilever policy; stress is extrapolated
 nodal stress, not integration-point stress, and no global yield or safety claim
-is made. Structural Evidence acceptance and mesh convergence remain outside
-this milestone.
+is made. M11-5 adds durable Evidence publication and fresh historical reload,
+plus bounded repeatability and explicitly declared displacement-metric
+mesh-convergence studies.
 
 **Current hard limitation:** M10-3 remains discrete-only with
 `continuous_path_verified = False`. M10-4 verifies only one explicitly
 requested piecewise-linear path, not arbitrary configuration-space regions or
 general trajectories. FEA beyond the bounded M11-4 result path, materials
 selection, manufacturing approval, tolerance verification, optimization, and
-automatic synthesis/selection are not implemented.
+automatic synthesis/selection are not implemented. M11-5 convergence is only
+for an explicitly declared ordered study of the supported free-end
+displacement-magnitude metric; it is not adaptive refinement, generic mesh
+correspondence, stress convergence, or a global convergence claim. Stress
+remains CalculiX extrapolated nodal stress, and no global yield, safety, or
+manufacturing approval claim is made.
 
 The milestone sections below (M0 → M6B) are retained as historical
 documentation of how the system evolved; they are not the current capability
@@ -74,6 +87,7 @@ baseline. For current-state documentation, start with:
 - [`docs/audit/MECHCAD_M10_2_COMPLETION_REPORT.md`](docs/audit/MECHCAD_M10_2_COMPLETION_REPORT.md)
 - [`docs/audit/MECHCAD_M10_3_COMPLETION_REPORT.md`](docs/audit/MECHCAD_M10_3_COMPLETION_REPORT.md)
 - [`docs/audit/MECHCAD_M10_4_COMPLETION_REPORT.md`](docs/audit/MECHCAD_M10_4_COMPLETION_REPORT.md)
+- [`docs/audit/MECHCAD_M11_5_COMPLETION_REPORT.md`](docs/audit/MECHCAD_M11_5_COMPLETION_REPORT.md)
 - [`docs/audit/MECHCAD_POST_M8_M9_DOCUMENTATION_RECONCILIATION.md`](docs/audit/MECHCAD_POST_M8_M9_DOCUMENTATION_RECONCILIATION.md)
 
 ## M0 Boundary (historical)

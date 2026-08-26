@@ -1,5 +1,4 @@
 from .common import Model, NamedModel, StateBinding
-from .evidence import Evidence
 from .issue import Issue, IssueStatus
 from .proposal import (
     ChangeProposal,
@@ -53,7 +52,11 @@ _STRUCTURAL_EXPORTS = {
 
 
 def __getattr__(name: str):
-    if name in _DESIGN_EXPORTS:
+    if name == "Evidence":
+        from .evidence import Evidence
+
+        value = Evidence
+    elif name in _DESIGN_EXPORTS:
         from . import design
 
         value = getattr(design, name)

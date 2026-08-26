@@ -196,6 +196,72 @@ def _parse_msh_v2(content: bytes) -> tuple[dict[int, tuple[float, float, float]]
     return nodes, surface_entities, volume_entities, {}, physical_of_entity
 
 
+def canonical_c3d10_nodes(nodes: tuple[int, ...]) -> tuple[int, ...]:
+    """Normalize Gmsh's final two quadratic tetrahedron edge nodes for CalculiX."""
+    if len(nodes) != 10:
+        raise MeshProviderError("C3D10 elements must contain exactly 10 nodes")
+    return (*nodes[:8], nodes[9], nodes[8])
+
+
+def _msh_v2_to_inp(content: bytes) -> bytes:
+    """Lower one generated MSH into INP without generating a second mesh."""
+    text = content.decode("utf-8", errors="strict")
+    lines = text.splitlines()
+    nodes, _surface_entities, _volume_entities, _unused, _physical = _parse_msh_v2(content)
+    try:
+        physical_start = lines.index("$PhysicalNames") + 2
+        physical_end = lines.index("$EndPhysicalNames", physical_start)
+    except ValueError as exc:
+        raise MeshProviderError("MSH is missing physical names") from exc
+    physical_names: dict[tuple[int, int], str] = {}
+    for line in lines[physical_start:physical_end]:
+        parts = line.split(maxsplit=2)
+        if len(parts) == 3:
+            physical_names[(int(parts[0]), int(parts[1]))] = parts[2].strip().strip('"')
+
+    try:
+        element_start = lines.index("$Elements") + 2
+        element_end = lines.index("$EndElements", element_start)
+    except ValueError as exc:
+        raise MeshProviderError("MSH is missing elements") from exc
+    volume_elements: list[tuple[int, tuple[int, ...]]] = []
+    surface_elements: dict[str, list[tuple[int, tuple[int, ...]]]] = {}
+    for line in lines[element_start:element_end]:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        element_id, element_type, tag_count = (int(parts[0]), int(parts[1]), int(parts[2]))
+        tags = [int(value) for value in parts[3:3 + tag_count]]
+        element_nodes = tuple(int(value) for value in parts[3 + tag_count:])
+        physical_name = physical_names.get((2, tags[0])) if tags else None
+        if element_type == 11:
+            if len(element_nodes) != 10:
+                raise MeshProviderError("MSH contains a non-C3D10 volume element")
+            volume_elements.append((element_id, canonical_c3d10_nodes(element_nodes)))
+        elif element_type == 9:
+            if len(element_nodes) != 6 or not physical_name:
+                raise MeshProviderError("MSH contains an unbound quadratic boundary element")
+            surface_elements.setdefault(physical_name, []).append((element_id, element_nodes))
+
+    output = ["*HEADING", "MechCAD structural mesh", "*NODE"]
+    output.extend(
+        f"{node_id},{coordinates[0]!r},{coordinates[1]!r},{coordinates[2]!r}"
+        for node_id, coordinates in sorted(nodes.items())
+    )
+    output.append("*ELEMENT,TYPE=C3D10,ELSET=volume")
+    output.extend(
+        ",".join((str(element_id), *(str(node_id) for node_id in element_nodes)))
+        for element_id, element_nodes in volume_elements
+    )
+    for region in sorted(surface_elements):
+        output.append(f"*ELEMENT,TYPE=CPS6,ELSET={region}")
+        output.extend(
+            ",".join((str(element_id), *(str(node_id) for node_id in element_nodes)))
+            for element_id, element_nodes in surface_elements[region]
+        )
+    return ("\n".join(output) + "\n").encode("ascii")
+
+
 def _parse_inp(content: str) -> ParsedMesh:
     nodes: dict[int, tuple[float, float, float]] = {}
     c3d10: dict[int, tuple[int, ...]] = {}
@@ -282,12 +348,12 @@ class StructuralGmshMeshingProvider:
         self._discovery = discovery
         self._tolerances = tolerances
 
-    def _run_gmsh(self, geo_path: Path, out_path: Path, *, out_format: str) -> None:
+    def _run_gmsh(self, input_path: Path, out_path: Path, *, out_format: str) -> None:
         try:
             discovery = self._discovery.require_available()
         except RuntimeUnavailableError as exc:
             raise MeshProviderError(f"Gmsh runtime unavailable: {exc}") from exc
-        cmd = [discovery.executable, str(geo_path), "-3", "-format", out_format, "-o", str(out_path), "-nopopup"]
+        cmd = [discovery.executable, str(input_path), "-3", "-format", out_format, "-o", str(out_path), "-nopopup"]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
         except subprocess.TimeoutExpired as exc:
@@ -321,10 +387,13 @@ class StructuralGmshMeshingProvider:
         region_map: ResolvedRegionMap,
         *,
         mesh_spec_hash: str,
+        target_size_mm: float | None = None,
         element_family: str = "c3d10",
     ) -> tuple[ParsedMesh, StructuralMeshManifest, bytes]:
         if element_family != "c3d10":
             raise MeshProviderError(f"unsupported element family: {element_family}")
+        if target_size_mm is not None and (not math.isfinite(target_size_mm) or target_size_mm <= 0):
+            raise MeshProviderError("mesh target size must be finite and positive")
         entities, vol_id = self._preview_entities(step_path)
         discovery = self._discovery.require_available()
         # Match each semantic region to exactly one Gmsh 2D entity.
@@ -355,6 +424,11 @@ class StructuralGmshMeshingProvider:
         with tempfile.TemporaryDirectory(prefix="mechcad-gmsh-mesh-") as directory:
             cwd = Path(directory)
             geo_lines = [f'Merge "{step_path}";', "Mesh.ElementOrder = 2;"]
+            if target_size_mm is not None:
+                geo_lines.extend([
+                    f"Mesh.MeshSizeMin = {target_size_mm:.17g};",
+                    f"Mesh.MeshSizeMax = {target_size_mm:.17g};",
+                ])
             for region_id, tag in derived.items():
                 geo_lines.append(f'Physical Surface("{region_id}") = {{{tag}}};')
             geo_lines.append(f'Physical Volume("volume") = {{{vol_id}}};')
@@ -363,10 +437,8 @@ class StructuralGmshMeshingProvider:
             geo.write_text("\n".join(geo_lines) + "\n", encoding="ascii")
             msh = cwd / "mesh.msh"
             self._run_gmsh(geo, msh, out_format="msh2")
-            inp = cwd / "mesh.inp"
-            self._run_gmsh(geo, inp, out_format="inp")
-            inp_bytes = inp.read_bytes()
             msh_bytes = msh.read_bytes()
+            inp_bytes = _msh_v2_to_inp(msh_bytes)
         parsed = _parse_inp(inp_bytes.decode("utf-8", errors="replace"))
         msh_nodes, msh_surfaces, msh_volumes, _msh_phys, _msh_entities = _parse_msh_v2(msh_bytes)
         # Validate mesh contract.

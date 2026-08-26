@@ -47,12 +47,15 @@ Maturity values are normative expectations, not audit verdicts. Definitions are 
 | source-bound DesignSpec compilation | CAD | domain owner | source-bound MountingPlateDesignSpec | CadPartProgram + result hashes | CadCompilationService | fail-closed revision/state-hash; deterministic program/spec hash | REQUIRED_CURRENT | M8C-1 |
 | trusted imported CadComponent | artifacts/assembly | CAD/provider service | persisted EngineeringArtifact | ImportedCadComponent | ArtifactStore/resolve_imported_component | store.existing + sha256 recompute + format allow-list; live-verified real STEP (M9-2) | REQUIRED_CURRENT | M8C-2/M9-2 |
 | trusted analysis execution provenance | analysis/evidence | verification owner | sweep result + provider/backend identity | AnalysisExecutionProvenance / Evidence | EvidenceStore | evidence id derived from request+result hash; provider/backend/runtime bound; live-verified (M9-4) | REQUIRED_CURRENT | M9-4 |
+| durable structural Evidence | structural/evidence | structural owner | trusted M11-4 execution/result/verification/analytical validation | immutable structural Evidence | EvidenceStore / ArtifactStore | exact artifact/result/criterion/material/analytical/provenance binding; fresh reload/currentness; PASS/FAIL/NOT_EVALUABLE | REQUIRED_CURRENT (bounded M11-5 scope) | M11-5 |
+| structural repeatability | structural/evidence | structural owner | predeclared policy + two verified structural Evidence records | repeatability result | StructuralRepeatabilityService | policy hashed before runs; declared semantic summaries only; raw bytes and mesh numbering ignored | REQUIRED_CURRENT (bounded M11-5 scope) | M11-5 |
+| structural mesh convergence | structural/evidence | structural owner | predeclared ordered study + at least three verified level Evidence records | convergence-study Evidence | StructuralMeshConvergenceService | supported free-end displacement-magnitude metric; ordered IDs/hashes; no global convergence claim | REQUIRED_CURRENT (bounded M11-5 scope) | M11-5 |
 | domain extension framework | domain layer | domain owner | authority/spec/ownership | proposals/adapters | generic core | boundary and ownership review | FOUNDATION | universal contract |
 | reference domain adapter proof | domain layer | domain owner | domain layout/reference | generic service request/result | generic CAD/kinematics | no generic-layer leakage | FOUNDATION | M7B/M7D reference evidence |
 | connected rotary-bracket workflow | integration | orchestrator/domain owners | universal requirements | verified system result | selected current foundations | concrete end-to-end runtime path | TARGET_NEXT | project description Phase E |
 | multi-axis kinematic chain | kinematics | kinematics owner | parent/joints/frames | chain result | deterministic core (M10-2) or future backend | frame/joint composition; M10-2 delivers discrete forward kinematics only | REQUIRED_CURRENT | M10-2 (discrete FK); project description Phase F (continuous/trajectory future) |
 | structural analysis | structural | structural owner | source-bound single-body linear-static definition/request | typed displacement/stress/reaction result and bounded criterion outcomes | FreeCAD + Gmsh + CalculiX | exact source/artifact/runtime provenance; trusted FRD/DAT interpretation; fixed cantilever analytical checks | REQUIRED_CURRENT (bounded M11-3/M11-4 scope) | M11-2/M11-3/M11-4 |
-| FEA | structural backend | structural owner | source-bound single-body mesh/material/load execution | trusted raw execution manifest plus interpreted FRD/DAT result | Gmsh C3D10 + CalculiX 2.22 | byte-verified artifacts, solver/case provenance, parser integrity, analytical validation; no mesh-convergence or global safety claim | REQUIRED_CURRENT (bounded M11-3/M11-4 scope) | M11-3/M11-4 |
+| FEA | structural backend | structural owner | source-bound single-body mesh/material/load execution | trusted raw execution manifest plus interpreted FRD/DAT result | Gmsh C3D10 + CalculiX 2.22 | byte-verified artifacts, solver/case provenance, parser integrity, analytical validation; bounded declared displacement-metric convergence only; no global safety claim | REQUIRED_CURRENT (bounded M11-3/M11-4/M11-5 scope) | M11-3/M11-4/M11-5 |
 | dynamics/simulation | dynamics | kinematics owner | mechanism/trajectory | dynamic result | MuJoCo if accepted | solver/version/binding | FUTURE | project description |
 | manufacturing output | manufacturing | manufacturing owner | verified design | manufacturing package | future tools | tolerances/BOM/review | FUTURE | project description |
 
@@ -117,9 +120,12 @@ remain future capability.
 | M11-2 | `M11_2_STRUCTURAL_AUTHORITY_MODEL_VERIFIED` | Typed source-bound single-body linear-static definitions and requests with semantic regions, material authority, loads, supports, criteria, mesh/output settings, and deterministic identities; no solving or result acceptance. | REQUIRED_CURRENT |
 | M11-3 | `M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED` | Trusted FreeCAD source geometry and semantic-region realization, Gmsh C3D10 mesh, deterministic CalculiX deck lowering, per-case solver execution, shared-mesh multi-case manifests, and raw artifact provenance. | REQUIRED_CURRENT (bounded) |
 | M11-4 | `M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED` | Trusted FRD/DAT/LOG interpretation, typed PASS/FAIL/NOT_EVALUABLE criteria, and a separate production analytical-validation API for a predeclared fixed rectangular cantilever policy. | REQUIRED_CURRENT (bounded) |
+| M11-5 | `M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED` | Durable source-bound structural Evidence through the existing EvidenceStore; fresh historical verification/currentness; trusted PASS/FAIL/NOT_EVALUABLE outcomes; bounded repeatability; and explicitly declared ordered displacement-magnitude mesh-convergence studies. | REQUIRED_CURRENT (bounded) |
 
 The M11 rows do not claim general structural approval. Assemblies, nonlinear
 analysis, fatigue, dynamics, thermal stress, tolerances, optimization,
-manufacturing approval, mesh convergence, structural Evidence acceptance, global
-yield/safety certification, and automatic synthesis/selection remain future or
-out of scope.
+manufacturing approval, global convergence, adaptive refinement, generic mesh
+correspondence, global yield/safety certification, and automatic
+synthesis/selection remain future or out of scope. M11-5 structural Evidence
+and bounded convergence are current only within the stated source-bound
+single-solid linear-static scope.

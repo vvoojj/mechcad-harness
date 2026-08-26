@@ -175,7 +175,9 @@ def test_m11_3_live_vertical_slice(live_app, tmp_path: Path):
     mesh_artifact = next(artifact for artifact in produced if artifact is not None and artifact.artifact_type == ArtifactType.MSH)
     assert (tmp_path / mesh_artifact.relative_path).read_bytes().startswith(b"$MeshFormat")
     for art in manifest.artifacts:
-        a = store.existing(art.artifact_id)
+        # The source STEP is intentionally trusted across the producing and
+        # structural-analysis runs; all other refs are local to this run.
+        a = store.existing(art.artifact_id) or store.existing_in_project(art.artifact_id)
         assert a is not None, f"missing artifact {art.artifact_id}"
         assert a.sha256 == art.sha256
         path = tmp_path / a.relative_path

@@ -37,6 +37,8 @@ class BackendIdentity(Model):
 
 
 class BackendProvenance(Model):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     backend_name: str = Field(min_length=1)
     backend_adapter_version: str = Field(min_length=1)
     library_name: str | None = None

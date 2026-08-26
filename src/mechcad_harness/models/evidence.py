@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .common import StateBinding
 from mechcad_harness.analysis_provenance import (
@@ -6,6 +6,7 @@ from mechcad_harness.analysis_provenance import (
     ContinuousProofExecutionProvenance,
 )
 from mechcad_harness.backends.models import BackendProvenance
+from mechcad_harness.structural.evidence import EvidenceSubject, StructuralEvidencePayload
 
 
 class Evidence(StateBinding):
@@ -25,3 +26,23 @@ class Evidence(StateBinding):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    subject: EvidenceSubject | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    structural_evidence_payload: StructuralEvidencePayload | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def validate_structural_discriminator(self):
+        payload = self.structural_evidence_payload
+        if self.kind == EvidenceSubject.STRUCTURAL_CONVERGENCE_STUDY.value and payload is None:
+            raise ValueError("convergence Evidence requires a typed convergence payload")
+        if payload is not None:
+            if self.subject is None or self.subject is not payload.subject or self.kind != self.subject.value:
+                raise ValueError("structural evidence discriminator does not match kind and payload")
+        elif self.subject is not None and self.kind != self.subject.value:
+            raise ValueError("structural evidence discriminator does not match kind")
+        return self

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tempfile
 import threading
 from contextlib import contextmanager
@@ -168,6 +169,24 @@ class StateManager:
             raise RevisionNotFoundError(f"current state not found for project: {project_id}")
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def load_current_pointer(self, project_id: str) -> dict[str, Any]:
+        """Return the durable current pointer without exposing mutable state."""
+        pointer = self._read_current(project_id)
+        if (
+            not isinstance(pointer, dict)
+            or pointer.get("project_id") != project_id
+            or not isinstance(pointer.get("revision"), int)
+            or isinstance(pointer.get("revision"), bool)
+            or pointer["revision"] <= 0
+            or not isinstance(pointer.get("state_hash"), str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", pointer["state_hash"]) is None
+        ):
+            raise StateIntegrityError(f"invalid current state pointer: {project_id}")
+        snapshot = self._read_snapshot(project_id, pointer["revision"])
+        if snapshot.state_hash != pointer["state_hash"]:
+            raise StateIntegrityError(f"current pointer hash mismatch: {project_id}")
+        return dict(pointer)
+
     def _read_snapshot(self, project_id: str, revision: int) -> RevisionSnapshot:
         path = self._revision_path(project_id, revision)
         if not path.exists():
@@ -176,6 +195,12 @@ class StateManager:
             snapshot = RevisionSnapshot.model_validate_json(path.read_text(encoding="utf-8"))
         except Exception as exc:
             raise StateIntegrityError(f"invalid revision snapshot: {path}") from exc
+        if (
+            snapshot.project_id != project_id
+            or snapshot.revision != revision
+            or snapshot.state.revision != revision
+        ):
+            raise StateIntegrityError(f"revision snapshot envelope mismatch: {path}")
         if state_hash(snapshot.state) != snapshot.state_hash:
             raise StateIntegrityError(f"state hash mismatch: {path}")
         return snapshot

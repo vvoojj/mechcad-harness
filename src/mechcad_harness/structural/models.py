@@ -18,6 +18,7 @@ from mechcad_harness.structural_request import StructuralSourceBinding
 # Provider identity / version constants (composition-owned, never caller-supplied)
 # ---------------------------------------------------------------------------
 REGION_RESOLVER_IDENTITY = "mechcad-structural-region-resolver@1"
+REGION_RESOLVER_VERSION = "1"
 GMSH_PROVIDER_IDENTITY = "mechcad-structural-gmsh@1"
 DECK_BUILDER_IDENTITY = "mechcad-structural-deck-builder@1"
 CALCULIX_PROVIDER_IDENTITY = "mechcad-structural-calculix@1"

@@ -76,7 +76,7 @@ Reasoning Result           Semantic / Typed Engineering Request
 
 Authority enters at requirements and accepted state. Agents may reason, identify missing inputs, and propose changes. Deterministic tools calculate derived values. Only `ChangeEngine` may apply an accepted change to canonical state. CAD, analysis, artifacts, and evidence are derived outputs. Verification can reject or mark outputs unresolved, but does not silently promote them.
 
-The current production entrypoints that turn accepted state into derived CAD/assembly/analysis are owned by `ProductionApplication` (M8B/M8C/M10): `compile_design_spec` (source-bound `DesignSpec` -> `CadPartProgram`), `build_assembly_with_imported_components` (generated + trusted imported -> `CadAssemblyProgram` -> FreeCAD), `analyze_assembly_kinematics` (discrete exact sweep), `evaluate_multi_joint_configuration` (deterministic FK), `analyze_multi_joint_collision_sweep` (exact discrete multi-joint collision), and `prove_continuous_multi_joint_path_clearance` (explicit-path conservative proof). M9 and M10 live-verified these paths on real FreeCAD; they remain derived outputs and never mutate canonical state.
+The current production entrypoints that turn accepted state into derived CAD/assembly/analysis are owned by `ProductionApplication` (M8B/M8C/M10): `compile_design_spec` (source-bound `DesignSpec` -> `CadPartProgram`), `build_assembly_with_imported_components` (generated + trusted imported -> `CadAssemblyProgram` -> FreeCAD), `analyze_assembly_kinematics` (discrete exact sweep), `evaluate_multi_joint_configuration` (deterministic FK), `analyze_multi_joint_collision_sweep` (exact discrete multi-joint collision), and `prove_continuous_multi_joint_path_clearance` (explicit-path conservative proof). M11-5 adds `publish_structural_evidence`, `verify_structural_evidence`, `check_structural_evidence_currentness`, `compare_structural_repeatability`, and `evaluate_structural_mesh_convergence` for the bounded source-bound structural path. M9, M10, and M11 live-verified these paths on real FreeCAD where applicable; they remain derived outputs and never mutate canonical state.
 
 An engineering agent must not arbitrarily import or execute an engineering library. Agent-authored semantic requests pass through trusted mediation and tool/service boundaries. A deterministic internal service may call its implementation library behind its own trusted adapter boundary; this contract does not require every backend-internal call to re-enter ToolBroker.
 
@@ -88,6 +88,23 @@ An engineering agent must not arbitrarily import or execute an engineering libra
 - A derived value needs deterministic inputs and provenance.
 - A verified result must bind to the state and dependencies from which it was calculated.
 - A geometric clearance result is not manufacturing clearance approval.
+
+## Durable Structural Evidence
+
+The M11-5 structural evidence flow is:
+
+```text
+trusted M11-4 execution/result/verification/analytical validation
+    -> ArtifactStore byte verification and source binding
+    -> immutable structural Evidence
+    -> fresh-store verification and separate currentness check
+```
+
+Only trusted PASS, FAIL, and NOT_EVALUABLE engineering outcomes may be
+published. Integrity failure is not an engineering outcome. Repeatability is
+declared and hashed before comparison, and convergence is a separate bounded
+study over at least three ordered structural Evidence levels for the supported
+free-end displacement-magnitude metric.
 
 ## Generic Examples
 
@@ -107,8 +124,8 @@ Missing data returns `ConstraintRequest`; conflicting authority returns `Issue`;
 
 ## Universal Acceptance Stages
 
-**Stage A - Current baseline:** audit the accepted state, change, ownership, dependency, run, tool, Evidence, bounded agent, provider, CAD, exact analysis, transient, and discrete kinematic foundations independently.
+**Stage A - Current baseline:** audit the accepted state, change, ownership, dependency, run, tool, Evidence, bounded agent, provider, CAD, exact analysis, transient, discrete kinematic, and bounded structural Evidence foundations independently.
 
 **Stage B - Connected readiness:** use a motor-driven rotary bracket to prove requirements -> bounded agent -> deterministic tool/provider -> Evidence -> proposal -> new revision -> part CAD -> assembly -> discrete kinematic verification. This stage audits selected `TARGET_NEXT` wiring without assuming it already exists.
 
-**Stage C - Future:** whole configuration-space certification, broad structural approval and FEA beyond the bounded M11 path, dynamics, and manufacturing outputs. The accepted M10 explicit-path continuous proof and bounded M11 structural path are current; these broader capabilities are not present baseline acceptance gates.
+**Stage C - Future:** whole configuration-space certification, broad structural approval and FEA beyond the bounded M11 path, global convergence, dynamics, and manufacturing outputs. The accepted M10 explicit-path continuous proof and bounded M11 structural/Evidence path are current; these broader capabilities are not present baseline acceptance gates.

@@ -11,6 +11,7 @@ from typing import Iterable
 from mechcad_harness.models.structural import StructuralRegionDefinition
 from mechcad_harness.structural.models import (
     REGION_RESOLVER_IDENTITY,
+    REGION_RESOLVER_VERSION,
     PhysicalGroupBinding,
     ResolvedRegionMap,
     ResolvedStructuralRegion,
@@ -85,7 +86,7 @@ class StructuralFreeCADGeometryAdapter:
     private methods and does not embed FEA semantics into the CAD backend."""
 
     identity = REGION_RESOLVER_IDENTITY
-    resolver_version = "1"
+    resolver_version = REGION_RESOLVER_VERSION
 
     def __init__(self, discovery: DiscoveredRuntime):
         self._discovery = discovery
@@ -194,7 +195,7 @@ def _resolve_one(region: StructuralRegionDefinition, faces: list[FaceDescriptor]
         region_id=region.region_id,
         source_geometry_hash="pending",
         resolver_identity=REGION_RESOLVER_IDENTITY,
-        resolver_version="1",
+        resolver_version=REGION_RESOLVER_VERSION,
         geometry_kind=SemanticGeometryKind.PLANAR_FACE,
         exact_brep_area_mm2=face.area,
         exact_brep_centroid_mm=face.centroid,
@@ -210,7 +211,7 @@ def _resolve_one(region: StructuralRegionDefinition, faces: list[FaceDescriptor]
 
 class StructuralRegionResolver:
     identity = REGION_RESOLVER_IDENTITY
-    resolver_version = "1"
+    resolver_version = REGION_RESOLVER_VERSION
 
     def __init__(self, tolerances=PLANAR_REGION_MATCH_TOLERANCES):
         self._tolerances = tolerances

@@ -109,7 +109,7 @@ class FakeStructuralGmshMeshingProvider(StructuralGmshMeshingProvider):
         self._fail = fail
         self._element_family = element_family
 
-    def mesh(self, step_path, region_map, *, mesh_spec_hash: str, element_family: str = "c3d10"):
+    def mesh(self, step_path, region_map, *, mesh_spec_hash: str, target_size_mm=None, element_family: str = "c3d10"):
         if self._fail:
             from mechcad_harness.structural.mesh import MeshProviderError
             raise MeshProviderError("fake gmsh failure")
