@@ -4,6 +4,11 @@
 
 Start with [`docs/README.md`](docs/README.md). It provides task-sized context bundles for architecture, subsystem work, domain extensions, and the later independent integration audit. Do not preload the full documentation tree unless doing architecture reconciliation or audit preparation.
 
+For milestone planning, integration work, or avoiding duplicate implementation,
+see the [implemented capability reference](docs/reference/MECHCAD_IMPLEMENTED_CAPABILITIES.md).
+It inventories current implementation and wiring; normative architecture remains
+under [`docs/architecture/`](docs/architecture/).
+
 Historically, M0 was the typed Python foundation for a future engineering
 workflow system, with readable identifiers, minimal Pydantic v2 domain models,
 placeholder YAML configuration, and tests. That description is retained only
@@ -56,7 +61,8 @@ The repository has advanced well beyond M0. The current accepted baseline is
 `M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED`,
 `M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED`,
 `M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED`, and
-`M11_FULLY_CLOSED_LIVE_VERIFIED`.**
+`M11_FULLY_CLOSED_LIVE_VERIFIED`, and
+`M10_MULTI_SHAPE_TRANSIENT_GEOMETRY_CONSISTENCY_VERIFIED`.**
 
 MechCAD has a bounded, live-verified structural result interpretation path for
 source-bound single-body linear-static analyses. M11-3 executes trusted

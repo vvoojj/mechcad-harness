@@ -96,8 +96,18 @@ baseline.
   `M11_2_STRUCTURAL_AUTHORITY_MODEL_VERIFIED`,
   `M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED`,
   `M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED`,
-  `M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED`, and
-  `M11_FULLY_CLOSED_LIVE_VERIFIED`.**
+   `M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED`,
+   `M11_FULLY_CLOSED_LIVE_VERIFIED`, and
+   `M10_MULTI_SHAPE_TRANSIENT_GEOMETRY_CONSISTENCY_VERIFIED`.**
+
+- **`M10_MULTI_SHAPE_TRANSIENT_GEOMETRY_CONSISTENCY_VERIFIED`** (narrow
+  latent-input trust-boundary closure only): the M10 transient imported STEP
+  realization now aggregates *all* top-level STEP shapes (consistently with
+  `FreeCADAssemblyBackend` and `StructuralFreeCADGeometryAdapter`) in
+  `FreeCADTransientAssemblyMeasurementProvider._measurement_script`,
+  `_radial_script`, and `_local_extent_script`. No new component, candidate,
+  synthesis, M12, CAD, or kinematic semantics; `ImportedCadComponent` schema
+  unchanged. Previous M9/M10 live acceptance numbers are retained.
 - **Current hard limitation:** ordinary M10-3 discrete sweeps retain
   `continuous_path_verified = False`; M10-4 proves only the explicitly
   requested path, not an entire configuration-space region. FEA, materials selection,
@@ -153,6 +163,10 @@ For runtime / CAD / analysis work:
 For historical M8 → M9 context:
 
 - [`docs/audit/MECHCAD_POST_M8_M9_DOCUMENTATION_RECONCILIATION.md`](docs/audit/MECHCAD_POST_M8_M9_DOCUMENTATION_RECONCILIATION.md)
+
+For capability planning or integration work only:
+
+- [`docs/reference/MECHCAD_IMPLEMENTED_CAPABILITIES.md`](docs/reference/MECHCAD_IMPLEMENTED_CAPABILITIES.md) — implementation and wiring inventory; read when checking whether a capability already exists, avoiding duplicate work, or investigating production composition. Do not load it for routine local code changes.
 
 Do not load every milestone spec by default.
 
