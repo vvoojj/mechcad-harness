@@ -1,70 +1,35 @@
-# Task 3: Enforce expected source binding at the run boundary
+### Task 3: Implement Pure Motor, Spur, Load, And Shaft Calculations
 
-Read the approved design and plan, then implement the run-boundary correction and Task 1 review fixes in the current repository.
+**Files:**
+- Create: `src/mechcad_harness/revolute_drive/calculations.py`
+- Modify: `src/mechcad_harness/revolute_drive/__init__.py`
+- Test: `tests/unit/test_m12_motor_admissibility.py`
+- Test: `tests/unit/test_m12_spur_drive_sizing.py`
+- Test: `tests/unit/test_m12_shaft_sizing.py`
 
-## Files
+**Interfaces:**
+- Produces pure functions `evaluate_motor_checks(...)`, `evaluate_spur_pair(...)`, `calculate_spur_loads(...)`, and `calculate_shaft_static_sizing(...)`.
+- `evaluate_spur_pair` calls `engineering.spur.calculate_nominal_spur`, uses explicit driver/driven snapshots, and returns ratio, pitch geometry, scalar output-speed compatibility, and optional efficiency-bound output torque.
+- `calculate_spur_loads` uses `T_design_out` and `d_driven`: `T_driven_mm=1000*T_design_out`, `Ft=2*T_driven_mm/d_driven`, `Fr=Ft*tan(phi*pi/180)`.
+- `calculate_shaft_static_sizing` uses two supports and one load plane, `RA=-F*(L-a)/L`, `RB=-F*a/L`, `Mmax=sqrt(My^2+Mz^2)`, circular stress equations, `sigma_allow=Sy/n`, and `d_min=(C/sigma_allow)^(1/3)` with `C` in `N*mm`.
 
-- Modify `src/mechcad_harness/runs/models.py`.
-- Modify `src/mechcad_harness/runs/controller.py`.
-- Modify `src/mechcad_harness/application.py`.
-- Modify `tests/unit/test_production_application.py` and/or `tests/unit/test_runs.py` with focused tests.
-- Preserve unrelated pre-existing changes. Do not commit, reset, stash, clean, or push.
+- [ ] **Step 1: Write independent analytical tests**
 
-## Required API
+  Use hand-coded oracle equations in tests, not production functions. Cover direct motor satisfied/torque violation/speed violation/voltage mismatch/missing continuous torque/no peak substitution; spur 20/100 teeth and explicit efficiency; incompatible module/pressure angle/type; driven-side force units and invalid inputs; shaft reactions/equilibrium, maximum bending, bending/torsional/von-Mises stress, `d_min`, and `0.99*d_min`, `d_min`, `1.01*d_min` boundaries.
 
-Add one typed lower-level binding in `runs/models.py`:
+- [ ] **Step 2: Run focused tests to confirm failure**
 
-```python
-SourceBinding(project_id: str, revision: int, state_hash: str)
-```
+  Run: `py -3 -m pytest tests/unit/test_m12_motor_admissibility.py tests/unit/test_m12_spur_drive_sizing.py tests/unit/test_m12_shaft_sizing.py -q`
 
-It must reject blank strings and non-positive revisions and be immutable.
+  Expected: FAIL because calculation functions are absent.
 
-Extend:
+- [ ] **Step 3: Implement pure calculations**
 
-```python
-RunController.create_run(
-    project_id: str,
-    *,
-    max_iterations: int = 3,
-    expected_source: SourceBinding | None = None,
-) -> Run
-```
+  Return per-check results with exact consumed requirement/property bindings. Treat missing or unavailable properties as `UNRESOLVED`; treat valid inadequate values as `VIOLATED`; raise only for malformed schemas or operational programming failures. Do not apply efficiency to driven-side design-load gear forces a second time. Use stress comparison `sigma_vm <= sigma_allow + max(1e-9, 1e-12*sigma_allow)`.
 
-When `expected_source is None`, preserve existing caller behavior and signature compatibility. When provided:
+- [ ] **Step 4: Run focused tests to confirm pass**
 
-- require expected project to equal `project_id`;
-- verify the referenced revision snapshot exists and its hash matches `expected_source.state_hash`;
-- verify the current canonical pointer still equals the expected project/revision/hash;
-- fail closed using existing `RunIntegrityError` or state-domain exceptions if any check fails;
-- persist manifest/run state with exactly the expected revision/hash;
-- do not silently use a newer pointer.
+  Run: `py -3 -m pytest tests/unit/test_m12_motor_admissibility.py tests/unit/test_m12_spur_drive_sizing.py tests/unit/test_m12_shaft_sizing.py -q`
 
-Search for an existing lock/transaction/critical section first. None was found in the initial inspection; do not invent a broad concurrency subsystem. Keep the implementation within current serialized filesystem operations.
+  Expected: PASS with independent numerical oracles.
 
-Update `ProductionApplication.create_run()` to pass `SourceBinding` directly. Remove the `inspect.signature` fallback and private `_ExpectedSource` shim. Verify returned and reloaded run fields exactly. Expose the composed `EvidenceStore`, `ChangeEngine`, and `ContextBuilder` on `ProductionApplication` as typed read-only dependencies in the same style as existing exposed services.
-
-## Immutability
-
-The reviewer found that frozen Pydantic wrappers do not freeze nested `DesignState`. Ensure a caller cannot mutate the canonical state through a binding and change the binding’s internal hash. Use the smallest clear approach consistent with repository conventions, such as storing a deep internal snapshot and returning a deep copy from a read-only state accessor. Preserve the typed `state` API and equality semantics used by focused tests.
-
-## Tests
-
-Add focused tests for:
-
-1. legacy `RunController.create_run()` with no expected source;
-2. matching expected source creates exact revision/hash;
-3. state advances between application `load_state()` and `create_run()` and application fails closed rather than binding newer state;
-4. project/revision/hash mismatch fails closed;
-5. if primitive parameters are used, partial binding is rejected; prefer no primitive parameters;
-6. existing callers remain compatible;
-7. mutating an object returned from `ProductionStateBinding.state` does not alter a later binding/hash;
-8. application exposes `evidence_store`, `change_engine`, and `context_builder` without adding mutation/execution methods.
-
-Run at minimum:
-
-```text
-python -m pytest tests/unit/test_production_application.py tests/unit/test_runs.py -q
-```
-
-Write `.superpowers/sdd/task-3-report.md` with status, changed files, tests/results, and concerns. Return only status, test summary, and concerns.

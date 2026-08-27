@@ -57,6 +57,17 @@ These are common boundaries, not domain-specific synthesis. `DesignState` is
 canonical; proposals, tool results, artifacts, analysis results, and evidence
 are separately bound records. See the normative [System Contract](../architecture/MECHCAD_SYSTEM_CONTRACT.md).
 
+## M12 Candidate Foundation
+
+`EXISTS_PRODUCTION_UNVERIFIED`: `candidates/` provides immutable source-bound,
+noncanonical mechanical candidate definitions; per-property component authority
+snapshots; typed physical mechanism topology and M10-joint realization bindings;
+integrity/currentness verification; and explicit `ArtifactStore` publication /
+fresh reload. `ProductionApplication` composes only those verification and
+publication services. This is not candidate generation, sizing, catalog lookup,
+CAD, M10/M11 execution, ranking, selection, promotion, or a second canonical
+store.
+
 ## Agent / Orchestration Infrastructure
 
 `EXISTS_PRODUCTION_VERIFIED` framework and composition:
@@ -154,28 +165,36 @@ convergence, global yield, safety, or manufacturing approval. Accepted status:
 
 | Capability | Status | Current boundary / limitation |
 |---|---|---|
-| Generic `Component` metadata | `PARTIAL` | `models/design.py:Component`; no typed catalog/physical realization model. |
+| Generic `Component` metadata | `PARTIAL` | `models/design.py:Component`; canonical component metadata remains intentionally separate from noncanonical candidate snapshots. |
 | `MotorCharacteristicsValue` | `PARTIAL` | `engineering/values.py`; authority input only, not motor selection/sizing. |
-| Generic component catalog | `MISSING` | No catalog, vendor selection, or normalized component property authority. |
-| Component property authority | `PARTIAL` | Material authority and selected engineering values exist; broad physical-component authority does not. |
-| Motor sizing | `MISSING` | Torque calculation exists; motor selection/sizing does not. |
-| Gearbox model | `MISSING` | Spur geometry and CAD exist; no gearbox component model or sizing. |
-| Shaft sizing | `MISSING` | No shaft design service. |
+| Generic component catalog/search | `MISSING` | No catalog, supplier API, marketplace search, or component selection workflow. |
+| Candidate component property authority | `EXISTS_PRODUCTION_UNVERIFIED` | `candidates/models.py:ComponentPropertySnapshot` and `ComponentSpecificationSnapshot` remain immutable noncanonical snapshots; M12-3 consumes explicit property hashes and authorities in bounded drive checks, with no catalog lookup or canonical promotion. |
+| Bounded motor admissibility | `EXISTS_PRODUCTION_UNVERIFIED` | `revolute_drive.calculations:evaluate_motor_checks`, composed by `ProductionApplication.realize_and_evaluate_revolute_drive`; direct-drive and external-spur torque, optional peak torque, scalar speed-range, and optional voltage checks only. No motor catalog or selection. |
+| Gearbox sizing | `PARTIAL` | M12-3 evaluates supplied external-spur compatibility, nominal ratio/speed, and efficiency-bound torque transfer; pure `calculate_spur_loads` is available and explicitly tested, but production mesh-derived `Ft`/`Fr` shaft-plane loading remains `UNRESOLVED` because the template lacks explicit plane mapping. Production shaft sizing supports explicit transverse load vectors only; no gearbox selection, gear strength, life, or CAD. |
+| Solid-shaft static sizing and support reactions | `EXISTS_PRODUCTION_UNVERIFIED` | `revolute_drive.calculations:calculate_shaft_static_sizing`, composed through the M12-3 production path; static homogeneous solid circular shaft, explicit equilibrium/support reactions, one load plane, and exactly two simple radial supports. No fatigue, buckling, critical-speed, tolerance, or general shaft design. |
 | Bearing sizing | `MISSING` | No bearing model, life calculation, or selection. |
 | Fastener sizing | `MISSING` | No fastener model or sizing. |
-| Physical joint realization | `MISSING` | M10 joints are kinematic axes/transforms, not shafts, bearings, drives, or backlash. |
+| Typed physical mechanism topology | `EXISTS_PRODUCTION_UNVERIFIED` | `candidates/models.py:PhysicalMechanismRealization`, `PhysicalComponentInstance`, and `MechanicalConnection` are now populated deterministically by the M12-3 service for the two explicit supplied-component templates; topology remains noncanonical and bounded. |
+| Typed physical-joint realization binding | `EXISTS_PRODUCTION_UNVERIFIED` | `candidates/models.py:JointPhysicalRealizationBinding` is deterministically created for exactly one scoped joint with shaft, actuator/transmission path, two supports, hub, mounts, and axis/frame reference; it does not bridge to M10 or prove CAD/structural suitability. |
+| Bounded physical-joint realization and sizing | `EXISTS_PRODUCTION_UNVERIFIED` | `RevoluteDriveRealizationService.construct_candidate/evaluate` and `ProductionApplication.realize_and_evaluate_revolute_drive` compose direct-drive or external-spur construction plus bounded admissibility and static sizing from supplied snapshots. Incomplete topology is unresolved without a candidate; no generic synthesis, catalog, selection, or promotion. |
 
 ## Candidate / Design Generation Capability
 
 - Narrow domain synthesis: `PARTIAL` / `EXISTS_UNWIRED`; see [Existing Narrow Synthesis Capabilities](#existing-narrow-synthesis-capabilities).
-- Generic `DesignCandidate`: `MISSING`.
-- Candidate persistence/provenance: `MISSING`.
+- Immutable source-bound `MechanicalDesignCandidate`: `EXISTS_PRODUCTION_UNVERIFIED`; candidate model, integrity/currentness services, and the bounded M12-3 template construction path are composed, but candidates remain noncanonical and are not published automatically.
+- Candidate explicit publication/provenance: `EXISTS_PRODUCTION_UNVERIFIED`; publication and fresh resolution use `ArtifactStore` with deterministic identity/source binding. Publication is explicit, not automatic persistence, not a `CandidateStore`, not canonical authority, and not Evidence by itself.
+- Generic candidate generation: `MISSING`.
 - Candidate ranking, optimization/search, and automated refinement loop: `MISSING`.
-- Candidate-to-M10 bridge: `PARTIAL`; a caller can construct source-bound `CadAssemblyProgram` and kinematic inputs, but no candidate model owns that bridge.
+- Candidate-to-M10 execution bridge: `MISSING`; M10 remains available independently, but M12-2 does not execute candidate CAD or M10 evaluation.
 - Candidate-to-M11 bridge: `MISSING`; M11 accepts source-bound structural definitions/requests, not design candidates.
 
-MechCAD does not currently turn general engineering requirements into one or
-more physically realizable general mechanical design candidates.
+MechCAD does not currently turn general engineering requirements into general
+mechanical design candidates or provide general/unbounded physical-realization
+sizing/design, comparison, selection, or promotion. Bounded M12-3 direct-drive
+and external-spur realization, engineering evaluation, and sizing from supplied
+snapshots are implemented. Generic candidate generation/search remains absent;
+the candidate model and explicit publication boundary remain noncanonical, and
+canonical promotion does not exist.
 
 ## Implemented But Unwired
 
@@ -209,7 +228,9 @@ more physically realizable general mechanical design candidates.
 | Generic/mixed CAD and imported STEP | `EXISTS_PRODUCTION_VERIFIED` | Assembly/CAD application services | Yes | Plate compiler is narrow; external gear CAD requires optional registration | [CAD Capability](#cad-capability) |
 | M10 kinematics/collision/clearance | `EXISTS_PRODUCTION_VERIFIED` | M10 `ProductionApplication` methods | Yes | Rigid revolute model; bounded paths | [Kinematics / Collision / Clearance](#kinematics--collision--clearance) |
 | M11 structural analysis | `EXISTS_PRODUCTION_VERIFIED` | Structural application methods | Yes | Single-solid linear static | [Structural Analysis](#structural-analysis) |
-| Generic candidate generation | `MISSING` | None | No | No candidate model/search/ranking | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
+| M12 candidate authority/topology/publication | `EXISTS_PRODUCTION_UNVERIFIED` | `ProductionApplication` candidate integrity/currentness/publication services plus `realize_and_evaluate_revolute_drive` | Focused M12-3 tests verified; full-suite/live status pending | Immutable noncanonical candidate model, explicit ArtifactStore publication remains separate, and bounded two-template realization/sizing; no generic generation, CAD, M10/M11 execution, ranking, selection, or promotion | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
+| M12 bounded revolute-drive realization and sizing | `EXISTS_PRODUCTION_UNVERIFIED` | `ProductionApplication.realize_and_evaluate_revolute_drive` | Focused production integration verified; no separate live-runtime acceptance | Supplied direct-drive or external-spur inputs only; nominal ratio/load, motor admissibility, two-support solid-shaft sizing, no catalog, arbitrary synthesis, strength, life, CAD, M10/M11 bridge, comparison, selection, promotion, Evidence, or artifact publication | [Physical Component / Mechanism Capability](#physical-component--mechanism-capability) |
+| Generic candidate generation | `MISSING` | None | No | Candidate model exists, but no generation/search/ranking workflow | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
 
 ## When To Read Which Document
 

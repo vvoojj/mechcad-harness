@@ -1,5 +1,6 @@
 from pydantic import Field, model_validator
 
+from mechcad_harness.engineering.spur import calculate_nominal_spur
 from mechcad_harness.models.common import Model
 
 from .models import ToolRegistration, TorqueInput
@@ -33,13 +34,12 @@ class SpurGearOutput(Model):
 
 
 def calc_spur_gear(value: SpurGearInput) -> SpurGearOutput:
-    pinion = value.module_mm * value.teeth_pinion
-    gear = value.module_mm * value.teeth_gear
+    geometry = calculate_nominal_spur(value.module_mm, value.teeth_pinion, value.teeth_gear)
     return SpurGearOutput(
-        pitch_diameter_pinion_mm=pinion,
-        pitch_diameter_gear_mm=gear,
-        center_distance_mm=(pinion + gear) / 2,
-        ratio=value.teeth_gear / value.teeth_pinion,
+        pitch_diameter_pinion_mm=geometry.pitch_diameter_driver_mm,
+        pitch_diameter_gear_mm=geometry.pitch_diameter_driven_mm,
+        center_distance_mm=geometry.center_distance_mm,
+        ratio=geometry.ratio_magnitude,
     )
 
 

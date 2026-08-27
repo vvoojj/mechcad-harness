@@ -1,54 +1,33 @@
-# Task 1: Define immutable production bindings and composition API
+### Task 1: Extract Shared Nominal Spur Primitive
 
-Implement the first task of the M8B-1 production orchestration plan in the current repository.
+**Files:**
+- Create: `src/mechcad_harness/engineering/spur.py`
+- Modify: `src/mechcad_harness/tools/builtins.py:22-43`
+- Modify: `src/mechcad_harness/engineering/__init__.py`
+- Test: `tests/unit/test_spur_engineering.py`
 
-## Files
+**Interfaces:**
+- Consumes existing `SpurGearInput` values: `module_mm`, `teeth_pinion`, `teeth_gear`.
+- Produces `NominalSpurGeometry` with `pitch_diameter_driver_mm`, `pitch_diameter_driven_mm`, `center_distance_mm`, and `ratio_magnitude` plus `calculate_nominal_spur(module_mm, driver_teeth, driven_teeth)`.
+- BuiltinTools maps the shared primitive output to its existing `SpurGearOutput` fields without changing the public ToolBroker contract.
 
-- Create `src/mechcad_harness/application.py`.
-- Create `tests/unit/test_production_application.py`.
-- Do not modify unrelated pre-existing worktree changes.
+- [ ] **Step 1: Write independent failing tests**
 
-## Interfaces
+  Add tests that independently calculate `m*z_driver`, `m*z_driven`, `(d_driver+d_driven)/2`, and `z_driven/z_driver`; assert the shared primitive and `calc_spur_gear` expose those values. Add invalid module and tooth-count tests.
 
-- `ProductionStateBinding(project_id: str, state: DesignState, revision: int, state_hash: str)` is immutable and validates `state.revision == revision`.
-- `ProductionRunBinding(run: Run, source: ProductionStateBinding)` is immutable and validates project, initial revision/hash, and active revision/hash exactly match source.
-- `ProductionApplication.create(workspace: str | Path, project_id: str, agent_adapter: AgentAdapter, *, ownership_path: str | Path, dependency_path: str | Path, additional_tool_registrations: Iterable[ToolRegistration] = ()) -> ProductionApplication` performs composition only.
-- `ProductionApplication.load_state() -> ProductionStateBinding` loads/verifies current state and returns a fresh binding without retaining it.
-- `ProductionApplication.create_run(*, max_iterations: int = 3) -> ProductionRunBinding` loads once, passes its source binding to the controller boundary, verifies persistence, and never executes an adapter. The controller expected-source signature will be completed in Task 3; make the application call compatible with the intended `expected_source` parameter.
+- [ ] **Step 2: Run focused tests to confirm failure**
 
-## Composition
+  Run: `py -3 -m pytest tests/unit/test_spur_engineering.py -q`
 
-Construct existing `StateManager`, `DependencyGraph.from_yaml`, `EvidenceStore`, `OwnershipPolicy.from_file`, `ChangeEngine`, `RunController`, `BuiltinTools.registrations()` plus explicit extensions, `ToolRegistry`, `ToolBroker`, `AgentRegistry`, `ContextBuilder`, and `AgentGateway`.
+  Expected: FAIL because `engineering.spur` and the shared primitive do not exist.
 
-Own the fixed trusted identity:
+- [ ] **Step 3: Implement the lower generic primitive**
 
-```text
-agent_name=mechcad-transmission
-agent_version=1.0
-role=transmission_engineer
-protocol_version=1.0
-```
+  Use strict finite-positive validation and exact integer tooth-count validation. Keep the implementation free of `revolute_drive` imports. Update `calc_spur_gear` to call the primitive and map fields only.
 
-Register the injected adapter under this identity. Never use adapter identity/provider metadata for the trusted identity. Do not use `FakeAgentAdapter` as a production default. Standard exact tool permission policy must be represented as `tool@version`, never bare names.
+- [ ] **Step 4: Run focused tests to confirm pass**
 
-Reject blank project ID, null adapter, and missing config paths with `ValueError`. Use existing domain errors for state not found/integrity failures. Do not add `invoke_agent`, `execute_task`, `run_workflow`, `start_run`, or any workflow API. Do not import tests or fixtures from production.
+  Run: `py -3 -m pytest tests/unit/test_spur_engineering.py tests/unit/test_tools.py -q`
 
-## Tests
+  Expected: PASS with existing BuiltinTools behavior unchanged.
 
-Use a deterministic local adapter only in tests, with forged adapter identity and an invocation counter. Build a real project with `StateManager.create_project`. Cover:
-
-- real graph construction without invoking adapter;
-- fresh exact `load_state()` bindings and correct state hash;
-- `create_run()` exact loaded source binding and no adapter invocation.
-
-Run `python -m pytest tests/unit/test_production_application.py -q` after implementation.
-
-## Constraints
-
-- Preserve Python 3.11+, Pydantic v2, UTC-aware datetimes, and canonical DesignState boundaries.
-- Preserve exact tool version permissions and trusted production role.
-- No broad refactoring, CAD/provider/workflow execution, commits, resets, stash, clean, or push.
-
-## Report
-
-Write implementation status, changed files, tests run/results, and concerns to `.superpowers/sdd/task-1-report.md`. Return only status, commit information if any (do not commit here), one-line test summary, and concerns.

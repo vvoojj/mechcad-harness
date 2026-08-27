@@ -1,51 +1,32 @@
-# Task 2: Prove trusted identity, exact tool policy, and closed failure behavior
+### Task 2: Add Frozen M12-3 Models And Provenance Bindings
 
-Complete Task 2 of M8B-1 in the current repository. Read the approved design,
-plan, and current `src/mechcad_harness/application.py` and
-`tests/unit/test_production_application.py` first.
+**Files:**
+- Create: `src/mechcad_harness/revolute_drive/models.py`
+- Create: `src/mechcad_harness/revolute_drive/__init__.py`
+- Test: `tests/unit/test_m12_revolute_drive_models.py`
 
-## Scope
+**Interfaces:**
+- Produces enums `DriveArchitecture`, `EngineeringCheckStatus`, `DriveAdmissibility`, `InputProvenanceKind`.
+- Produces frozen models `SourceBoundScalar`, `ConsumedPropertyBinding`, `StaticOutputShaftDesignLoadCase`, `RevoluteDriveEngineeringRequirements`, `RevoluteDriveTemplateInput`, `ShaftSupportGeometry`, `RevoluteDriveConstructionOutcome`, `EngineeringCheck`, and `RevoluteDriveAdmissibilityResult`.
+- Every dimensional model validates exact units, finite values, positive domains, and rejects NaN/Inf. Every durable result uses canonical JSON hashing and excludes its own `result_hash` from the hash payload.
 
-Use the existing production composition root. Do not redesign the graph or add
-workflow APIs. Preserve all unrelated worktree changes. Do not commit, reset,
-stash, clean, or push.
+- [ ] **Step 1: Write failing model tests**
 
-## Required coverage
+  Cover frozen/extra-forbid behavior, scalar speed contract, source versus policy provenance, valid/invalid efficiency, safety factor, load case, support ordering, and hash determinism. Assert `RevoluteDriveConstructionOutcome(candidate=None, status=UNRESOLVED)` is valid for incomplete construction.
 
-Add focused tests using a deterministic local adapter injected into
-`ProductionApplication.create()`:
+- [ ] **Step 2: Run model tests to confirm failure**
 
-1. Adapter identity/provider metadata cannot override the fixed production
-   `AgentIdentity(agent_name="mechcad-transmission", agent_version="1.0",
-   role="transmission_engineer", protocol_version="1.0")`.
-2. Gateway/registry resolves role `transmission_engineer`, never `"test"`.
-3. Standard tools resolve by exact `(name, version)` and exposed standard
-   permissions contain `name@version`, never a bare name.
-4. A bare-name allowed tool permission is rejected by the real `ToolBroker`.
-5. Missing project state, corrupt current pointer, missing ownership config,
-   and missing dependency config fail closed with specific existing/domain or
-   configuration exceptions.
-6. Conflicting duplicate standard registration fails closed.
-7. `ProductionApplication.create()` and `create_run()` never invoke the
-   adapter.
-8. Production module has no imports of tests/conftest/fixture helpers.
+  Run: `py -3 -m pytest tests/unit/test_m12_revolute_drive_models.py -q`
 
-Use exact exception assertions, not `Exception`.
+  Expected: FAIL because the package/models are absent.
 
-If implementation changes are needed, keep them limited to validating the
-standard production registration/policy. Standard registrations must continue
-to come from existing `BuiltinTools.registrations()` and exact versions. Do
-not weaken the trusted identity, broker permission, or source-binding
-boundaries.
+- [ ] **Step 3: Implement minimal immutable schemas**
 
-## Tests
+  Reuse `mechcad_harness.models.common.Model` and `state.hashing.canonical_json`. Represent requirements as explicit source-bound fields and policy assumptions as explicit `SourceBoundScalar` values with `InputProvenanceKind.POLICY_ASSUMPTION`; never coerce missing values to zero. Keep derived values, checks, and unresolved reasons separate.
 
-Run:
+- [ ] **Step 4: Run model tests to confirm pass**
 
-```text
-py -3 -m pytest tests/unit/test_production_application.py -q
-py -3 -m pytest tests/unit/test_agent_gateway.py tests/unit/test_tools.py -q
-```
+  Run: `py -3 -m pytest tests/unit/test_m12_revolute_drive_models.py -q`
 
-Write `.superpowers/sdd/task-2-report.md` with status, changed files, tests,
-and concerns. Return only status, test summary, and concerns.
+  Expected: PASS.
+

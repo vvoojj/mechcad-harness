@@ -127,6 +127,22 @@ from mechcad_harness.structural.validation import (
     cantilever_geometry_observation,
     cantilever_material_observation,
 )
+from mechcad_harness.candidates import (
+    CandidateCurrentness,
+    CandidateCurrentnessService,
+    CandidateIntegrityError,
+    CandidateIntegrityVerifier,
+    CandidatePublicationService,
+    CandidateSynthesisPolicy,
+    CandidateSynthesisRequest,
+)
+from mechcad_harness.revolute_drive import (
+    RevoluteDriveAdmissibilityResult,
+    RevoluteDriveConstructionOutcome,
+    RevoluteDriveEngineeringRequirements,
+    RevoluteDriveRealizationService,
+    RevoluteDriveTemplateInput,
+)
 
 
 def _structural_model_snapshot(value):
@@ -213,6 +229,22 @@ class ProductionRunBinding(Model):
         return value
 
 
+class RevoluteDriveProductionOutcome(Model):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    construction: RevoluteDriveConstructionOutcome
+    evaluation: RevoluteDriveAdmissibilityResult | None = None
+
+    @model_validator(mode="after")
+    def validate_construction_evaluation_pairing(self):
+        if self.construction.candidate is None:
+            if self.evaluation is not None:
+                raise ValueError("unresolved construction cannot carry an admissibility result")
+        elif self.evaluation is None:
+            raise ValueError("constructed candidate requires its admissibility result")
+        return self
+
+
 class ProductionApplication:
     _READ_ONLY_DEPENDENCIES = frozenset({
         "state_manager",
@@ -245,6 +277,10 @@ class ProductionApplication:
         "kinematic_measure",
         "_kinematic_measurement_provider",
         "_kinematic_measurement_provider_attested",
+        "candidate_integrity_verifier",
+        "candidate_currentness_service",
+        "candidate_publication_service",
+        "revolute_drive_service",
     })
     _IDENTITY = AgentIdentity(
         agent_name="mechcad-transmission",
@@ -283,6 +319,12 @@ class ProductionApplication:
         self.evidence_store = evidence_store
         self.change_engine = change_engine
         self.context_builder = context_builder
+        self.candidate_integrity_verifier = CandidateIntegrityVerifier()
+        self.candidate_currentness_service = CandidateCurrentnessService(state_manager)
+        self.candidate_publication_service = CandidatePublicationService(
+            state_manager.workspace, project_id, state_manager
+        )
+        self.revolute_drive_service = RevoluteDriveRealizationService()
         self.cad_compiler = CadCompilationService(state_manager)
         self.assembly_service = default_assembly_service(state_manager)
         self.standard_tool_permissions = tuple(
@@ -1531,3 +1573,41 @@ class ProductionApplication:
             self.evidence_store.load_evidence(self.project_id, evidence_id)
         except Exception:
             self.evidence_store.write_evidence(self.project_id, evidence)
+
+    def realize_and_evaluate_revolute_drive(
+        self,
+        *,
+        request: CandidateSynthesisRequest,
+        policy: CandidateSynthesisPolicy,
+        template_input: RevoluteDriveTemplateInput,
+        requirements: RevoluteDriveEngineeringRequirements,
+    ) -> RevoluteDriveProductionOutcome:
+        request = CandidateSynthesisRequest.model_validate(request.model_dump(mode="json"))
+        policy = CandidateSynthesisPolicy.model_validate(policy.model_dump(mode="json"))
+        template_input = RevoluteDriveTemplateInput.model_validate(
+            template_input.model_dump(mode="json")
+        )
+        requirements = RevoluteDriveEngineeringRequirements.model_validate(
+            requirements.model_dump(mode="json")
+        )
+        current_state = self.state_manager.load_current_state(self.project_id)
+        request.source_binding.validate_against(self.project_id, current_state)
+
+        construction = self.revolute_drive_service.construct_candidate(request, policy, template_input)
+        if construction.candidate is None:
+            return RevoluteDriveProductionOutcome(construction=construction)
+
+        verified = self.candidate_integrity_verifier.verify(construction.candidate, request, policy)
+        currentness = self.candidate_currentness_service.evaluate(verified, request, policy)
+        if currentness is not CandidateCurrentness.CURRENT:
+            raise CandidateIntegrityError(
+                f"revolute drive candidate failed the currentness gate: {currentness.value}"
+            )
+        evaluation = self.revolute_drive_service.evaluate(
+            verified,
+            request,
+            policy,
+            requirements,
+            source_state=current_state,
+        )
+        return RevoluteDriveProductionOutcome(construction=construction, evaluation=evaluation)

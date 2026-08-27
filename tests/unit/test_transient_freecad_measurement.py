@@ -1,7 +1,7 @@
 import pytest
 
 from mechcad_harness.artifacts import ArtifactStore, ArtifactType
-from mechcad_harness.cad_assembly import CadAssemblyProgram, CadComponentInstance, assembly_hash
+from mechcad_harness.cad_assembly import CadAssemblyProgram, CadComponentInstance, CadRigidTransform, assembly_hash
 from mechcad_harness.cad_program import BasePlateOperation, CadPartProgram
 from mechcad_harness.imported_component import ImportedCadComponent
 from mechcad_harness.transient_assembly_analysis import TransientAssemblyAnalysisRequest
@@ -156,3 +156,67 @@ def test_provider_requires_workspace_scope_for_imported_resolution():
     provider = FreeCADTransientAssemblyMeasurementProvider()
     with pytest.raises(Exception, match="requires workspace and project_id"):
         provider._resolve_imported_artifact_path(_imported("ART-scope", "sha256:" + "0" * 64))
+
+
+def _assembly_with_imported():
+    return CadAssemblyProgram(
+        assembly_id="transient-imported-unit",
+        parts=(
+            CadPartProgram(
+                part_id="obstacle",
+                operations=(BasePlateOperation(operation_id="obstacle", length_mm=20, width_mm=20, thickness_mm=20),),
+            ),
+        ),
+        imported_components=(
+            ImportedCadComponent(
+                component_id="IMP",
+                artifact_id="ART-imp",
+                artifact_hash="sha256:" + "a" * 64,
+                format="step",
+                source_revision=1,
+                source_state_hash="sha256:" + "b" * 64,
+            ),
+        ),
+        instances=(
+            CadComponentInstance(instance_id="imp_inst", part_id="IMP"),
+            CadComponentInstance(instance_id="obs_inst", part_id="obstacle", placement=CadRigidTransform(x_mm=110)),
+        ),
+    )
+
+
+def test_measurement_script_compounds_all_imported_candidates():
+    program = _assembly_with_imported()
+    script = FreeCADTransientAssemblyMeasurementProvider._measurement_script(
+        program, (("imp_inst", "obs_inst"),), {"obstacle": "o.step"}, {"IMP": "x.step"}, {"IMP"}
+    )
+    # Imported realization must aggregate every top-level STEP shape.
+    assert "Part.makeCompound([c.Shape.copy() for c in candidates])" in script
+    # Only the generated-part branch may retain candidates[0]; imported must not.
+    assert script.count("candidates[0].Shape.copy()") == 1
+
+
+def test_radial_script_compounds_all_imported_candidates():
+    records = [("imp_inst", True, "x.step", 0.0, 0.0, 0.0, (0.0, 0.0, 1.0), 0.0)]
+    script = FreeCADTransientAssemblyMeasurementProvider._radial_script(
+        records,
+        _RadialAxis(),
+    )
+    assert "Part.makeCompound([c.Shape.copy() for c in candidates])" in script
+    assert script.count("candidates[0].Shape.copy()") == 1
+
+
+def test_local_extent_script_compounds_all_imported_candidates():
+    records = [("imp_inst", True, "x.step")]
+    script = FreeCADTransientAssemblyMeasurementProvider._local_extent_script(records)
+    assert "Part.makeCompound([c.Shape.copy() for c in candidates])" in script
+    # The local-extent imported branch no longer uses the first candidate only.
+    assert "candidates[0]" not in script
+
+
+class _RadialAxis:
+    origin_x_mm = 0.0
+    origin_y_mm = 0.0
+    origin_z_mm = 0.0
+    direction_x = 0.0
+    direction_y = 0.0
+    direction_z = 1.0
