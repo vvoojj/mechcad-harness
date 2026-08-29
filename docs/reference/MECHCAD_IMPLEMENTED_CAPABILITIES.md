@@ -66,7 +66,8 @@ integrity/currentness verification; and explicit `ArtifactStore` publication /
 fresh reload. `ProductionApplication` composes only those verification and
 publication services. This is not candidate generation, sizing, catalog lookup,
 CAD, M10/M11 execution, ranking, selection, promotion, or a second canonical
-store.
+store. The bounded M12-4 CAD/evaluation/comparison/selection path is listed
+separately below.
 
 ## Agent / Orchestration Infrastructure
 
@@ -122,6 +123,7 @@ their production wiring differs:
 - `CadAssemblyProgram` mixed imported/generated rigid assemblies: `cad_assembly.py:CadAssemblyProgram`, `backends/freecad_assembly.py:FreeCADAssemblyBackend`.
 - External spur gear STEP production through `GearworksTools` when explicitly registered: `EXISTS_UNWIRED` outside workflows that explicitly add those registrations.
 - FreeCAD 1.1.3 production realization, artifact persistence, fresh reload, and disposable transient geometry realization; see [M9 acceptance](../audit/MECHCAD_M9_SYSTEM_ACCEPTANCE.md).
+- Bounded candidate CAD realization through `ProductionApplication.realize_candidate_cad`: `EXISTS_PRODUCTION_VERIFIED`; candidate-bound generated plate and trusted imported STEP representations only, with explicit fidelity and no candidate CAD store.
 
 `ImportedCadComponent` means the complete imported STEP artifact. The post-M10
 closure verifies that transient collision/clearance, radial-bound, and
@@ -184,8 +186,11 @@ convergence, global yield, safety, or manufacturing approval. Accepted status:
 - Immutable source-bound `MechanicalDesignCandidate`: `EXISTS_PRODUCTION_UNVERIFIED`; candidate model, integrity/currentness services, and the bounded M12-3 template construction path are composed, but candidates remain noncanonical and are not published automatically.
 - Candidate explicit publication/provenance: `EXISTS_PRODUCTION_UNVERIFIED`; publication and fresh resolution use `ArtifactStore` with deterministic identity/source binding. Publication is explicit, not automatic persistence, not a `CandidateStore`, not canonical authority, and not Evidence by itself.
 - Generic candidate generation: `MISSING`.
-- Candidate ranking, optimization/search, and automated refinement loop: `MISSING`.
-- Candidate-to-M10 execution bridge: `MISSING`; M10 remains available independently, but M12-2 does not execute candidate CAD or M10 evaluation.
+- Bounded candidate-to-M10 execution bridge: `EXISTS_PRODUCTION_VERIFIED`; `ProductionApplication.evaluate_candidate` evaluates declared constituent pairs through unchanged M10 continuous single-axis proof and exact zero-angle home checks, with complete pair inventory and explicit unmodeled-motion boundaries.
+- Bounded candidate evaluation: `EXISTS_PRODUCTION_VERIFIED`; immutable source-bound `CandidateEvaluation` with `FEASIBLE`, `INFEASIBLE`, and `UNRESOLVED` outcomes and the single trusted `verified_clearance_lower_bound_mm` metric.
+- Bounded candidate comparison and deterministic ranking: `EXISTS_PRODUCTION_VERIFIED`; `ProductionApplication.compare_candidates` compares compatible feasible evaluations by the one certified clearance metric and preserves ties.
+- Explicit noncanonical candidate selection: `EXISTS_PRODUCTION_VERIFIED`; `ProductionApplication.select_candidate` records a current feasible choice with optional comparison and rationale without canonical mutation.
+- Candidate optimization/search and automated refinement loop: `MISSING`.
 - Candidate-to-M11 bridge: `MISSING`; M11 accepts source-bound structural definitions/requests, not design candidates.
 
 MechCAD does not currently turn general engineering requirements into general
@@ -193,8 +198,9 @@ mechanical design candidates or provide general/unbounded physical-realization
 sizing/design, comparison, selection, or promotion. Bounded M12-3 direct-drive
 and external-spur realization, engineering evaluation, and sizing from supplied
 snapshots are implemented. Generic candidate generation/search remains absent;
-the candidate model and explicit publication boundary remain noncanonical, and
-canonical promotion does not exist.
+the candidate model, M12-4 CAD/evaluation/comparison/selection records, and
+explicit publication boundary remain noncanonical, and canonical promotion does
+not exist.
 
 ## Implemented But Unwired
 
@@ -230,6 +236,8 @@ canonical promotion does not exist.
 | M11 structural analysis | `EXISTS_PRODUCTION_VERIFIED` | Structural application methods | Yes | Single-solid linear static | [Structural Analysis](#structural-analysis) |
 | M12 candidate authority/topology/publication | `EXISTS_PRODUCTION_UNVERIFIED` | `ProductionApplication` candidate integrity/currentness/publication services plus `realize_and_evaluate_revolute_drive` | Focused M12-3 tests verified; full-suite/live status pending | Immutable noncanonical candidate model, explicit ArtifactStore publication remains separate, and bounded two-template realization/sizing; no generic generation, CAD, M10/M11 execution, ranking, selection, or promotion | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
 | M12 bounded revolute-drive realization and sizing | `EXISTS_PRODUCTION_UNVERIFIED` | `ProductionApplication.realize_and_evaluate_revolute_drive` | Focused production integration verified; no separate live-runtime acceptance | Supplied direct-drive or external-spur inputs only; nominal ratio/load, motor admissibility, two-support solid-shaft sizing, no catalog, arbitrary synthesis, strength, life, CAD, M10/M11 bridge, comparison, selection, promotion, Evidence, or artifact publication | [Physical Component / Mechanism Capability](#physical-component--mechanism-capability) |
+| M12-4 bounded candidate CAD and M10 evaluation | `EXISTS_PRODUCTION_VERIFIED` | `ProductionApplication.realize_candidate_cad` / `evaluate_candidate` | Yes | Candidate-bound generated/trusted representations; one output-joint M10 scope; explicit pair inventory; no internal spur-motion proof or promotion | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
+| M12-4 comparison and explicit selection | `EXISTS_PRODUCTION_VERIFIED` | `ProductionApplication.compare_candidates` / `select_candidate` | Yes | One certified clearance metric; compatible feasible evaluations only; noncanonical selection; no optimization or promotion | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
 | Generic candidate generation | `MISSING` | None | No | Candidate model exists, but no generation/search/ranking workflow | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
 
 ## When To Read Which Document

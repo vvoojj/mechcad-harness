@@ -135,8 +135,12 @@ canonical state advances; it is then stale, not corrupted.
 
 ## Candidate Identity And Source Binding
 
-Candidate identity excludes timestamps, run IDs, artifact IDs, temporary paths,
-and evaluation results. It includes all semantically candidate-defining inputs.
+Candidate identity excludes timestamps, run IDs, temporary paths, evaluation
+results, and runtime, publication, or derived-result artifact IDs. An explicitly
+selected `GeometrySourceReference.artifact_id` contained in a component
+specification is a candidate-defining geometry-source identity under accepted
+M12-2 semantics; this narrow exception does not extend to arbitrary artifact
+IDs. Candidate identity includes all semantically candidate-defining inputs.
 Evaluation, CAD realization, comparison, selection, and proposal each have their
 own deterministic hash and explicitly name the candidate hash they consume.
 
@@ -428,16 +432,17 @@ component or infeasibility witness.
 ## Candidate Comparison And Ranking
 
 `CandidateComparisonPolicy` is an optional hashed, noncanonical policy input that
-defines comparator semantics only: admissibility rules, ordered metrics, metric
-directions and units, missing-value handling, applicable tie behavior, and the
-comparator implementation/version. It does not own the concrete candidates or
-evaluations being compared.
+defines comparator semantics only: metric definitions and order,
+`MINIMIZE`/`MAXIMIZE` directions, expected units, admissibility requirements,
+missing-value behavior, tie semantics, and comparator implementation/version. It
+does not own the concrete candidates or evaluations being compared.
 
-`CandidateComparisonRequest` is the separate execution/input binding. It contains
-source binding where required, ordered candidate hashes paired with their exact
-evaluation hashes, the `candidate_comparison_policy_hash`, and a deterministic
-request hash. The same policy with different candidates therefore has the same
-policy hash but a different request/result identity; changing the policy or any
+`CandidateComparisonRequest` is the separate execution/input binding. It
+contains source binding where required, ordered candidate hashes paired with
+their exact evaluation hashes, the `candidate_comparison_policy_hash`, and a
+deterministic request hash. The candidate/evaluation set belongs only to this
+request. The same policy with different candidates therefore has the same policy
+hash but a different request/result identity; changing the policy or any
 evaluation changes the request/result identity.
 
 Initial comparison is deterministic lexicographic ordering over explicitly

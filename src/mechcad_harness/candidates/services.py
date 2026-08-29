@@ -50,6 +50,9 @@ class CandidateCurrentnessService:
 
     def evaluate(self, candidate: MechanicalDesignCandidate, request: CandidateSynthesisRequest, policy: CandidateSynthesisPolicy) -> CandidateCurrentness:
         CandidateIntegrityVerifier().verify(candidate, request, policy)
+        return self.evaluate_source_binding(candidate)
+
+    def evaluate_source_binding(self, candidate: MechanicalDesignCandidate) -> CandidateCurrentness:
         try:
             current = self.state_manager.load_current_state(candidate.source_binding.project_id)
         except Exception:

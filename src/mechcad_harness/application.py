@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from collections.abc import Callable
@@ -16,6 +17,7 @@ from mechcad_harness.models import DesignState
 from mechcad_harness.runs import Run, RunController, SourceBinding, TaskDefinition
 from mechcad_harness.runs.errors import RunIntegrityError
 from mechcad_harness.state import StateManager, state_hash
+from mechcad_harness.state.hashing import canonical_json
 from mechcad_harness.state.errors import StateIntegrityError
 from mechcad_harness.cad_compilation import CadCompilationResult, CadCompilationService, MountingPlateDesignSpec
 from mechcad_harness.cad_assembly import CadAssemblyProgram, assembly_hash
@@ -135,13 +137,32 @@ from mechcad_harness.candidates import (
     CandidatePublicationService,
     CandidateSynthesisPolicy,
     CandidateSynthesisRequest,
+    CandidateCadRealizationService,
+    CandidateCadStageReason,
+    CandidateCadStageOutcome,
+    CandidateCadStageStatus,
+    CandidateEvaluationCurrentnessService,
+    CandidateEvaluationPolicy,
+    CandidateEvaluationService,
+    CandidateComparisonPolicy,
+    CandidateComparisonService,
+    CandidateM10EvaluationService,
+    CandidateM10EvaluationRequest,
+    CandidateM10EvaluationScope,
+    CandidateM10Binding,
+    CandidateM10StageOutcome,
+    CandidateM10StageReason,
+    CandidateM10StageStatus,
+    CandidateSelectionService,
 )
 from mechcad_harness.revolute_drive import (
+    DriveAdmissibility,
     RevoluteDriveAdmissibilityResult,
     RevoluteDriveConstructionOutcome,
     RevoluteDriveEngineeringRequirements,
     RevoluteDriveRealizationService,
     RevoluteDriveTemplateInput,
+    admissibility_result_hash,
 )
 
 
@@ -281,6 +302,12 @@ class ProductionApplication:
         "candidate_currentness_service",
         "candidate_publication_service",
         "revolute_drive_service",
+        "candidate_cad_realization_service",
+        "candidate_m10_evaluation_service",
+        "candidate_evaluation_service",
+        "candidate_evaluation_currentness_service",
+        "candidate_comparison_service",
+        "candidate_selection_service",
     })
     _IDENTITY = AgentIdentity(
         agent_name="mechcad-transmission",
@@ -325,6 +352,32 @@ class ProductionApplication:
             state_manager.workspace, project_id, state_manager
         )
         self.revolute_drive_service = RevoluteDriveRealizationService()
+        self.candidate_cad_realization_service = CandidateCadRealizationService(
+            workspace=state_manager.workspace,
+            project_id=project_id,
+            state_manager=state_manager,
+        )
+        self.candidate_m10_evaluation_service = CandidateM10EvaluationService(
+            self.prove_continuous_single_axis_clearance,
+            self.analyze_assembly_kinematics,
+        )
+        self.candidate_evaluation_service = CandidateEvaluationService(
+            state_manager,
+            cad_replay_verifier=self.candidate_cad_realization_service.validate_realization,
+        )
+        self.candidate_evaluation_currentness_service = CandidateEvaluationCurrentnessService(
+            state_manager,
+            cad_replay_verifier=self.candidate_cad_realization_service.validate_realization,
+        )
+        self.candidate_comparison_service = CandidateComparisonService(
+            CandidateComparisonPolicy(),
+            project_id=project_id,
+            currentness_verifier=self.candidate_evaluation_currentness_service,
+        )
+        self.candidate_selection_service = CandidateSelectionService(
+            project_id=project_id,
+            currentness_verifier=self.candidate_evaluation_currentness_service
+        )
         self.cad_compiler = CadCompilationService(state_manager)
         self.assembly_service = default_assembly_service(state_manager)
         self.standard_tool_permissions = tuple(
@@ -1611,3 +1664,239 @@ class ProductionApplication:
             source_state=current_state,
         )
         return RevoluteDriveProductionOutcome(construction=construction, evaluation=evaluation)
+
+    def realize_candidate_cad(
+        self,
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        request,
+    ):
+        self._require_candidate_project(candidate, synthesis_request)
+        return self.candidate_cad_realization_service.realize(
+            candidate,
+            synthesis_request,
+            synthesis_policy,
+            request,
+        )
+
+    @staticmethod
+    def _candidate_source_binding_hash(candidate) -> str:
+        return "sha256:" + hashlib.sha256(
+            canonical_json(candidate.source_binding.model_dump(mode="json"))
+        ).hexdigest()
+
+    def _require_candidate_project(self, candidate, synthesis_request=None) -> None:
+        try:
+            candidate_project = candidate.source_binding.project_id
+        except AttributeError as exc:
+            raise CandidateIntegrityError("candidate project binding is unavailable") from exc
+        if candidate_project != self.project_id:
+            raise CandidateIntegrityError("candidate project binding mismatch")
+        if synthesis_request is not None:
+            try:
+                request_project = synthesis_request.source_binding.project_id
+            except AttributeError as exc:
+                raise CandidateIntegrityError("synthesis request project binding is unavailable") from exc
+            if request_project != self.project_id:
+                raise CandidateIntegrityError("synthesis request project binding mismatch")
+
+    def _require_comparison_project(self, request) -> None:
+        try:
+            project_id = request.project_id
+        except AttributeError as exc:
+            raise CandidateIntegrityError("comparison project binding is unavailable") from exc
+        if project_id != self.project_id:
+            raise CandidateIntegrityError("comparison project binding mismatch")
+
+    def _validate_candidate_m12_3_result(
+        self,
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        m12_3_result,
+    ):
+        self.candidate_integrity_verifier.verify(
+            candidate, synthesis_request, synthesis_policy
+        )
+        currentness = self.candidate_currentness_service.evaluate(
+            candidate, synthesis_request, synthesis_policy
+        )
+        if currentness is not CandidateCurrentness.CURRENT:
+            raise CandidateIntegrityError(
+                f"candidate failed the currentness gate: {currentness.value}"
+            )
+        try:
+            result = RevoluteDriveAdmissibilityResult.model_validate(
+                m12_3_result.model_dump(mode="json")
+            )
+        except Exception as exc:
+            raise CandidateIntegrityError("invalid M12-3 admissibility result") from exc
+        if result.result_hash != admissibility_result_hash(result):
+            raise CandidateIntegrityError("M12-3 admissibility result hash mismatch")
+        if result.candidate_hash != candidate.candidate_hash:
+            raise CandidateIntegrityError("M12-3 result candidate binding mismatch")
+        if result.source_binding_hash != self._candidate_source_binding_hash(candidate):
+            raise CandidateIntegrityError("M12-3 result source binding mismatch")
+        if result.synthesis_request_hash != synthesis_request.request_hash:
+            raise CandidateIntegrityError("M12-3 result synthesis request binding mismatch")
+        if result.synthesis_policy_hash != synthesis_policy.policy_hash:
+            raise CandidateIntegrityError("M12-3 result synthesis policy binding mismatch")
+        return result
+
+    @staticmethod
+    def _candidate_m10_not_reached(candidate, m10_request, m10_scope, m10_binding):
+        if any(value is None for value in (m10_request, m10_scope, m10_binding)):
+            raise CandidateIntegrityError(
+                "M10 not-reached stage requires its exact request, scope, and binding"
+            )
+        try:
+            m10_request = CandidateM10EvaluationRequest.model_validate(
+                m10_request.model_dump(mode="json")
+            )
+            m10_scope = CandidateM10EvaluationScope.model_validate(
+                m10_scope.model_dump(mode="json")
+            )
+            m10_binding = CandidateM10Binding.model_validate(
+                m10_binding.model_dump(mode="json")
+            )
+            if m10_request.candidate_hash != candidate.candidate_hash:
+                raise ValueError("M10 not-reached request candidate identity mismatch")
+            if m10_binding.candidate_hash != candidate.candidate_hash:
+                raise ValueError("M10 not-reached binding candidate identity mismatch")
+            CandidateM10EvaluationService._validate_request_against_binding_scope(
+                m10_request, m10_binding, m10_scope
+            )
+            m10_binding.validate_physical_realization(candidate.realization)
+        except Exception as exc:
+            if isinstance(exc, CandidateIntegrityError):
+                raise
+            raise CandidateIntegrityError(
+                f"M10 not-reached context integrity failure: {exc}"
+            ) from exc
+        return CandidateM10StageOutcome(
+            status=CandidateM10StageStatus.NOT_REACHED,
+            candidate_hash=candidate.candidate_hash,
+            source_revision=candidate.source_binding.source_revision,
+            source_state_hash=candidate.source_binding.source_state_hash,
+            reasons=(CandidateM10StageReason.PRIOR_STAGE_FAILED,),
+        )
+
+    def evaluate_candidate(
+        self,
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        m12_3_result,
+        cad_request,
+        m10_request,
+        m10_scope,
+        m10_binding,
+        policy=None,
+        *,
+        evaluation_policy=None,
+    ):
+        if policy is not None and evaluation_policy is not None:
+            raise ValueError("provide only one candidate evaluation policy")
+        self._require_candidate_project(candidate, synthesis_request)
+        evaluation_policy = evaluation_policy or policy
+        if evaluation_policy is None:
+            evaluation_policy = CandidateEvaluationPolicy()
+
+        m12_3_result = self._validate_candidate_m12_3_result(
+            candidate,
+            synthesis_request,
+            synthesis_policy,
+            m12_3_result,
+        )
+        if m12_3_result.status is DriveAdmissibility.INADMISSIBLE:
+            cad_stage = CandidateCadStageOutcome(
+                status=CandidateCadStageStatus.NOT_REACHED,
+                reasons=(CandidateCadStageReason.PRIOR_STAGE_FAILED,),
+            )
+            m10_stage = self._candidate_m10_not_reached(
+                candidate, m10_request, m10_scope, m10_binding
+            )
+        else:
+            cad_stage = self.realize_candidate_cad(
+                candidate,
+                synthesis_request,
+                synthesis_policy,
+                cad_request,
+            )
+            if cad_stage.status is CandidateCadStageStatus.SUCCESS:
+                m10_stage = self.candidate_m10_evaluation_service.evaluate(
+                    candidate.source_binding.source_revision,
+                    candidate.source_binding.source_state_hash,
+                    cad_stage,
+                    m10_binding,
+                    m10_request,
+                    scope=m10_scope,
+                    physical_realization=candidate.realization,
+                )
+            else:
+                m10_stage = self._candidate_m10_not_reached(
+                    candidate, m10_request, m10_scope, m10_binding
+                )
+
+        stage_context = (
+            {
+                "cad_request": cad_request,
+                "m10_request": m10_request,
+                "m10_scope": m10_scope,
+                "m10_binding": m10_binding,
+            }
+            if (
+                cad_stage.status is CandidateCadStageStatus.SUCCESS
+                and m10_stage.status is not CandidateM10StageStatus.NOT_REACHED
+            )
+            else {
+                "cad_request": None,
+                "m10_request": None,
+                "m10_scope": None,
+                "m10_binding": None,
+            }
+        )
+        return self.candidate_evaluation_service.evaluate(
+            candidate,
+            synthesis_request,
+            synthesis_policy,
+            m12_3_result,
+            cad_stage,
+            m10_stage,
+            evaluation_policy,
+            **stage_context,
+        )
+
+    def compare_candidates(self, request, evaluations):
+        self._require_comparison_project(request)
+        entries = tuple(evaluations.values()) if hasattr(evaluations, "values") else tuple(evaluations)
+        for entry in entries:
+            if isinstance(entry, tuple) and len(entry) == 2:
+                self._require_candidate_project(entry[0])
+        return self.candidate_comparison_service.compare(request, evaluations)
+
+    def select_candidate(
+        self,
+        candidate,
+        evaluation,
+        selector_identity,
+        rationale,
+        comparison=None,
+        comparison_entries=None,
+    ):
+        self._require_candidate_project(candidate)
+        if comparison is not None:
+            self._require_comparison_project(comparison)
+        if comparison_entries is not None:
+            for entry in comparison_entries:
+                if isinstance(entry, tuple) and len(entry) == 2:
+                    self._require_candidate_project(entry[0])
+        return self.candidate_selection_service.select(
+            candidate,
+            evaluation,
+            selector_identity,
+            rationale,
+            comparison=comparison,
+            comparison_entries=comparison_entries,
+        )
