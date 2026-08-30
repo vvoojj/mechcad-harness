@@ -50,6 +50,28 @@ _STRUCTURAL_EXPORTS = {
     "structural_definition_hash",
 }
 
+_PHYSICAL_MECHANISM_EXPORTS = {
+    "CanonicalAcceptedDesignChoice",
+    "CanonicalComponentProperty",
+    "CanonicalComponentPropertyAvailability",
+    "CanonicalComponentPropertyAuthority",
+    "CanonicalComponentSpecification",
+    "CanonicalConnectionMeaning",
+    "CanonicalDesignChoiceOrigin",
+    "CanonicalGeometryFidelity",
+    "CanonicalGeometrySourceReference",
+    "CanonicalJointPhysicalBinding",
+    "CanonicalM10VerificationObligation",
+    "CanonicalMechanicalConnection",
+    "CanonicalMechanicalConnectionKind",
+    "CanonicalPhysicalComponent",
+    "CanonicalPhysicalComponentRole",
+    "CanonicalPhysicalMechanism",
+    "CanonicalPhysicalPairRequirement",
+    "CanonicalPlacement",
+    "CanonicalPlacementOrigin",
+}
+
 
 def __getattr__(name: str):
     if name == "Evidence":
@@ -64,6 +86,10 @@ def __getattr__(name: str):
         from . import structural
 
         value = getattr(structural, name)
+    elif name in _PHYSICAL_MECHANISM_EXPORTS:
+        from . import physical_mechanism
+
+        value = getattr(physical_mechanism, name)
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     globals()[name] = value
@@ -73,6 +99,25 @@ __all__ = [
     "AgentResult",
     "AgentTask",
     "AcceptanceMaterialAuthorityPolicy",
+    "CanonicalAcceptedDesignChoice",
+    "CanonicalComponentProperty",
+    "CanonicalComponentPropertyAvailability",
+    "CanonicalComponentPropertyAuthority",
+    "CanonicalComponentSpecification",
+    "CanonicalConnectionMeaning",
+    "CanonicalDesignChoiceOrigin",
+    "CanonicalGeometryFidelity",
+    "CanonicalGeometrySourceReference",
+    "CanonicalJointPhysicalBinding",
+    "CanonicalM10VerificationObligation",
+    "CanonicalMechanicalConnection",
+    "CanonicalMechanicalConnectionKind",
+    "CanonicalPhysicalComponent",
+    "CanonicalPhysicalComponentRole",
+    "CanonicalPhysicalMechanism",
+    "CanonicalPhysicalPairRequirement",
+    "CanonicalPlacement",
+    "CanonicalPlacementOrigin",
     "Assembly",
     "ChangeOperation",
     "ChangeProposal",

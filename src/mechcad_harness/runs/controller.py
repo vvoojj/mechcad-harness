@@ -6,7 +6,14 @@ from uuid import uuid4
 from mechcad_harness.models import ChangeProposal
 
 from .convergence import ConvergenceTracker
-from .errors import ConvergenceError, InvalidRunTransitionError, RunIntegrityError, TaskExecutionError
+from .errors import (
+    ConvergenceError,
+    InvalidRunTransitionError,
+    PostApplyInvalidationError,
+    PostApplyRunTransitionError,
+    RunIntegrityError,
+    TaskExecutionError,
+)
 from .executor import TaskExecutor, validate_result
 from .models import Run, RunPlan, SourceBinding, TaskContext, TaskDefinition, TaskExecutionResult, TaskState, TaskStatus, RunStatus
 from .persistence import RunStore
@@ -34,6 +41,18 @@ class RunController:
                 max_iterations=max_iterations,
                 expected_source=expected_source,
             )
+
+    def fail_run(self, run_id: str, *, error: str) -> Run:
+        """Persist a generic terminal failure without changing canonical state."""
+        if not isinstance(error, str) or not error.strip():
+            raise InvalidRunTransitionError("run failure requires a non-empty error")
+        run = self.get_run(run_id)
+        if run.status in (RunStatus.COMPLETED, RunStatus.CANCELLED):
+            raise InvalidRunTransitionError("terminal run cannot be failed")
+        failed = run.model_copy(update={"status": RunStatus.FAILED})
+        self._save(failed)
+        self.store.append_event(run.project_id, run_id, "RUN_FAILED", {"error": error})
+        return self.get_run(run_id)
 
     def _create_run(
         self,
@@ -163,11 +182,21 @@ class RunController:
         try:
             updated = ConvergenceTracker.record_revision(run, applied.snapshot.revision, applied.snapshot.state_hash)
         except Exception as exc:
-            updated = run.model_copy(update={"active_revision": applied.snapshot.revision, "active_state_hash": applied.snapshot.state_hash, "iteration": run.iteration + 1, "state_hash_history": (*run.state_hash_history, applied.snapshot.state_hash), "status": RunStatus.BLOCKED})
+            blocked = run.model_copy(update={"active_revision": applied.snapshot.revision, "active_state_hash": applied.snapshot.state_hash, "iteration": run.iteration + 1, "state_hash_history": (*run.state_hash_history, applied.snapshot.state_hash), "status": RunStatus.BLOCKED})
+            try:
+                self._save(blocked)
+            except Exception as save_exc:
+                raise PostApplyRunTransitionError(
+                    f"{exc}; failed to persist blocked run: {save_exc}",
+                    applied=applied,
+                    current=blocked,
+                ) from save_exc
+            raise PostApplyRunTransitionError(str(exc), applied=applied, current=blocked) from exc
+        try:
             self._save(updated)
-            raise InvalidRunTransitionError(str(exc)) from exc
-        self._save(updated)
-        self.store.append_event(run.project_id, run_id, "REVISION_ADVANCED", {"revision": updated.active_revision})
+            self.store.append_event(run.project_id, run_id, "REVISION_ADVANCED", {"revision": updated.active_revision})
+        except Exception as exc:
+            raise PostApplyRunTransitionError(str(exc), applied=applied, current=updated) from exc
         try:
             record = self.evidence.build_invalidation(run.project_id, applied.snapshot.revision, run.active_revision, applied.changed_paths, applied.changeset_id)
             self.evidence.record_invalidation(record)
@@ -177,11 +206,21 @@ class RunController:
                 if state.status in (TaskStatus.PENDING, TaskStatus.READY) and invalidated.intersection(definition.required_nodes or definition.produces_nodes):
                     self.store.write_task_state(updated.project_id, run_id, state.model_copy(update={"status": TaskStatus.STALE}))
         except Exception as exc:
-            blocked = self.get_run(run_id).model_copy(update={"status": RunStatus.BLOCKED})
-            self._save(blocked)
-            self.store.append_event(run.project_id, run_id, "RUN_BLOCKED", {"error": str(exc)})
-            raise InvalidRunTransitionError(str(exc)) from exc
-        return self.get_run(run_id)
+            blocked = updated.model_copy(update={"status": RunStatus.BLOCKED})
+            try:
+                self._save(blocked)
+                self.store.append_event(run.project_id, run_id, "RUN_BLOCKED", {"error": str(exc)})
+            except Exception as transition_exc:
+                raise PostApplyRunTransitionError(
+                    f"{exc}; failed to persist blocked run transition: {transition_exc}",
+                    applied=applied,
+                    current=blocked,
+                ) from transition_exc
+            raise PostApplyInvalidationError(str(exc), applied=applied, blocked=blocked) from exc
+        try:
+            return self.get_run(run_id)
+        except Exception as exc:
+            raise PostApplyRunTransitionError(str(exc), applied=applied, current=updated) from exc
 
     def record_convergence_revision(self, run_id: str, revision: int, state_hash: str) -> Run:
         run = self.get_run(run_id)

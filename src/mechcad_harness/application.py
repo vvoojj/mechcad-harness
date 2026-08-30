@@ -154,6 +154,17 @@ from mechcad_harness.candidates import (
     CandidateM10StageReason,
     CandidateM10StageStatus,
     CandidateSelectionService,
+    CandidatePromotionApplicationService,
+    CandidatePromotionCompiler,
+    CanonicalM10ScopeEquivalenceService,
+    CanonicalM10VerificationService,
+    CanonicalPhysicalCadCompiler,
+    CanonicalPhysicalMechanismCompiler,
+    CanonicalM11HandoffService,
+    PromotionManifestService,
+    ProjectArtifactResolver,
+    build_handoff_request,
+    verify_promoted_mechanism,
 )
 from mechcad_harness.revolute_drive import (
     DriveAdmissibility,
@@ -250,6 +261,83 @@ class ProductionRunBinding(Model):
         return value
 
 
+class _PromotionVerificationContext:
+    """Resolve optional M11 only after the canonical M10 verification path."""
+
+    def __init__(self, application, application_result, manifest_store):
+        self.application_result = application_result
+        self.manifest_store = manifest_store
+        self.manifest_service = application.promotion_manifest_service
+        self.canonical_mechanism_compiler = application.canonical_mechanism_compiler
+        self.canonical_cad_compiler = application.canonical_cad_compiler
+        self.canonical_m10_service = application.canonical_m10_service
+        self.scope_equivalence_service = CanonicalM10ScopeEquivalenceService()
+        self._application = application
+        self._m11_handoff = None
+        self._m11_resolved = False
+
+    @property
+    def m11_handoff(self):
+        if self._m11_resolved:
+            return self._m11_handoff
+        self._m11_resolved = True
+        request = getattr(self.application_result, "request", None)
+        intent = getattr(request, "m11_target_intent", None)
+        if intent is None or not intent.assessment_requested:
+            return None
+        revision = self.application_result.applied_revision
+        state_hash = self.application_result.applied_state_hash
+        mechanism_id = self.application_result.compilation.projection.canonical_target_mechanism_id
+        reconstruction = self.canonical_mechanism_compiler.reconstruct(
+            request.project_id, revision, state_hash, mechanism_id
+        )
+        handoff_request = build_handoff_request(
+            intent, self, reconstruction
+        )
+        self._m11_handoff = self._application.m11_handoff_service.assess(handoff_request)
+        return self._m11_handoff
+
+
+class _PromotedMechanismVerifier:
+    """Bind the raw application receipt to composition-owned verification services."""
+
+    def __init__(self, application):
+        self._application = application
+
+    def __call__(self, application_result):
+        return self.verify(application_result)
+
+    def verify(self, application_result):
+        manifest_store = self._manifest_store(application_result)
+        context = _PromotionVerificationContext(
+            self._application, application_result, manifest_store
+        )
+        return verify_promoted_mechanism(context)
+
+    def _manifest_store(self, application_result):
+        request = getattr(application_result, "request", None)
+        artifact_id = getattr(application_result, "decision_artifact_id", None)
+        project_id = getattr(request, "project_id", None)
+        if not isinstance(project_id, str) or not project_id.strip() or not artifact_id:
+            return None
+        try:
+            lookup = ArtifactStore(
+                self._application.state_manager.workspace,
+                project_id=project_id,
+                run_id="PROMOTION-LOOKUP",
+            )
+            artifact = lookup.existing_in_project(artifact_id)
+            if artifact is None:
+                return None
+            return ArtifactStore(
+                self._application.state_manager.workspace,
+                project_id=project_id,
+                run_id=artifact.run_id,
+            )
+        except (TypeError, ValueError, OSError):
+            return None
+
+
 class RevoluteDriveProductionOutcome(Model):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -308,6 +396,14 @@ class ProductionApplication:
         "candidate_evaluation_currentness_service",
         "candidate_comparison_service",
         "candidate_selection_service",
+        "candidate_promotion_compiler",
+        "promotion_application_service",
+        "promotion_manifest_service",
+        "canonical_mechanism_compiler",
+        "canonical_cad_compiler",
+        "canonical_m10_service",
+        "m11_handoff_service",
+        "promoted_mechanism_verifier",
     })
     _IDENTITY = AgentIdentity(
         agent_name="mechcad-transmission",
@@ -411,6 +507,39 @@ class ProductionApplication:
             constraint_preflight=ConstraintPreflight(),
             calculix_provider=StructuralCalculiXSolverProvider(discover_calculix()),
         )
+        artifact_resolver_factory = lambda requested_project_id: ProjectArtifactResolver(
+            ArtifactStore(
+                state_manager.workspace,
+                project_id=requested_project_id,
+                run_id="PROMOTION-LOOKUP",
+            )
+        )
+        self.candidate_promotion_compiler = CandidatePromotionCompiler(
+            state_manager,
+            artifact_resolver_factory,
+            evaluation_currentness_service=self.candidate_evaluation_currentness_service,
+            candidate_integrity_verifier=self.candidate_integrity_verifier,
+            candidate_currentness_service=self.candidate_currentness_service,
+        )
+        self.promotion_manifest_service = PromotionManifestService()
+        self.promotion_application_service = CandidatePromotionApplicationService(
+            self.candidate_promotion_compiler,
+            run_controller,
+            manifest_service=self.promotion_manifest_service,
+        )
+        self.canonical_mechanism_compiler = CanonicalPhysicalMechanismCompiler(
+            state_manager, artifact_resolver_factory
+        )
+        self.canonical_cad_compiler = CanonicalPhysicalCadCompiler(
+            artifact_resolver_factory
+        )
+        self.canonical_m10_service = CanonicalM10VerificationService(self)
+        self.m11_handoff_service = CanonicalM11HandoffService(
+            state_manager,
+            structural_service=self.structural_service,
+            geometry_adapter=structural_geometry_adapter,
+        )
+        self.promoted_mechanism_verifier = _PromotedMechanismVerifier(self)
         object.__setattr__(
             self,
             "_composed_structural_geometry_adapter_id",
@@ -1680,6 +1809,35 @@ class ProductionApplication:
             request,
         )
 
+    def compile_candidate_promotion(self, request):
+        self._require_promotion_project(request)
+        source = self.load_state()
+        return self.candidate_promotion_compiler.compile(source.state, request)
+
+    def promote_selected_candidate(self, request):
+        self._require_promotion_project(request)
+        return self.promotion_application_service.promote_selected_candidate(request)
+
+    def reconstruct_promoted_mechanism(
+        self,
+        *,
+        project_id: str | None = None,
+        revision: int,
+        state_hash: str,
+        mechanism_id: str,
+    ):
+        if project_id is not None and project_id != self.project_id:
+            raise CandidateIntegrityError("canonical reconstruction project binding mismatch")
+        return self.canonical_mechanism_compiler.reconstruct(
+            self.project_id, revision, state_hash, mechanism_id
+        )
+
+    def verify_promoted_mechanism(self, application_result):
+        request = getattr(application_result, "request", None)
+        if request is not None:
+            self._require_promotion_project(request)
+        return self.promoted_mechanism_verifier.verify(application_result)
+
     @staticmethod
     def _candidate_source_binding_hash(candidate) -> str:
         return "sha256:" + hashlib.sha256(
@@ -1700,6 +1858,14 @@ class ProductionApplication:
                 raise CandidateIntegrityError("synthesis request project binding is unavailable") from exc
             if request_project != self.project_id:
                 raise CandidateIntegrityError("synthesis request project binding mismatch")
+
+    def _require_promotion_project(self, request) -> None:
+        try:
+            request_project = request.project_id
+        except AttributeError as exc:
+            raise CandidateIntegrityError("promotion project binding is unavailable") from exc
+        if request_project != self.project_id:
+            raise CandidateIntegrityError("promotion project binding mismatch")
 
     def _require_comparison_project(self, request) -> None:
         try:

@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 
@@ -109,6 +110,20 @@ def test_structural_owner_can_add_definition_but_other_owner_cannot(tmp_path):
         policy.check("/structural_analysis_definitions/DEF-1", "mechcad-materials")
 
 
+def test_physical_mechanism_owner_is_limited_to_mechanism_collection_items():
+    policy = OwnershipPolicy.from_file("config/ownership.yaml")
+    policy.check("/physical_mechanisms/PM-1", "mechcad-physical-mechanism")
+
+    for path in (
+        "/requirements/REQ-1",
+        "/components/PRT-1/name",
+        "/structural_analysis_definitions/DEF-1",
+        "/",
+    ):
+        with pytest.raises(OwnershipViolationError):
+            policy.check(path, "mechcad-physical-mechanism")
+
+
 def test_result_is_pydantic_revalidated(tmp_path):
     manager, engine = make_engine(tmp_path)
     invalid = ChangeOperation(operation="replace", path="/components/PRT-1/name", value="")
@@ -118,3 +133,113 @@ def test_result_is_pydantic_revalidated(tmp_path):
 
 def test_constraint_request_is_not_an_operation():
     assert not hasattr(ChangeOperation, "description")
+
+
+def test_apply_revalidates_after_promotion_before_competing_writer_can_commit(tmp_path, monkeypatch):
+    manager, engine = make_engine(tmp_path)
+    promotion = proposal(manager, "PRJ-1", [
+        ChangeOperation(operation="replace", path="/components/PRT-1/name", value="Promotion"),
+    ]).model_copy(update={"id": "PROMOTION"})
+    competing = proposal(manager, "PRJ-1", [
+        ChangeOperation(operation="replace", path="/components/PRT-1/name", value="Competing"),
+    ]).model_copy(update={"id": "COMPETING"})
+    promotion_validated = threading.Event()
+    release_promotion = threading.Event()
+    competing_acquired = threading.Event()
+    errors = {}
+    original = engine._prepare_proposal_locked
+
+    def prepare_locked(project_id, candidate):
+        if candidate.id == "COMPETING":
+            competing_acquired.set()
+        result = original(project_id, candidate)
+        if candidate.id == "PROMOTION":
+            promotion_validated.set()
+            assert release_promotion.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(engine, "_prepare_proposal_locked", prepare_locked)
+
+    def apply(name, candidate):
+        try:
+            engine.apply_proposal("PRJ-1", candidate)
+        except BaseException as exc:
+            errors[name] = exc
+
+    promotion_thread = threading.Thread(target=apply, args=("promotion", promotion))
+    competing_thread = threading.Thread(target=apply, args=("competing", competing))
+    promotion_thread.start()
+    assert promotion_validated.wait(timeout=5)
+    competing_thread.start()
+    release_promotion.set()
+    promotion_thread.join(timeout=5)
+    competing_thread.join(timeout=5)
+
+    assert not promotion_thread.is_alive()
+    assert not competing_thread.is_alive()
+    assert competing_acquired.is_set()
+    assert isinstance(errors["competing"], StaleProposalError)
+    assert manager._read_current("PRJ-1")["revision"] == 2
+    assert manager.load_current_state("PRJ-1").components[0].name == "Promotion"
+
+
+def test_apply_rejects_promotion_after_competing_writer_commits_without_extra_revision(tmp_path, monkeypatch):
+    manager, engine = make_engine(tmp_path)
+    competing = proposal(manager, "PRJ-1", [
+        ChangeOperation(operation="replace", path="/components/PRT-1/name", value="Competing"),
+    ]).model_copy(update={"id": "COMPETING"})
+    promotion = proposal(manager, "PRJ-1", [
+        ChangeOperation(operation="replace", path="/components/PRT-1/name", value="Promotion"),
+    ]).model_copy(update={"id": "PROMOTION"})
+    competing_validated = threading.Event()
+    release_competing = threading.Event()
+    promotion_acquired = threading.Event()
+    errors = {}
+    original = engine._prepare_proposal_locked
+
+    def prepare_locked(project_id, candidate):
+        if candidate.id == "PROMOTION":
+            promotion_acquired.set()
+        result = original(project_id, candidate)
+        if candidate.id == "COMPETING":
+            competing_validated.set()
+            assert release_competing.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(engine, "_prepare_proposal_locked", prepare_locked)
+
+    def apply(name, candidate):
+        try:
+            engine.apply_proposal("PRJ-1", candidate)
+        except BaseException as exc:
+            errors[name] = exc
+
+    competing_thread = threading.Thread(target=apply, args=("competing", competing))
+    promotion_thread = threading.Thread(target=apply, args=("promotion", promotion))
+    competing_thread.start()
+    assert competing_validated.wait(timeout=5)
+    promotion_thread.start()
+    release_competing.set()
+    competing_thread.join(timeout=5)
+    promotion_thread.join(timeout=5)
+
+    assert not competing_thread.is_alive()
+    assert not promotion_thread.is_alive()
+    assert promotion_acquired.is_set()
+    assert "competing" not in errors
+    assert isinstance(errors["promotion"], StaleProposalError)
+    assert manager._read_current("PRJ-1")["revision"] == 2
+    assert manager.load_current_state("PRJ-1").components[0].name == "Competing"
+
+
+def test_apply_proposal_is_safe_under_nested_project_lock(tmp_path):
+    manager, engine = make_engine(tmp_path)
+    candidate = proposal(manager, "PRJ-1", [
+        ChangeOperation(operation="replace", path="/components/PRT-1/name", value="Nested"),
+    ])
+
+    with manager.project_lock("PRJ-1"):
+        result = engine.apply_proposal("PRJ-1", candidate)
+
+    assert result.snapshot.revision == 2
+    assert manager.load_current_state("PRJ-1").components[0].name == "Nested"

@@ -42,6 +42,11 @@ rules:
       - /structural_analysis_definitions/*
     invalidates:
       - analysis.structural
+  - when:
+      - /physical_mechanisms/*
+    invalidates:
+      - analysis.continuous_clearance_proof
+      - analysis.kinematic_sweep
 edges:
   - from: analysis.loads
     to: analysis.structural

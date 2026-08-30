@@ -21,3 +21,5 @@ ownership:
     owner: mechcad-transmission
   - path: /components/*/placement
     owner: mechcad-packaging
+  - path: /physical_mechanisms/*
+    owner: mechcad-physical-mechanism

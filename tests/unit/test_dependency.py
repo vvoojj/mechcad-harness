@@ -38,6 +38,21 @@ def test_unrelated_path_has_no_impact(tmp_path):
     assert graph.impact(["/components/PRT-001/description"]).all_nodes == ()
 
 
+def test_physical_mechanism_change_invalidates_only_supported_m10_nodes():
+    """Static path matching cannot create per-mechanism evidence nodes or structural consumption."""
+    graph = DependencyGraph.from_yaml("config/dependencies.yaml")
+
+    impact = graph.impact(("/physical_mechanisms/PM-1",))
+
+    assert impact.direct_nodes == (
+        "analysis.continuous_clearance_proof",
+        "analysis.kinematic_sweep",
+    )
+    assert impact.all_nodes == impact.direct_nodes
+    assert "analysis.structural" not in impact.all_nodes
+    assert "analysis.physical_mechanism.PM-1" not in graph.nodes
+
+
 def test_transitive_nodes_are_sorted_and_deduplicated(tmp_path):
     graph = DependencyGraph.from_yaml(dependency_file(
         tmp_path,

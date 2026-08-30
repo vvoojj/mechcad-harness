@@ -488,6 +488,170 @@ def test_application_exposes_structural_evidence_high_level_apis_without_tool_re
     assert not any("structural_evidence" in registration.name for registration in BuiltinTools.registrations())
 
 
+def test_application_composes_m12_5_promotion_services_as_read_only_dependencies(tmp_path):
+    from mechcad_harness.candidates import (
+        CandidatePromotionCompiler,
+        CanonicalM10VerificationService,
+        CanonicalPhysicalCadCompiler,
+        CanonicalPhysicalMechanismCompiler,
+        CanonicalM11HandoffService,
+        PromotionManifestService,
+    )
+
+    application = build_application(tmp_path, CountingAdapter())
+
+    assert isinstance(application.candidate_promotion_compiler, CandidatePromotionCompiler)
+    assert isinstance(application.promotion_manifest_service, PromotionManifestService)
+    assert isinstance(application.canonical_mechanism_compiler, CanonicalPhysicalMechanismCompiler)
+    assert isinstance(application.canonical_cad_compiler, CanonicalPhysicalCadCompiler)
+    assert isinstance(application.canonical_m10_service, CanonicalM10VerificationService)
+    assert isinstance(application.m11_handoff_service, CanonicalM11HandoffService)
+    assert callable(application.promoted_mechanism_verifier)
+
+    for name in (
+        "candidate_promotion_compiler",
+        "promotion_manifest_service",
+        "canonical_mechanism_compiler",
+        "canonical_cad_compiler",
+        "canonical_m10_service",
+        "m11_handoff_service",
+        "promoted_mechanism_verifier",
+    ):
+        with pytest.raises(AttributeError):
+            setattr(application, name, getattr(application, name))
+
+
+def test_application_passes_only_currentness_service_to_promotion_compiler(tmp_path, monkeypatch):
+    import mechcad_harness.application as application_module
+
+    real_compiler = application_module.CandidatePromotionCompiler
+    received = {}
+
+    def capture_compiler(*args, **kwargs):
+        received.update(kwargs)
+        return real_compiler(*args, **kwargs)
+
+    monkeypatch.setattr(application_module, "CandidatePromotionCompiler", capture_compiler)
+    application = build_application(tmp_path, CountingAdapter())
+
+    assert received["evaluation_currentness_service"] is application.candidate_evaluation_currentness_service
+    assert "cad_replay_verifier" not in received
+
+
+def test_m12_5_application_methods_delegate_without_exposing_mutation_api(tmp_path, monkeypatch):
+    from mechcad_harness.candidates import CandidateIntegrityError
+
+    application = build_application(tmp_path, CountingAdapter())
+    request = SimpleNamespace(project_id=application.project_id)
+    state = object()
+    compilation = object()
+    reconstruction = object()
+    verification = object()
+    calls = []
+
+    monkeypatch.setattr(application, "load_state", lambda: SimpleNamespace(state=state))
+    monkeypatch.setattr(
+        application.candidate_promotion_compiler,
+        "compile",
+        lambda supplied_state, supplied_request: calls.append(
+            ("compile", supplied_state, supplied_request)
+        )
+        or compilation,
+    )
+    monkeypatch.setattr(
+        application.promotion_application_service,
+        "promote_selected_candidate",
+        lambda supplied_request: calls.append(("promote", supplied_request)) or compilation,
+    )
+    monkeypatch.setattr(
+        application.canonical_mechanism_compiler,
+        "reconstruct",
+        lambda project_id, revision, state_hash, mechanism_id: calls.append(
+            ("reconstruct", project_id, revision, state_hash, mechanism_id)
+        )
+        or reconstruction,
+    )
+    monkeypatch.setattr(
+        application.promoted_mechanism_verifier,
+        "verify",
+        lambda supplied_result: calls.append(("verify", supplied_result)) or verification,
+    )
+
+    assert application.compile_candidate_promotion(request) is compilation
+    assert application.promote_selected_candidate(request) is compilation
+    assert application.reconstruct_promoted_mechanism(
+        revision=2,
+        state_hash="sha256:" + "a" * 64,
+        mechanism_id="PM-1",
+    ) is reconstruction
+    assert application.verify_promoted_mechanism(compilation) is verification
+    assert [call[0] for call in calls] == ["compile", "promote", "reconstruct", "verify"]
+    assert not set(dir(type(application))).intersection({"apply_change", "mutate_state"})
+
+    foreign = SimpleNamespace(project_id="PRJ-foreign")
+    for method, args in (
+        (application.compile_candidate_promotion, (foreign,)),
+        (application.promote_selected_candidate, (foreign,)),
+    ):
+        with pytest.raises(CandidateIntegrityError, match="project"):
+            method(*args)
+    with pytest.raises(CandidateIntegrityError, match="project"):
+        application.reconstruct_promoted_mechanism(
+            project_id="PRJ-foreign",
+            revision=2,
+            state_hash="sha256:" + "a" * 64,
+            mechanism_id="PM-1",
+        )
+
+
+def test_promoted_verifier_context_binds_optional_m11_handoff_to_manifest_services(
+    tmp_path, monkeypatch
+):
+    import mechcad_harness.application as application_module
+    from mechcad_harness.application import _PromotionVerificationContext
+
+    application = build_application(tmp_path, CountingAdapter())
+    intent = SimpleNamespace(assessment_requested=True)
+    reconstruction = object()
+    handoff_request = object()
+    assessment = object()
+    application_result = SimpleNamespace(
+        request=SimpleNamespace(
+            project_id=application.project_id,
+            m11_target_intent=intent,
+        ),
+        applied_revision=2,
+        applied_state_hash="sha256:" + "a" * 64,
+        compilation=SimpleNamespace(
+            projection=SimpleNamespace(canonical_target_mechanism_id="PM-1")
+        ),
+    )
+    calls = []
+    context = _PromotionVerificationContext(application, application_result, object())
+
+    monkeypatch.setattr(
+        application.canonical_mechanism_compiler,
+        "reconstruct",
+        lambda *args: reconstruction,
+    )
+    monkeypatch.setattr(
+        application_module,
+        "build_handoff_request",
+        lambda supplied_intent, supplied_context, supplied_reconstruction: calls.append(
+            (supplied_intent, supplied_context, supplied_reconstruction)
+        )
+        or handoff_request,
+    )
+    monkeypatch.setattr(
+        application.m11_handoff_service,
+        "assess",
+        lambda supplied_request: assessment,
+    )
+
+    assert context.m11_handoff is assessment
+    assert calls == [(intent, context, reconstruction)]
+
+
 def test_application_structural_evidence_apis_delegate_to_composed_services(tmp_path, monkeypatch):
     application = build_application(tmp_path, CountingAdapter())
     evidence = object()

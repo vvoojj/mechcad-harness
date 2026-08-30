@@ -6,6 +6,7 @@ from mechcad_harness.engineering.keys import SupportedConstraintKey
 from mechcad_harness.engineering.values import AuthoritativeValue, MotorCharacteristicsValue, OutputAngularSpeedValue, OutputInterfaceValue, PackagingEnvelopeValue
 
 from .common import Model, NamedModel, utc_now
+from .physical_mechanism import CanonicalPhysicalMechanism
 from .structural import StructuralAnalysisDefinition
 
 
@@ -82,6 +83,7 @@ class DesignState(Model):
     structural_analysis_definitions: list[StructuralAnalysisDefinition] = Field(
         default_factory=list
     )
+    physical_mechanisms: list[CanonicalPhysicalMechanism] = Field(default_factory=list)
     authoritative_parameters: list[AuthoritativeParameter] = Field(default_factory=list)
     azimuth_mount_plates: list[dict] = Field(default_factory=list)
     yagi_payload_carrier_requirements: list[dict] = Field(default_factory=list)
@@ -100,4 +102,11 @@ class DesignState(Model):
         definition_ids = [definition.id for definition in self.structural_analysis_definitions]
         if len(set(definition_ids)) != len(definition_ids):
             raise ValueError("structural analysis definition IDs must be unique")
+        return self
+
+    @model_validator(mode="after")
+    def validate_physical_mechanism_ids(self):
+        mechanism_ids = [mechanism.id for mechanism in self.physical_mechanisms]
+        if len(set(mechanism_ids)) != len(mechanism_ids):
+            raise ValueError("physical mechanism IDs must be unique")
         return self

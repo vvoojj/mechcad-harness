@@ -5,6 +5,9 @@ from pydantic import ValidationError
 
 from mechcad_harness.changes import ChangeEngine, ChangeOperation, OwnershipPolicy
 from mechcad_harness.models import (
+    CanonicalComponentSpecification,
+    CanonicalPhysicalComponent,
+    CanonicalPhysicalMechanism,
     ChangeProposal,
     Component,
     DesignState,
@@ -24,12 +27,14 @@ def make_state(
     name: str = "Bracket",
     *,
     structural_analysis_definitions=None,
+    physical_mechanisms=None,
 ) -> DesignState:
     return DesignState(
         id="REV-state",
         revision=1,
         components=[Component(id="PRT-bracket", name=name)],
         structural_analysis_definitions=structural_analysis_definitions or [],
+        physical_mechanisms=physical_mechanisms or [],
     )
 
 
@@ -146,6 +151,24 @@ def make_definition(definition_id: str = "definition-1") -> StructuralAnalysisDe
     )
 
 
+def make_mechanism(mechanism_id: str = "PM-1") -> CanonicalPhysicalMechanism:
+    specification = CanonicalComponentSpecification(
+        component_type="shaft",
+        source_identity="drawing:shaft@1",
+    )
+    component = CanonicalPhysicalComponent(
+        instance_id="shaft-1",
+        specification_hash=specification.specification_hash,
+        role="shaft",
+    )
+    return CanonicalPhysicalMechanism(
+        id=mechanism_id,
+        name="rotary output",
+        component_specifications=(specification,),
+        components=(component,),
+    )
+
+
 def test_equivalent_states_have_same_canonical_hash():
     first = make_state()
     second = DesignState.model_validate(json.loads(first.model_dump_json()))
@@ -194,11 +217,47 @@ def test_duplicate_structural_definition_ids_fail_closed():
         )
 
 
+def test_physical_mechanism_is_canonical_state_and_affects_hash():
+    first = make_state()
+    second = first.model_copy(update={"physical_mechanisms": [make_mechanism()]})
+
+    assert "physical_mechanisms" in DesignState.model_fields
+    assert second.created_at == first.created_at
+    assert state_hash(first) != state_hash(second)
+
+
+def test_duplicate_physical_mechanism_ids_fail_closed():
+    with pytest.raises(ValidationError):
+        make_state(
+            physical_mechanisms=[
+                make_mechanism("PM-1"),
+                make_mechanism("PM-1"),
+            ]
+        )
+
+
+def test_partial_physical_mechanism_values_fail_pydantic_validation():
+    with pytest.raises(ValidationError):
+        DesignState(
+            id="REV-state",
+            revision=1,
+            physical_mechanisms=[{"id": "PM-1"}],
+        )
+
+
 def test_structural_definition_survives_state_json_round_trip():
     state = make_state(structural_analysis_definitions=[make_definition()])
     reloaded = DesignState.model_validate(json.loads(state.model_dump_json()))
 
     assert reloaded.structural_analysis_definitions == state.structural_analysis_definitions
+    assert state_hash(reloaded) == state_hash(state)
+
+
+def test_physical_mechanism_survives_state_json_round_trip():
+    state = make_state(physical_mechanisms=[make_mechanism()])
+    reloaded = DesignState.model_validate(json.loads(state.model_dump_json()))
+
+    assert reloaded.physical_mechanisms == state.physical_mechanisms
     assert state_hash(reloaded) == state_hash(state)
 
 
@@ -258,6 +317,64 @@ def test_change_engine_mutates_structural_definition_collection_items(tmp_path):
         ),
     )
     assert manager.load_current_state("PRJ-structural").structural_analysis_definitions == []
+
+
+def test_change_engine_mutates_physical_mechanism_collection_items(tmp_path):
+    manager = StateManager(tmp_path)
+    manager.create_project("PRJ-physical", make_state())
+    engine = ChangeEngine(
+        manager,
+        OwnershipPolicy([{"path": "/physical_mechanisms/*", "owner": "mechcad-physical"}]),
+    )
+
+    def make_proposal(operation: ChangeOperation) -> ChangeProposal:
+        current = manager._read_current("PRJ-physical")
+        return ChangeProposal(
+            id="CP-physical",
+            title="change physical mechanism",
+            status=ProposalStatus.DRAFT,
+            base_revision=current["revision"],
+            base_state_hash=current["state_hash"],
+            actor="mechcad-physical",
+            operations=[operation],
+        )
+
+    mechanism = make_mechanism()
+    engine.apply_proposal(
+        "PRJ-physical",
+        make_proposal(
+            ChangeOperation(
+                operation="add",
+                path="/physical_mechanisms/PM-1",
+                value=mechanism.model_dump(mode="json"),
+            )
+        ),
+    )
+    assert manager.load_current_state("PRJ-physical").physical_mechanisms[0].id == "PM-1"
+
+    replacement = mechanism.model_copy(update={"name": "replaced output", "mechanism_hash": "pending"})
+    engine.apply_proposal(
+        "PRJ-physical",
+        make_proposal(
+            ChangeOperation(
+                operation="replace",
+                path="/physical_mechanisms/PM-1",
+                value=replacement.model_dump(mode="json"),
+            )
+        ),
+    )
+    assert manager.load_current_state("PRJ-physical").physical_mechanisms[0].name == "replaced output"
+
+    engine.apply_proposal(
+        "PRJ-physical",
+        make_proposal(
+            ChangeOperation(
+                operation="remove",
+                path="/physical_mechanisms/PM-1",
+            )
+        ),
+    )
+    assert manager.load_current_state("PRJ-physical").physical_mechanisms == []
 
 
 def test_project_revisions_are_immutable_and_current_points_to_latest(tmp_path):

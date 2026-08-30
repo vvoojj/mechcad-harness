@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import threading
 
 import pytest
 
@@ -75,6 +76,81 @@ def test_application_rejects_stale_resolution_binding_before_mutation(tmp_path):
     with pytest.raises(Exception, match="stale"):
         service.apply_batch(materialized, run_id="RUN")
     assert manager._read_current("PRJ")["revision"] == 2
+
+
+def test_application_holds_project_lock_from_preparation_through_atomic_commit(tmp_path, monkeypatch):
+    from mechcad_harness.agents.constraint_resolution_application import ConstraintResolutionApplicationService
+    from mechcad_harness.changes import ChangeEngine, OwnershipPolicy, StaleProposalError
+    from mechcad_harness.models import ChangeProposal, ProposalStatus
+
+    manager, requests, command, materialized = _setup(tmp_path)
+    service = ConstraintResolutionApplicationService(
+        manager,
+        ChangeEngine(manager, OwnershipPolicy([{"path": "/authoritative_parameters", "owner": "mechcad-resolution"}])),
+        requests,
+    )
+    preparation_started = threading.Event()
+    release_application = threading.Event()
+    competing_state_loaded = threading.Event()
+    competing_finished = threading.Event()
+    errors = {}
+    original_prepare = service.change_engine.prepare_proposal
+
+    def prepare(project_id, proposal, **kwargs):
+        result = original_prepare(project_id, proposal, **kwargs)
+        preparation_started.set()
+        assert release_application.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(service.change_engine, "prepare_proposal", prepare)
+    record = service.resolution_store.load_resolution("PRJ", "RUN", materialized.resolution_ids[0])
+    competing_operations, _ = service._plan_operations(
+        command,
+        manager.load_current_state("PRJ"),
+        [(record, requests.load("PRJ", "RUN", record.source_constraint_request_id))],
+    )
+    competing = ChangeProposal(
+        id="CP-COMPETING",
+        title="competing",
+        status=ProposalStatus.DRAFT,
+        base_revision=command.source_revision,
+        base_state_hash=command.source_state_hash,
+        actor="mechcad-resolution",
+        operations=competing_operations,
+    )
+
+    def apply_resolution():
+        try:
+            service.apply_batch(materialized, run_id="RUN")
+        except BaseException as exc:
+            errors["application"] = exc
+
+    def compete_with_stale_snapshot():
+        competing_state_loaded.set()
+        try:
+            service.change_engine.apply_proposal("PRJ", competing)
+        except BaseException as exc:
+            errors["competing"] = exc
+        finally:
+            competing_finished.set()
+
+    application_thread = threading.Thread(target=apply_resolution)
+    competing_thread = threading.Thread(target=compete_with_stale_snapshot)
+    application_thread.start()
+    assert preparation_started.wait(timeout=5)
+    competing_thread.start()
+    assert competing_state_loaded.wait(timeout=5)
+    assert not competing_finished.wait(timeout=0.1)
+    release_application.set()
+    application_thread.join(timeout=5)
+    competing_thread.join(timeout=5)
+
+    assert not application_thread.is_alive()
+    assert not competing_thread.is_alive()
+    assert "application" not in errors
+    assert isinstance(errors["competing"], StaleProposalError)
+    assert manager._read_current("PRJ")["revision"] == 2
+    assert len(manager.load_current_state("PRJ").authoritative_parameters) == 1
 
 
 def test_ownership_allows_resolution_only_on_authoritative_parameters(tmp_path):

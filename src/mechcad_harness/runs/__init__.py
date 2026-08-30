@@ -7,5 +7,6 @@ __all__ = [
     "RunController", "Run", "RunEvent", "RunManifest", "RunPlan", "RunStatus", "TaskContext", "TaskDefinition",
     "TaskExecutionResult", "TaskState", "TaskStatus", "SourceBinding", "TaskExecutor", "FakeTaskExecutor",
     "ConvergenceError", "InvalidRunTransitionError", "RunIntegrityError", "RunConflictError",
-    "StaleTaskResultError", "TaskDependencyError", "TaskDependencyCycleError",
+    "PostApplyRunTransitionError", "PostApplyInvalidationError", "StaleTaskResultError",
+    "TaskDependencyError", "TaskDependencyCycleError",
 ]

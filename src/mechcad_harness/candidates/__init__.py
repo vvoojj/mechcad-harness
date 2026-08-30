@@ -55,5 +55,80 @@ from .comparison import (
     candidate_comparison_result_hash,
 )
 from .selection import CandidateSelection, CandidateSelectionService, candidate_selection_hash
+from .promotion_models import (
+    CandidateCanonicalInstanceMapping,
+    CandidatePromotionApplicationResult,
+    CandidatePromotionCompilation,
+    CandidatePromotionPolicy,
+    CandidatePromotionRequest,
+    PostPromotionM11TargetIntent,
+    PrePromotionM10ScopeProjection,
+    PromotionApplicationStatus,
+    PromotionClassification,
+    PromotionDecisionInputReference,
+    PromotionPhysicalPairRequirement,
+    PromotionSourceValue,
+    PromotionValueClassification,
+    PromotableMechanismProjection,
+    PromotedMechanismVerificationResult,
+    PromotedMechanismVerificationStatus,
+    promotion_proposal_hash,
+)
+from .promotion import (
+    CandidatePromotionApplicationService,
+    CandidatePromotionCompiler,
+    PromotionReadiness,
+    verify_promoted_mechanism,
+)
+from .promotion_artifacts import (
+    CandidatePromotionResultManifest,
+    decision_manifest_hash,
+    PromotionManifestIntegrityError,
+    PromotionManifestService,
+    SelectedCandidateDecisionManifest,
+    result_manifest_hash,
+    resolve_decision,
+    resolve_result,
+)
+from .canonical_mechanism import (
+    CanonicalMechanismReconstruction,
+    CanonicalPhysicalMechanismCompiler,
+    ProjectArtifactResolver,
+    TrustedSourceArtifact,
+    normalized_projection,
+)
+from .canonical_cad import (
+    CanonicalCadInstanceMapping,
+    CanonicalCadIntegrityError,
+    CanonicalCadModel,
+    CanonicalCadRealization,
+    CanonicalPhysicalCadCompiler,
+    CanonicalPhysicalCadMapping,
+)
+from .canonical_m10 import (
+    CanonicalM10BodyDisposition,
+    CanonicalM10ConstituentDisposition,
+    CanonicalM10EvaluationRequest,
+    CanonicalM10HomeExactCheck,
+    CanonicalM10PairClassification,
+    CanonicalM10PairClassificationRecord,
+    CanonicalM10PairInventory,
+    CanonicalM10PairProof,
+    CanonicalM10ScopeEquivalenceResult,
+    CanonicalM10ScopeEquivalenceService,
+    CanonicalM10VerificationOutcome,
+    CanonicalM10VerificationService,
+    CanonicalM10VerificationStatus,
+    DerivedCanonicalM10Scope,
+)
+from .m11_handoff import (
+    CanonicalM11Handoff,
+    CanonicalM11HandoffIntegrityError,
+    CanonicalM11HandoffRequest,
+    CanonicalM11HandoffResult,
+    CanonicalM11HandoffService,
+    CanonicalM11HandoffStatus,
+    build_handoff_request,
+)
 
 __all__ = [name for name in globals() if not name.startswith("_")]

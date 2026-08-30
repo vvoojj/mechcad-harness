@@ -111,6 +111,9 @@ class ChangeEngine:
         self.ownership_policy = ownership_policy
 
     def prepare_proposal(self, project_id: str, proposal: ChangeProposal, *, changeset_id: str | None = None):
+        return self._prepare_proposal_locked(project_id, proposal, changeset_id=changeset_id)
+
+    def _prepare_proposal_locked(self, project_id: str, proposal: ChangeProposal, *, changeset_id: str | None = None):
         current = self.state_manager._read_current(project_id)
         if proposal.base_revision != current["revision"] or proposal.base_state_hash != current["state_hash"]:
             raise StaleProposalError("proposal does not match current revision and state hash")
@@ -139,11 +142,15 @@ class ChangeEngine:
         )
         return current, updated, changeset
 
-    def apply_proposal(self, project_id: str, proposal: ChangeProposal) -> AppliedChangeResult:
-        _, updated, changeset = self.prepare_proposal(project_id, proposal)
-        snapshot = self.state_manager.create_revision(project_id, updated)
-        return AppliedChangeResult(
-            snapshot=snapshot,
-            changeset_id=changeset.id,
-            changed_paths=tuple(dict.fromkeys(operation.path for operation in proposal.operations)),
-        )
+    def apply_proposal(self, project_id: str, proposal: ChangeProposal, *, changeset_id: str | None = None) -> AppliedChangeResult:
+        with self.state_manager.project_lock(project_id):
+            if changeset_id is None:
+                _, updated, changeset = self._prepare_proposal_locked(project_id, proposal)
+            else:
+                _, updated, changeset = self._prepare_proposal_locked(project_id, proposal, changeset_id=changeset_id)
+            snapshot = self.state_manager.create_revision(project_id, updated)
+            return AppliedChangeResult(
+                snapshot=snapshot,
+                changeset_id=changeset.id,
+                changed_paths=tuple(dict.fromkeys(operation.path for operation in proposal.operations)),
+            )

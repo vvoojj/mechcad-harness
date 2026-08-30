@@ -53,6 +53,10 @@ class ConstraintResolutionApplicationService:
         if tuple(record.resolution_id for record in materialization.resolution_records) != materialization.resolution_ids:
             raise ValueError("resolution materialization identity mismatch")
         command = self.resolution_store.load_command(self._project_id(materialization), run_id, materialization.command_id)
+        with self.state_manager.project_lock(command.project_id):
+            return self._apply_batch_locked(materialization, run_id, command)
+
+    def _apply_batch_locked(self, materialization, run_id, command):
         current_pointer = self.state_manager._read_current(command.project_id)
         current = self.state_manager.load_current_state(command.project_id)
         replay_records = [self.resolution_store.load_resolution(command.project_id, run_id, resolution_id) for resolution_id in materialization.resolution_ids]
@@ -92,11 +96,7 @@ class ConstraintResolutionApplicationService:
         canonical_candidate = candidate.model_copy(update={"revision": old_revision + 1})
         preparation = StateApplicationPreparationRecord(application_id=app_id, project_id=command.project_id, run_id=run_id, source_command_id=command.command_id, source_resolution_ids=materialization.resolution_ids, proposal_id=proposal.id, changeset_id=changeset.id, actor=proposal.actor, base_revision=old_revision, base_state_hash=old_hash, operations=canonical_operations, operations_hash=operations_hash(canonical_operations), target_revision=old_revision + 1, target_state_hash=state_hash(canonical_candidate))
         self.application_store.write_preparation(run_id, preparation)
-        if self.state_manager._revision_path(command.project_id, old_revision + 1).exists():
-            snapshot = self.state_manager._read_snapshot(command.project_id, old_revision + 1)
-        else:
-            snapshot = self.state_manager.create_revision(command.project_id, candidate)
-        applied = type("Applied", (), {"snapshot": snapshot, "changeset_id": changeset.id})()
+        applied = self.change_engine.apply_proposal(command.project_id, proposal, changeset_id=changeset.id)
         reloaded = self.state_manager.load_revision(command.project_id, applied.snapshot.revision)
         if reloaded.revision != old_revision + 1 or state_hash(reloaded) != applied.snapshot.state_hash:
             raise ValueError("persisted revision verification failed")
@@ -140,24 +140,31 @@ class ConstraintResolutionApplicationService:
             return ConstraintResolutionApplicationResult(source_command_id=receipt.source_command_id, resolution_ids=receipt.source_resolution_ids, proposal_id=receipt.proposal_id, changeset_id=receipt.changeset_id, old_revision=receipt.base_revision, old_state_hash=receipt.base_state_hash, new_revision=receipt.new_revision, new_state_hash=receipt.new_state_hash, parameter_ids=(), outcome=ApplicationOutcome.APPLIED, application_id=receipt.application_id, preparation_id=receipt.preparation_id, receipt_id=receipt.application_id)
 
     def _reconstruct_prepared_revision(self, project_id, run_id, preparation):
-        command = self.resolution_store.load_command(project_id, run_id, preparation.source_command_id)
-        materialized = ConstraintResolutionMaterializationResult(command_id=command.command_id, resolution_ids=preparation.source_resolution_ids, resolution_records=tuple(self.resolution_store.load_resolution(project_id, run_id, item) for item in preparation.source_resolution_ids))
-        current = self.state_manager.load_current_state(project_id)
-        records = []
-        for record in materialized.resolution_records:
-            self._validate_record(command, record, materialized)
-            request = self.request_store.load(project_id, run_id, record.source_constraint_request_id)
-            records.append((record, request))
-        operations, _ = self._plan_operations(command, current, records)
-        canonical_operations = tuple(operation.model_dump(mode="json") for operation in operations)
-        proposal = ChangeProposal(id=self._proposal_id(command, operations), title="Apply accepted constraint resolutions", status=ProposalStatus.ACCEPTED, base_revision=preparation.base_revision, base_state_hash=preparation.base_state_hash, actor=preparation.actor, operations=operations)
-        if proposal.id != preparation.proposal_id or canonical_operations != preparation.operations or operations_hash(canonical_operations) != preparation.operations_hash:
-            raise ValueError("APPLICATION_INTEGRITY_FAILURE: prepared proposal mismatch")
-        _, candidate, changeset = self.change_engine.prepare_proposal(project_id, proposal, changeset_id=preparation.changeset_id)
-        candidate = candidate.model_copy(update={"revision": preparation.target_revision})
-        if changeset.id != preparation.changeset_id or state_hash(candidate) != preparation.target_state_hash:
-            raise ValueError("APPLICATION_INTEGRITY_FAILURE: prepared candidate mismatch")
-        return self.state_manager.create_revision(project_id, candidate, revision=preparation.target_revision)
+        with self.state_manager.project_lock(project_id):
+            command = self.resolution_store.load_command(project_id, run_id, preparation.source_command_id)
+            materialized = ConstraintResolutionMaterializationResult(command_id=command.command_id, resolution_ids=preparation.source_resolution_ids, resolution_records=tuple(self.resolution_store.load_resolution(project_id, run_id, item) for item in preparation.source_resolution_ids))
+            current_pointer = self.state_manager._read_current(project_id)
+            if current_pointer["revision"] != preparation.base_revision or current_pointer["state_hash"] != preparation.base_state_hash:
+                raise ValueError("prepared application base conflicts with current state")
+            current = self.state_manager.load_current_state(project_id)
+            records = []
+            for record in materialized.resolution_records:
+                self._validate_record(command, record, materialized)
+                request = self.request_store.load(project_id, run_id, record.source_constraint_request_id)
+                records.append((record, request))
+            operations, _ = self._plan_operations(command, current, records)
+            canonical_operations = tuple(operation.model_dump(mode="json") for operation in operations)
+            proposal = ChangeProposal(id=self._proposal_id(command, operations), title="Apply accepted constraint resolutions", status=ProposalStatus.ACCEPTED, base_revision=preparation.base_revision, base_state_hash=preparation.base_state_hash, actor=preparation.actor, operations=operations)
+            if proposal.id != preparation.proposal_id or canonical_operations != preparation.operations or operations_hash(canonical_operations) != preparation.operations_hash:
+                raise ValueError("APPLICATION_INTEGRITY_FAILURE: prepared proposal mismatch")
+            _, candidate, changeset = self.change_engine.prepare_proposal(project_id, proposal, changeset_id=preparation.changeset_id)
+            candidate = candidate.model_copy(update={"revision": preparation.target_revision})
+            if changeset.id != preparation.changeset_id or state_hash(candidate) != preparation.target_state_hash:
+                raise ValueError("APPLICATION_INTEGRITY_FAILURE: prepared candidate mismatch")
+            applied = self.change_engine.apply_proposal(project_id, proposal, changeset_id=changeset.id)
+            if applied.snapshot.revision != preparation.target_revision or applied.snapshot.state_hash != preparation.target_state_hash:
+                raise ValueError("APPLICATION_INTEGRITY_FAILURE: prepared candidate mismatch")
+            return applied.snapshot
 
     def _receipt_from_preparation(self, preparation):
         return StateApplicationReceiptRecord(application_id=preparation.application_id, preparation_id=preparation.application_id, project_id=preparation.project_id, run_id=preparation.run_id, source_command_id=preparation.source_command_id, source_resolution_ids=preparation.source_resolution_ids, proposal_id=preparation.proposal_id, changeset_id=preparation.changeset_id, actor=preparation.actor, base_revision=preparation.base_revision, base_state_hash=preparation.base_state_hash, new_revision=preparation.target_revision, new_state_hash=preparation.target_state_hash, operations_hash=preparation.operations_hash, outcome=ApplicationOutcome.APPLIED.value)

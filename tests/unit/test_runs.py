@@ -10,6 +10,8 @@ from mechcad_harness.runs import (
     ConvergenceError,
     FakeTaskExecutor,
     InvalidRunTransitionError,
+    PostApplyInvalidationError,
+    PostApplyRunTransitionError,
     RunController,
     RunStatus,
     StaleTaskResultError,
@@ -80,6 +82,22 @@ def test_create_run_accepts_matching_expected_source_and_preserves_legacy_caller
 
     assert (bound.initial_revision, bound.initial_state_hash) == (1, snapshot.state_hash)
     assert (legacy.initial_revision, legacy.initial_state_hash) == (1, snapshot.state_hash)
+
+
+def test_fail_run_persists_generic_failed_terminal_state(tmp_path):
+    controller, snapshot = make_controller(tmp_path)
+    run = controller.create_run("PRJ-1", expected_source=SourceBinding(
+        project_id="PRJ-1", revision=snapshot.revision, state_hash=snapshot.state_hash
+    ))
+
+    failed = controller.fail_run(run.run_id, error="promotion decision publication failed")
+
+    assert failed.status is RunStatus.FAILED
+    assert failed.active_revision == snapshot.revision
+    assert failed.active_state_hash == snapshot.state_hash
+    assert controller.get_run(run.run_id).status is RunStatus.FAILED
+    events = sorted((tmp_path / "projects/PRJ-1/runs" / run.run_id / "events").glob("*.json"))
+    assert json.loads(events[-1].read_text(encoding="utf-8"))["event_type"] == "RUN_FAILED"
 
 
 def test_create_run_missing_project_does_not_create_project_directory(tmp_path):
@@ -274,13 +292,87 @@ def test_m3_failure_follows_canonical_revision_and_blocks_without_guessing_impac
         base_revision=1, base_state_hash=snapshot.state_hash, actor="actor",
         operations=[ChangeOperation(operation="replace", path="/components/PRT-1/name", value="Plate")],
     )
-    with pytest.raises(InvalidRunTransitionError):
+    with pytest.raises(PostApplyInvalidationError) as error:
         controller.apply_approved_proposal(run.run_id, proposal)
+    assert error.value.applied.snapshot.revision == 2
+    assert error.value.applied.changeset_id.startswith("CS-")
+    assert error.value.blocked.run_id == run.run_id
+    assert error.value.blocked.status is RunStatus.BLOCKED
+    assert controller.state_manager.load_revision("PRJ-1", 2).revision == 2
     current = controller.get_run(run.run_id)
     assert current.status is RunStatus.BLOCKED
     assert current.active_revision == 2
     assert current.iteration == 1
     assert controller.get_task(run.run_id, "TASK-A").status is TaskStatus.PENDING
+
+
+def test_convergence_failure_after_revision_has_post_apply_receipt(tmp_path, monkeypatch):
+    controller, snapshot = make_controller(tmp_path)
+    run = controller.create_run("PRJ-1")
+    proposal = ChangeProposal(
+        id="CP-1", title="material", status=ProposalStatus.DRAFT,
+        base_revision=1, base_state_hash=snapshot.state_hash, actor="actor",
+        operations=[ChangeOperation(operation="replace", path="/components/PRT-1/name", value="Plate")],
+    )
+
+    def fail_convergence(*_args):
+        raise ConvergenceError("convergence bookkeeping failed")
+
+    monkeypatch.setattr(
+        "mechcad_harness.runs.controller.ConvergenceTracker.record_revision",
+        fail_convergence,
+    )
+
+    with pytest.raises(PostApplyRunTransitionError) as error:
+        controller.apply_approved_proposal(run.run_id, proposal)
+
+    assert error.value.applied.snapshot.revision == 2
+    assert error.value.current.active_revision == 2
+    assert error.value.current.status is RunStatus.BLOCKED
+    assert controller.state_manager.load_current_pointer("PRJ-1")["revision"] == 2
+
+
+def test_run_state_persistence_failure_after_revision_has_post_apply_receipt(tmp_path, monkeypatch):
+    controller, snapshot = make_controller(tmp_path)
+    run = controller.create_run("PRJ-1")
+    proposal = ChangeProposal(
+        id="CP-1", title="material", status=ProposalStatus.DRAFT,
+        base_revision=1, base_state_hash=snapshot.state_hash, actor="actor",
+        operations=[ChangeOperation(operation="replace", path="/components/PRT-1/name", value="Plate")],
+    )
+    monkeypatch.setattr(controller, "_save", lambda _run: (_ for _ in ()).throw(OSError("state disk failure")))
+
+    with pytest.raises(PostApplyRunTransitionError) as error:
+        controller.apply_approved_proposal(run.run_id, proposal)
+
+    assert error.value.applied.snapshot.revision == 2
+    assert error.value.current.active_revision == 2
+    assert controller.state_manager.load_current_pointer("PRJ-1")["revision"] == 2
+
+
+def test_run_event_persistence_failure_after_revision_has_post_apply_receipt(tmp_path, monkeypatch):
+    controller, snapshot = make_controller(tmp_path)
+    run = controller.create_run("PRJ-1")
+    proposal = ChangeProposal(
+        id="CP-1", title="material", status=ProposalStatus.DRAFT,
+        base_revision=1, base_state_hash=snapshot.state_hash, actor="actor",
+        operations=[ChangeOperation(operation="replace", path="/components/PRT-1/name", value="Plate")],
+    )
+    append_event = controller.store.append_event
+
+    def fail_revision_event(project_id, run_id, event_type, payload=None):
+        if event_type == "REVISION_ADVANCED":
+            raise OSError("event disk failure")
+        return append_event(project_id, run_id, event_type, payload)
+
+    monkeypatch.setattr(controller.store, "append_event", fail_revision_event)
+
+    with pytest.raises(PostApplyRunTransitionError) as error:
+        controller.apply_approved_proposal(run.run_id, proposal)
+
+    assert error.value.applied.snapshot.revision == 2
+    assert error.value.current.active_revision == 2
+    assert controller.state_manager.load_current_pointer("PRJ-1")["revision"] == 2
 
 
 def test_convergence_rejects_same_hash_progression(tmp_path):

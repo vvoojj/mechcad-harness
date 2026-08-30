@@ -63,11 +63,10 @@ are separately bound records. See the normative [System Contract](../architectur
 noncanonical mechanical candidate definitions; per-property component authority
 snapshots; typed physical mechanism topology and M10-joint realization bindings;
 integrity/currentness verification; and explicit `ArtifactStore` publication /
-fresh reload. `ProductionApplication` composes only those verification and
-publication services. This is not candidate generation, sizing, catalog lookup,
-CAD, M10/M11 execution, ranking, selection, promotion, or a second canonical
-store. The bounded M12-4 CAD/evaluation/comparison/selection path is listed
-separately below.
+fresh reload. `ProductionApplication` composes those verification and publication
+services. This is not candidate generation, sizing, catalog lookup, or a second
+canonical store. The bounded M12-4 CAD/evaluation/comparison/selection path and
+the explicit M12-5 promotion path are listed separately below.
 
 ## Agent / Orchestration Infrastructure
 
@@ -195,12 +194,46 @@ convergence, global yield, safety, or manufacturing approval. Accepted status:
 
 MechCAD does not currently turn general engineering requirements into general
 mechanical design candidates or provide general/unbounded physical-realization
-sizing/design, comparison, selection, or promotion. Bounded M12-3 direct-drive
-and external-spur realization, engineering evaluation, and sizing from supplied
-snapshots are implemented. Generic candidate generation/search remains absent;
-the candidate model, M12-4 CAD/evaluation/comparison/selection records, and
-explicit publication boundary remain noncanonical, and canonical promotion does
-not exist.
+sizing/design, comparison, selection, or automatic promotion. Bounded M12-3
+direct-drive and external-spur realization, engineering evaluation, and sizing
+from supplied snapshots are implemented. Generic candidate generation/search and
+automatic selection remain absent; the candidate model and M12-4
+CAD/evaluation/comparison/selection records remain noncanonical. M12-5 explicit
+promotion is a separate bounded path described below and is not general synthesis
+or M11 execution.
+
+## M12-5 Promotion And Canonical Rebinding
+
+`EXISTS_PRODUCTION_VERIFIED` for the bounded explicit promotion workflow:
+
+- `candidates/promotion.py:CandidatePromotionCompiler` validates a current
+  selected feasible candidate, preserves property/source authority and explicit
+  classifications, and compiles one complete canonical physical mechanism into
+  exactly one `add /physical_mechanisms/<id>` operation.
+- `models/physical_mechanism.py` and `models/design.py:DesignState` provide the
+  typed canonical physical-mechanism collection. The existing ownership policy,
+  project lock, `ChangeEngine`, and `RunController` are the only mutation path.
+- `candidates/promotion_artifacts.py:PromotionManifestService` publishes and
+  strictly reloads immutable pre-application decision and post-application result
+  manifests through the ordinary run-scoped `ArtifactStore`. Run IDs are storage
+  and correlation metadata, not promotion semantic identity.
+- `candidates/canonical_mechanism.py` reconstructs canonical state from an exact
+  revision/hash and selected trusted source artifacts without candidate objects.
+- `candidates/canonical_cad.py` creates fresh canonical physical-to-CAD mappings
+  and CAD identities bound to the promoted revision while preserving original
+  source-artifact provenance.
+- `candidates/canonical_m10.py` derives fresh M10 scope, pair inventory, and
+  request identities from canonical physical semantics and invokes the unchanged
+  bounded M10 services. Candidate CAD/M10 records are not reused as canonical
+  authority.
+- `candidates/m11_handoff.py` provides post-promotion, eligibility-only assessment
+  for an explicit mapped target. Whole-mechanism targets are `NOT_ELIGIBLE` and
+  incomplete single-solid authority is `UNRESOLVED`; M12-5 does not create or
+  execute structural definitions, requests, meshes, or solver runs.
+
+This capability consumes one explicitly selected current feasible candidate. It
+does not add general synthesis, automatic selection, candidate stores, rollback,
+M12-6 behavior, assembly or broad structural verification, or M11 execution.
 
 ## Implemented But Unwired
 
@@ -238,6 +271,7 @@ not exist.
 | M12 bounded revolute-drive realization and sizing | `EXISTS_PRODUCTION_UNVERIFIED` | `ProductionApplication.realize_and_evaluate_revolute_drive` | Focused production integration verified; no separate live-runtime acceptance | Supplied direct-drive or external-spur inputs only; nominal ratio/load, motor admissibility, two-support solid-shaft sizing, no catalog, arbitrary synthesis, strength, life, CAD, M10/M11 bridge, comparison, selection, promotion, Evidence, or artifact publication | [Physical Component / Mechanism Capability](#physical-component--mechanism-capability) |
 | M12-4 bounded candidate CAD and M10 evaluation | `EXISTS_PRODUCTION_VERIFIED` | `ProductionApplication.realize_candidate_cad` / `evaluate_candidate` | Yes | Candidate-bound generated/trusted representations; one output-joint M10 scope; explicit pair inventory; no internal spur-motion proof or promotion | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
 | M12-4 comparison and explicit selection | `EXISTS_PRODUCTION_VERIFIED` | `ProductionApplication.compare_candidates` / `select_candidate` | Yes | One certified clearance metric; compatible feasible evaluations only; noncanonical selection; no optimization or promotion | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
+| M12-5 explicit promotion, canonical rebinding, and M11 eligibility handoff | `EXISTS_PRODUCTION_VERIFIED` | `ProductionApplication.promote_selected_candidate` / `verify_promoted_mechanism` | Yes, bounded live capstones | Explicit selected feasible candidate only; one ChangeEngine add; fresh canonical CAD/M10; M11 eligibility only, no structural execution | [M12-5 Promotion And Canonical Rebinding](#m12-5-promotion-and-canonical-rebinding) |
 | Generic candidate generation | `MISSING` | None | No | Candidate model exists, but no generation/search/ranking workflow | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
 
 ## When To Read Which Document
