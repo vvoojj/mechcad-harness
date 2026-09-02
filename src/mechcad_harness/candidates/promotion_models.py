@@ -152,7 +152,9 @@ class PromotionClassification(PromotionModel):
 class CandidatePromotionPolicy(PromotionModel):
     schema_version: Literal["candidate-promotion-policy@1"] = "candidate-promotion-policy@1"
     allowed_target_family: StrictStr = "canonical_physical_mechanism"
-    mapping_schema_version: StrictStr = "candidate-canonical-mapping@1"
+    mapping_schema_version: Literal[
+        "candidate-canonical-mapping@1", "candidate-canonical-mapping@2"
+    ] = "candidate-canonical-mapping@1"
     compiler_version: StrictStr = "candidate-promotion@1"
     allowed_classifications: tuple[PromotionValueClassification, ...] = Field(
         default=tuple(PromotionValueClassification),

@@ -8,7 +8,12 @@ from pydantic import Field, StrictInt, StrictStr, field_validator, model_validat
 
 from mechcad_harness.backends.models import BackendProvenance
 from mechcad_harness.artifacts import ArtifactStore, ArtifactType, EngineeringArtifact
+from mechcad_harness.models.geometry_identity import GeometryArtifactIdentity
 from mechcad_harness.models import CanonicalPhysicalMechanism
+from mechcad_harness.models.supplied_component_interface import (
+    GeometryDerivationStatus,
+    MaterializedInterfaceVerifier,
+)
 from mechcad_harness.state import StateManager, state_hash as calculate_state_hash
 
 from .promotion_models import (
@@ -204,8 +209,8 @@ class CanonicalPhysicalMechanismCompiler:
         if len(mechanisms) != 1:
             raise ValueError("canonical mechanism is missing or ambiguous")
 
+        sources = self._verify_sources(project_id, mechanisms[0])
         mechanism = self._validate_mechanism(mechanisms[0])
-        sources = self._verify_sources(project_id, mechanism)
         projection = _projection_from_mechanism(mechanism)
         return CanonicalMechanismReconstruction(
             project_id=project_id,
@@ -261,44 +266,120 @@ class CanonicalPhysicalMechanismCompiler:
         self, project_id: str, mechanism: CanonicalPhysicalMechanism
     ) -> tuple[TrustedSourceArtifact, ...]:
         references = {}
+        identities = {}
+
+        def register_identity(identity: GeometryArtifactIdentity) -> None:
+            prior = identities.get(identity.artifact_id)
+            if prior is not None and prior != identity:
+                raise ValueError("canonical geometry artifact identity conflict")
+            identities[identity.artifact_id] = identity
+
         for specification in mechanism.component_specifications:
             source = specification.geometry_source
-            if source is None:
-                continue
-            prior = references.get(source.artifact_id)
-            if prior is not None and prior != source:
-                raise ValueError("canonical geometry source reference conflict")
-            references[source.artifact_id] = source
-        if not references:
+            if source is not None:
+                prior = references.get(source.artifact_id)
+                if prior is not None and prior != source:
+                    raise ValueError("canonical geometry source reference conflict")
+                references[source.artifact_id] = source
+                register_identity(GeometryArtifactIdentity.from_canonical(source))
+
+            transforms = {
+                transform.transform_id: transform
+                for transform in specification.geometry_derivation_transforms
+            }
+            for transform in specification.geometry_derivation_transforms:
+                if transform.status is GeometryDerivationStatus.ACCEPTED:
+                    register_identity(transform.source_geometry)
+                    register_identity(transform.derived_geometry)
+
+            for active_interface in specification.supplied_interface_definitions:
+                if active_interface.kind != "materialized":
+                    continue
+                provenance = active_interface.derivation
+                assert provenance is not None
+                register_identity(provenance.source_geometry)
+                register_identity(provenance.derived_geometry)
+                transform = transforms.get(provenance.transform_id)
+                if transform is None or transform.transform_hash != provenance.transform_hash:
+                    raise ValueError(
+                        "canonical materialized interface transform does not resolve"
+                    )
+                if transform.status is not GeometryDerivationStatus.ACCEPTED:
+                    raise ValueError(
+                        "canonical materialized interface transform is not accepted"
+                    )
+        if not identities:
             return ()
 
         store = self._artifact_store(project_id)
         artifacts = {}
-        for source in references.values():
+        for identity in identities.values():
             try:
                 verified = store.read_verified_in_project(
-                    source.artifact_id,
+                    identity.artifact_id,
                     expected_type=ArtifactType.STEP,
-                    expected_hash=source.artifact_hash,
+                    expected_hash=identity.artifact_hash,
                 )
             except Exception as exc:
-                raise ValueError(f"canonical geometry source verification failed: {exc}") from exc
+                raise ValueError(
+                    f"canonical geometry artifact verification failed: {exc}"
+                ) from exc
             if verified is None:
                 raise ValueError("canonical geometry source is missing or tampered")
             artifact, _ = verified
             if (
-                artifact.artifact_id != source.artifact_id
+                artifact.artifact_id != identity.artifact_id
                 or artifact.project_id != project_id
                 or artifact.artifact_type is not ArtifactType.STEP
-                or artifact.sha256 != source.artifact_hash
+                or artifact.sha256 != identity.artifact_hash
             ):
-                raise ValueError("canonical geometry source binding mismatch")
-            try:
-                artifacts[source.artifact_id] = TrustedSourceArtifact.from_artifact(artifact)
-            except Exception as exc:
-                raise ValueError(
-                    "canonical geometry source provenance is invalid"
-                ) from exc
+                raise ValueError("canonical geometry artifact binding mismatch")
+            if identity.artifact_id in references:
+                source = references[identity.artifact_id]
+                try:
+                    artifacts[source.artifact_id] = TrustedSourceArtifact.from_artifact(
+                        artifact
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        "canonical geometry source provenance is invalid"
+                    ) from exc
+
+        for specification in mechanism.component_specifications:
+            transforms = {
+                transform.transform_id: transform
+                for transform in specification.geometry_derivation_transforms
+            }
+            for active_interface in specification.supplied_interface_definitions:
+                if active_interface.kind != "materialized":
+                    continue
+                provenance = active_interface.derivation
+                assert provenance is not None
+                transform = transforms.get(provenance.transform_id)
+                assert transform is not None
+                active_frame = None
+                if provenance.derived_reference_frame_id is not None:
+                    active_frame = next(
+                        (
+                            frame
+                            for frame in specification.supplied_reference_frames
+                            if frame.frame_id == provenance.derived_reference_frame_id
+                            and frame.frame_hash == provenance.derived_reference_frame_hash
+                        ),
+                        None,
+                    )
+                    if active_frame is None:
+                        raise ValueError(
+                            "canonical materialized interface frame does not resolve"
+                        )
+                try:
+                    MaterializedInterfaceVerifier.verify(
+                        provenance, transform, active_interface, active_frame
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"canonical materialized interface integrity failure: {exc}"
+                    ) from exc
         return tuple(artifacts[artifact_id] for artifact_id in references)
 
     def _artifact_store(self, project_id: str):

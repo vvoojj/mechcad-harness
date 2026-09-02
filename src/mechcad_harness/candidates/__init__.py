@@ -130,5 +130,25 @@ from .m11_handoff import (
     CanonicalM11HandoffStatus,
     build_handoff_request,
 )
+from mechcad_harness.models.geometry_identity import GeometryArtifactIdentity
+from mechcad_harness.models.supplied_component_interface import (
+    GeometryDerivationAuthorityFact,
+    GeometryDerivationAuthorityRole,
+    GeometryDerivationTransform,
+    GeometryDerivationUnitConversion,
+    InterfaceDerivationProvenance,
+    InterfaceFactDerivationBinding,
+    MaterializationIntegrityError,
+    MaterializedInterfaceResult,
+    MaterializedInterfaceVerifier,
+    MountingFaceInterface,
+    MountingHole,
+    RotationalShaftInterface,
+    SuppliedComponentInterfaceDefinition,
+    SuppliedComponentReferenceFrame,
+    SuppliedInterfaceEvidence,
+    SuppliedInterfaceFact,
+    SuppliedInterfaceTransformRole,
+)
 
 __all__ = [name for name in globals() if not name.startswith("_")]

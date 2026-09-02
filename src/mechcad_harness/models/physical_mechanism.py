@@ -6,9 +6,26 @@ import math
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from .common import Model
+from .component_property import (
+    ComponentPropertyAuthority as CanonicalComponentPropertyAuthority,
+    ComponentPropertyAvailability as CanonicalComponentPropertyAvailability,
+)
+from .geometry_identity import (
+    GeometryArtifactIdentity,
+    canonical_geometry_reference_payload,
+)
+from .quaternion import rotate_vector
+from .supplied_component_interface import (
+    GeometryDerivationStatus,
+    GeometryDerivationTransform,
+    MaterializedInterfaceVerifier,
+    MountingFaceInterface,
+    SuppliedComponentInterfaceDefinition,
+    SuppliedComponentReferenceFrame,
+)
 
 
 def _canonical_hash(value: Model, identity_field: str) -> str:
@@ -50,20 +67,6 @@ def _nonblank_tuple(values: tuple[str, ...]) -> tuple[str, ...]:
 
 class CanonicalModel(Model):
     model_config = ConfigDict(frozen=True, extra="forbid")
-
-
-class CanonicalComponentPropertyAvailability(StrEnum):
-    AVAILABLE = "available"
-    MISSING = "missing"
-    NOT_APPLICABLE = "not_applicable"
-
-
-class CanonicalComponentPropertyAuthority(StrEnum):
-    MANUFACTURER_DATASHEET = "manufacturer_datasheet"
-    DISTRIBUTOR_LISTING = "distributor_listing"
-    MEASURED_LOCAL = "measured_local"
-    DERIVED_NORMALIZATION = "derived_normalization"
-    USER_DECLARED = "user_declared"
 
 
 class CanonicalPhysicalComponentRole(StrEnum):
@@ -182,15 +185,32 @@ class CanonicalGeometrySourceReference(CanonicalModel):
     artifact_hash: str
     source_identity: str = Field(min_length=1)
     format: Literal["step"] = "step"
+    coordinate_system_id: str | None = None
     reference_hash: str = "pending"
 
     _validate_text = field_validator("artifact_id", "source_identity")(_nonblank)
     _validate_artifact_hash = field_validator("artifact_hash")(_require_hash)
     _validate_reference_hash = field_validator("reference_hash")(_hash_or_pending)
+    _validate_coordinate_system = field_validator("coordinate_system_id")(_nonblank)
+
+    @model_serializer(mode="wrap")
+    def serialize_reference(self, handler):
+        from .geometry_identity import canonical_geometry_reference_payload
+
+        del handler
+        return canonical_geometry_reference_payload(
+            self, m13=self.coordinate_system_id is not None
+        )
 
     @model_validator(mode="after")
     def validate_reference(self) -> "CanonicalGeometrySourceReference":
-        expected = _canonical_hash(self, "reference_hash")
+        from .geometry_identity import reference_hash_payload
+
+        payload = reference_hash_payload(self.model_dump(mode="json"))
+        encoded = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        expected = f"sha256:{hashlib.sha256(encoded).hexdigest()}"
         if self.reference_hash == "pending":
             object.__setattr__(self, "reference_hash", expected)
         elif self.reference_hash != expected:
@@ -198,10 +218,44 @@ class CanonicalGeometrySourceReference(CanonicalModel):
         return self
 
 
-class CanonicalComponentSpecification(CanonicalModel):
-    schema_version: Literal["canonical-component-specification@1"] = (
-        "canonical-component-specification@1"
+def _canonical_interface_reference_frame_id(
+    definition: SuppliedComponentInterfaceDefinition,
+) -> str | None:
+    variant = definition.shaft if definition.shaft is not None else definition.mounting_face
+    assert variant is not None
+    return variant.reference_frame_id
+
+
+def _canonical_accepted_fact_value(fact) -> Any | None:
+    if fact.accepted_evidence_id is None:
+        return None
+    evidence = next(
+        (record for record in fact.evidence if record.evidence_id == fact.accepted_evidence_id),
+        None,
     )
+    if evidence is None or evidence.value is None:
+        return None
+    return evidence.value
+
+
+def _validate_canonical_mounting_face_frame(
+    interface: MountingFaceInterface,
+    frame: SuppliedComponentReferenceFrame,
+) -> None:
+    outward_normal = _canonical_accepted_fact_value(interface.outward_normal)
+    orientation = _canonical_accepted_fact_value(frame.orientation)
+    if outward_normal is None or orientation is None:
+        return
+    frame_z = rotate_vector((0.0, 0.0, 1.0), orientation)
+    dot = max(-1.0, min(1.0, sum(a * b for a, b in zip(outward_normal, frame_z))))
+    if math.acos(dot) > 1e-9:
+        raise ValueError("mounting face outward normal does not match frame +Z")
+
+
+class CanonicalComponentSpecification(CanonicalModel):
+    schema_version: Literal[
+        "canonical-component-specification@1", "canonical-component-specification@2"
+    ] = "canonical-component-specification@1"
     component_type: str = Field(min_length=1)
     manufacturer: str | None = None
     part_number: str | None = None
@@ -210,12 +264,60 @@ class CanonicalComponentSpecification(CanonicalModel):
     geometry_source: CanonicalGeometrySourceReference | None = None
     interfaces: tuple[str, ...] = ()
     compatibility_declarations: tuple[str, ...] = ()
+    supplied_reference_frames: tuple[SuppliedComponentReferenceFrame, ...] = ()
+    supplied_interface_definitions: tuple[SuppliedComponentInterfaceDefinition, ...] = ()
+    geometry_derivation_transforms: tuple[GeometryDerivationTransform, ...] = ()
     specification_hash: str = "pending"
 
     _validate_text = field_validator(
         "component_type", "source_identity", "manufacturer", "part_number"
     )(_nonblank)
     _validate_hash = field_validator("specification_hash")(_hash_or_pending)
+
+    def _specification_payload_for_schema(self) -> dict[str, Any]:
+        payload = {
+            "schema_version": self.schema_version,
+            "component_type": self.component_type,
+            "manufacturer": self.manufacturer,
+            "part_number": self.part_number,
+            "source_identity": self.source_identity,
+            "properties": [property.model_dump(mode="json") for property in self.properties],
+            "geometry_source": (
+                None
+                if self.geometry_source is None
+                else canonical_geometry_reference_payload(
+                    self.geometry_source, m13=self.schema_version.endswith("@2")
+                )
+            ),
+            "interfaces": list(self.interfaces),
+            "compatibility_declarations": list(self.compatibility_declarations),
+        }
+        if self.schema_version.endswith("@2"):
+            payload.update({
+                "supplied_reference_frames": [
+                    frame.model_dump(mode="json") for frame in self.supplied_reference_frames
+                ],
+                "supplied_interface_definitions": [
+                    definition.model_dump(mode="json")
+                    for definition in self.supplied_interface_definitions
+                ],
+                "geometry_derivation_transforms": [
+                    transform.model_dump(mode="json")
+                    for transform in self.geometry_derivation_transforms
+                ],
+            })
+        payload["specification_hash"] = self.specification_hash
+        return payload
+
+    def _specification_hash_payload(self) -> dict[str, Any]:
+        payload = self._specification_payload_for_schema()
+        payload.pop("specification_hash")
+        return payload
+
+    @model_serializer(mode="wrap")
+    def serialize_specification(self, handler):
+        del handler
+        return self._specification_payload_for_schema()
 
     @model_validator(mode="after")
     def validate_specification(self) -> "CanonicalComponentSpecification":
@@ -225,7 +327,88 @@ class CanonicalComponentSpecification(CanonicalModel):
         declarations = self.interfaces + self.compatibility_declarations
         if any(not value.strip() for value in declarations):
             raise ValueError("component declarations must not be empty")
-        expected = _canonical_hash(self, "specification_hash")
+        if self.schema_version.endswith("@1"):
+            if any((
+                self.supplied_reference_frames,
+                self.supplied_interface_definitions,
+                self.geometry_derivation_transforms,
+            )):
+                raise ValueError("canonical-component-specification@1 must not contain M13 records")
+            if self.geometry_source is not None and self.geometry_source.coordinate_system_id is not None:
+                raise ValueError("canonical-component-specification@1 requires no coordinate system")
+        elif any((
+            self.supplied_reference_frames,
+            self.supplied_interface_definitions,
+            self.geometry_derivation_transforms,
+        )) and (
+            self.geometry_source is None
+            or self.geometry_source.coordinate_system_id is None
+        ):
+            raise ValueError("canonical-component-specification@2 M13 records require a coordinate system")
+
+        frames = tuple(sorted(self.supplied_reference_frames, key=lambda frame: frame.frame_id))
+        definitions = tuple(sorted(
+            self.supplied_interface_definitions, key=lambda definition: definition.interface_id
+        ))
+        transforms = tuple(sorted(
+            self.geometry_derivation_transforms, key=lambda transform: transform.transform_id
+        ))
+        if len({frame.frame_id for frame in frames}) != len(frames):
+            raise ValueError("reference frame IDs must be unique")
+        if len({definition.interface_id for definition in definitions}) != len(definitions):
+            raise ValueError("interface IDs must be unique")
+        if len({transform.transform_id for transform in transforms}) != len(transforms):
+            raise ValueError("transform IDs must be unique")
+        object.__setattr__(self, "supplied_reference_frames", frames)
+        object.__setattr__(self, "supplied_interface_definitions", definitions)
+        object.__setattr__(self, "geometry_derivation_transforms", transforms)
+
+        selected_geometry = (
+            None
+            if self.geometry_source is None
+            else GeometryArtifactIdentity.from_canonical(self.geometry_source)
+        )
+        frame_by_id = {frame.frame_id: frame for frame in frames}
+        transform_by_id = {transform.transform_id: transform for transform in transforms}
+        for frame in frames:
+            if selected_geometry is None or frame.geometry_reference_hash != self.geometry_source.reference_hash:
+                raise ValueError("reference frame geometry does not match selected geometry")
+        for definition in definitions:
+            if self.interfaces.count(definition.interface_id) != 1:
+                raise ValueError("typed interface IDs must appear exactly once in interfaces")
+            if selected_geometry is None or (
+                definition.geometry != selected_geometry
+                or definition.geometry_reference_hash != self.geometry_source.reference_hash
+            ):
+                raise ValueError("interface geometry does not match selected geometry")
+            frame_id = _canonical_interface_reference_frame_id(definition)
+            frame = None if frame_id is None else frame_by_id.get(frame_id)
+            if frame_id is not None and frame is None:
+                raise ValueError("interface reference frame does not resolve in this specification")
+            if definition.kind == "materialized":
+                provenance = definition.derivation
+                assert provenance is not None
+                transform = transform_by_id.get(provenance.transform_id)
+                if transform is None or transform.transform_hash != provenance.transform_hash:
+                    raise ValueError("materialized interface transform does not resolve")
+                if transform.status is not GeometryDerivationStatus.ACCEPTED:
+                    raise ValueError("materialized interface transform is not accepted")
+                try:
+                    MaterializedInterfaceVerifier.verify(
+                        provenance, transform, definition, frame
+                    )
+                except Exception as exc:
+                    raise ValueError(f"materialized interface integrity failure: {exc}") from exc
+            if isinstance(definition.mounting_face, MountingFaceInterface) and frame is not None:
+                _validate_canonical_mounting_face_frame(definition.mounting_face, frame)
+
+        encoded = json.dumps(
+            self._specification_hash_payload(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        expected = f"sha256:{hashlib.sha256(encoded).hexdigest()}"
         if self.specification_hash == "pending":
             object.__setattr__(self, "specification_hash", expected)
         elif self.specification_hash != expected:

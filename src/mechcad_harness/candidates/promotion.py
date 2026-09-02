@@ -26,6 +26,7 @@ from .evaluation import (
 )
 from .models import (
     ComponentPropertyAvailability,
+    GeometrySourceReference,
     MechanicalDesignCandidate,
     candidate_hash,
 )
@@ -83,6 +84,14 @@ from mechcad_harness.models.physical_mechanism import (
     CanonicalGeometryFidelity,
     CanonicalPhysicalMechanism,
 )
+from mechcad_harness.models.geometry_identity import (
+    GeometryArtifactIdentity,
+    geometry_reference_hash,
+)
+from mechcad_harness.models.supplied_component_interface import (
+    GeometryDerivationStatus,
+    MaterializedInterfaceVerifier,
+)
 from mechcad_harness.state.hashing import canonical_json
 
 
@@ -93,6 +102,7 @@ _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 class _ExpectedClassification:
     has_source_value: bool
     source_value: PromotionSourceValue | None = None
+    required_classification: PromotionValueClassification | None = None
 
 
 def _strict_hash(value: str) -> str:
@@ -437,6 +447,11 @@ class CandidatePromotionCompiler:
     def _canonical_specification(specification) -> CanonicalComponentSpecification:
         geometry = specification.geometry_source
         return CanonicalComponentSpecification(
+            schema_version=(
+                "canonical-component-specification@2"
+                if specification.schema_version == "component-specification@2"
+                else "canonical-component-specification@1"
+            ),
             component_type=specification.component_type,
             manufacturer=specification.manufacturer,
             part_number=specification.part_number,
@@ -462,10 +477,15 @@ class CandidatePromotionCompiler:
                     artifact_id=geometry.artifact_id,
                     artifact_hash=geometry.artifact_hash,
                     source_identity=geometry.source_identity,
+                    coordinate_system_id=geometry.coordinate_system_id,
                 )
             ),
             interfaces=specification.interfaces,
             compatibility_declarations=specification.compatibility_declarations,
+            supplied_reference_frames=specification.supplied_reference_frames,
+            supplied_interface_definitions=specification.supplied_interface_definitions,
+            geometry_derivation_transforms=specification.geometry_derivation_transforms,
+            specification_hash="pending",
         )
 
     @staticmethod
@@ -927,8 +947,17 @@ class CandidatePromotionCompiler:
     def _verify_policy(self, policy: CandidatePromotionPolicy, candidate) -> None:
         if policy.allowed_target_family != "canonical_physical_mechanism":
             raise ValueError("promotion target family is not supported")
-        if policy.mapping_schema_version != "candidate-canonical-mapping@1":
-            raise ValueError("promotion mapping schema is not supported")
+        has_v2_specification = any(
+            specification.schema_version == "component-specification@2"
+            for specification in candidate.component_specifications
+        )
+        expected_mapping_schema = (
+            "candidate-canonical-mapping@2"
+            if has_v2_specification
+            else "candidate-canonical-mapping@1"
+        )
+        if policy.mapping_schema_version != expected_mapping_schema:
+            raise ValueError("promotion mapping schema is not supported for candidate specification schemas")
         if policy.compiler_version != "candidate-promotion@1":
             raise ValueError("promotion compiler version is not supported")
         expected_authorities = set(policy.required_property_authorities)
@@ -941,16 +970,26 @@ class CandidatePromotionCompiler:
             raise ValueError("promotion required property authority is missing")
 
     def _verify_geometry_sources(self, request: CandidatePromotionRequest) -> tuple[str, ...]:
-        sources = tuple(
-            specification.geometry_source
-            for specification in request.candidate.component_specifications
-            if specification.geometry_source is not None
-        )
+        sources = []
+        for specification in request.candidate.component_specifications:
+            if specification.geometry_source is not None:
+                sources.append(specification.geometry_source)
+            for transform in getattr(specification, "geometry_derivation_transforms", ()):
+                if transform.status is GeometryDerivationStatus.ACCEPTED:
+                    sources.extend((transform.source_geometry, transform.derived_geometry))
+
         if not sources:
             return ()
         store = self._artifact_store(request.project_id)
         identities = []
+        verified_identities = {}
         for source in sources:
+            identity = GeometryArtifactIdentity.from_candidate(source)
+            prior = verified_identities.get(source.artifact_id)
+            if prior is not None:
+                if prior != identity:
+                    raise ValueError("promotion trusted geometry source identity is ambiguous")
+                continue
             try:
                 verified = store.read_verified_in_project(
                     source.artifact_id,
@@ -970,9 +1009,81 @@ class CandidatePromotionCompiler:
                 or artifact.bound_state_hash != request.source_state_hash
             ):
                 raise ValueError("promotion trusted geometry source binding mismatch")
+            verified_identities[source.artifact_id] = identity
             identities.append(source.artifact_id)
-        if len(set(identities)) != len(identities):
-            raise ValueError("promotion geometry source identity is ambiguous")
+
+        for specification in request.candidate.component_specifications:
+            selected_geometry = getattr(specification, "geometry_source", None)
+            transforms = {
+                transform.transform_id: transform
+                for transform in getattr(specification, "geometry_derivation_transforms", ())
+            }
+            if selected_geometry is not None:
+                for transform in transforms.values():
+                    if transform.status is not GeometryDerivationStatus.ACCEPTED:
+                        continue
+                    for role, geometry, reference_hash in (
+                        (
+                            "source",
+                            transform.source_geometry,
+                            transform.source_geometry_reference_hash,
+                        ),
+                        (
+                            "derived",
+                            transform.derived_geometry,
+                            transform.derived_geometry_reference_hash,
+                        ),
+                    ):
+                        expected_reference_hash = geometry_reference_hash(geometry)
+                        if reference_hash != expected_reference_hash:
+                            raise ValueError(
+                                f"promotion {role} geometry reference hash mismatch"
+                            )
+                        if (
+                            geometry.artifact_id == selected_geometry.artifact_id
+                            and geometry.artifact_hash == selected_geometry.artifact_hash
+                            and reference_hash != selected_geometry.reference_hash
+                        ):
+                            raise ValueError(
+                                f"promotion {role} geometry reference does not match selected geometry"
+                            )
+            for active_interface in getattr(specification, "supplied_interface_definitions", ()):
+                if active_interface.kind != "materialized":
+                    continue
+                provenance = active_interface.derivation
+                assert provenance is not None
+                transform = transforms.get(provenance.transform_id)
+                if transform is None or transform.transform_hash != provenance.transform_hash:
+                    raise ValueError(
+                        "promotion materialized interface transform does not resolve"
+                    )
+                if transform.status is not GeometryDerivationStatus.ACCEPTED:
+                    raise ValueError(
+                        "promotion materialized interface transform is not accepted"
+                    )
+                active_frame = None
+                if provenance.derived_reference_frame_id is not None:
+                    active_frame = next(
+                        (
+                            frame
+                            for frame in specification.supplied_reference_frames
+                            if frame.frame_id == provenance.derived_reference_frame_id
+                            and frame.frame_hash == provenance.derived_reference_frame_hash
+                        ),
+                        None,
+                    )
+                    if active_frame is None:
+                        raise ValueError(
+                            "promotion materialized interface frame does not resolve"
+                        )
+                try:
+                    MaterializedInterfaceVerifier.verify(
+                        provenance, transform, active_interface, active_frame
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"promotion materialized interface integrity failure: {exc}"
+                    ) from exc
         return tuple(identities)
 
     def _artifact_store(self, project_id: str):
@@ -1025,6 +1136,33 @@ class CandidatePromotionCompiler:
                 source = specification.geometry_source
                 key = f"candidate:geometry-source:{source.artifact_id}"
                 add_expected(key, _ExpectedClassification(True, source.artifact_hash))
+            for frame in getattr(specification, "supplied_reference_frames", ()):
+                add_expected(
+                    f"candidate:supplied-frame:{specification.specification_hash}:{frame.frame_id}",
+                    _ExpectedClassification(
+                        True,
+                        frame.frame_hash,
+                        PromotionValueClassification.ACCEPTED_PHYSICAL_FACT,
+                    ),
+                )
+            for interface in getattr(specification, "supplied_interface_definitions", ()):
+                add_expected(
+                    f"candidate:supplied-interface:{specification.specification_hash}:{interface.interface_id}",
+                    _ExpectedClassification(
+                        True,
+                        interface.interface_hash,
+                        PromotionValueClassification.ACCEPTED_PHYSICAL_FACT,
+                    ),
+                )
+            for transform in getattr(specification, "geometry_derivation_transforms", ()):
+                add_expected(
+                    f"candidate:geometry-derivation:{specification.specification_hash}:{transform.transform_id}",
+                    _ExpectedClassification(
+                        True,
+                        transform.transform_hash,
+                        PromotionValueClassification.CANONICAL_REDERIVATION_INPUT,
+                    ),
+                )
         for variable in candidate.design_variables:
             key = f"candidate:design-variable:{variable.name}"
             add_expected(key, _ExpectedClassification(True, variable.value))
@@ -1065,6 +1203,11 @@ class CandidatePromotionCompiler:
                 PromotionValueClassification.PROVENANCE_ONLY,
             ):
                 raise ValueError(f"promotion classification omits canonical input: {identity}")
+            if (
+                expected_value.required_classification is not None
+                and classification.classification is not expected_value.required_classification
+            ):
+                raise ValueError(f"promotion classification is incorrect for canonical input: {identity}")
             if expected_value.has_source_value:
                 if classification.source_value is None or not cls._same_typed_value(
                     classification.source_value, expected_value.source_value

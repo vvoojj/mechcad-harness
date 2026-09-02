@@ -72,6 +72,26 @@ _PHYSICAL_MECHANISM_EXPORTS = {
     "CanonicalPlacementOrigin",
 }
 
+_M13_INTERFACE_EXPORTS = {
+    "SuppliedInterfaceEvidence",
+    "SuppliedInterfaceFact",
+    "SuppliedInterfaceTransformRole",
+    "SuppliedComponentReferenceFrame",
+    "RotationalShaftInterface",
+    "MountingFaceInterface",
+    "MountingHole",
+    "GeometryDerivationAuthorityRole",
+    "GeometryDerivationAuthorityFact",
+    "GeometryDerivationUnitConversion",
+    "GeometryDerivationTransform",
+    "InterfaceFactDerivationBinding",
+    "InterfaceDerivationProvenance",
+    "SuppliedComponentInterfaceDefinition",
+    "MaterializedInterfaceResult",
+    "MaterializedInterfaceVerifier",
+    "MaterializationIntegrityError",
+}
+
 
 def __getattr__(name: str):
     if name == "Evidence":
@@ -90,6 +110,14 @@ def __getattr__(name: str):
         from . import physical_mechanism
 
         value = getattr(physical_mechanism, name)
+    elif name == "GeometryArtifactIdentity":
+        from .geometry_identity import GeometryArtifactIdentity
+
+        value = GeometryArtifactIdentity
+    elif name in _M13_INTERFACE_EXPORTS:
+        from . import supplied_component_interface
+
+        value = getattr(supplied_component_interface, name)
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     globals()[name] = value
@@ -118,6 +146,24 @@ __all__ = [
     "CanonicalPhysicalPairRequirement",
     "CanonicalPlacement",
     "CanonicalPlacementOrigin",
+    "GeometryArtifactIdentity",
+    "SuppliedInterfaceEvidence",
+    "SuppliedInterfaceFact",
+    "SuppliedInterfaceTransformRole",
+    "SuppliedComponentReferenceFrame",
+    "RotationalShaftInterface",
+    "MountingFaceInterface",
+    "MountingHole",
+    "GeometryDerivationAuthorityRole",
+    "GeometryDerivationAuthorityFact",
+    "GeometryDerivationUnitConversion",
+    "GeometryDerivationTransform",
+    "InterfaceFactDerivationBinding",
+    "InterfaceDerivationProvenance",
+    "SuppliedComponentInterfaceDefinition",
+    "MaterializedInterfaceResult",
+    "MaterializedInterfaceVerifier",
+    "MaterializationIntegrityError",
     "Assembly",
     "ChangeOperation",
     "ChangeProposal",

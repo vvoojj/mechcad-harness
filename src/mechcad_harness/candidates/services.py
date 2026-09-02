@@ -126,6 +126,99 @@ class CandidatePublicationService:
                 raise CandidateIntegrityError("candidate publication source binding mismatch")
             CandidateIntegrityVerifier().verify(candidate, request, policy)
             candidate.source_binding.validate_against(self.project_id, self.state_manager.load_revision(self.project_id, candidate.source_binding.source_revision))
+
+            from mechcad_harness.models.supplied_component_interface import (
+                MaterializedInterfaceVerifier,
+                GeometryDerivationStatus,
+            )
+            from mechcad_harness.models.geometry_identity import GeometryArtifactIdentity
+
+            verified_geometry = {}
+
+            def verify_geometry(identity):
+                prior = verified_geometry.get(identity.artifact_id)
+                if prior is not None:
+                    if prior[0] != identity:
+                        raise CandidateIntegrityError("candidate geometry artifact binding mismatch")
+                    return prior[1]
+                try:
+                    verified_source = self.store.read_verified_in_project(
+                        identity.artifact_id,
+                        expected_type=ArtifactType.STEP,
+                        expected_hash=identity.artifact_hash,
+                    )
+                except Exception as exc:
+                    raise CandidateIntegrityError(
+                        f"candidate geometry artifact verification failed: {exc}"
+                    ) from exc
+                if verified_source is None:
+                    raise CandidateIntegrityError("candidate geometry artifact is missing or tampered")
+                source_artifact, _ = verified_source
+                if (
+                    source_artifact.project_id != self.project_id
+                    or source_artifact.artifact_id != identity.artifact_id
+                    or source_artifact.artifact_type is not ArtifactType.STEP
+                    or source_artifact.sha256 != identity.artifact_hash
+                ):
+                    raise CandidateIntegrityError("candidate geometry artifact binding mismatch")
+                verified_geometry[identity.artifact_id] = (identity, source_artifact)
+                return source_artifact
+
+            for spec in candidate.component_specifications:
+                if spec.geometry_source is not None:
+                    verify_geometry(
+                        GeometryArtifactIdentity.from_candidate(spec.geometry_source)
+                    )
+                has_m13_payload = (
+                    bool(spec.supplied_reference_frames)
+                    or bool(spec.supplied_interface_definitions)
+                    or bool(spec.geometry_derivation_transforms)
+                )
+                if spec.schema_version != "component-specification@2" or not has_m13_payload:
+                    continue
+                transforms = {
+                    transform.transform_id: transform
+                    for transform in spec.geometry_derivation_transforms
+                }
+                for transform in spec.geometry_derivation_transforms:
+                    if transform.status is GeometryDerivationStatus.ACCEPTED:
+                        verify_geometry(transform.source_geometry)
+                        verify_geometry(transform.derived_geometry)
+                for active_interface in spec.supplied_interface_definitions:
+                    if active_interface.kind != "materialized":
+                        continue
+                    provenance = active_interface.derivation
+                    assert provenance is not None
+                    verify_geometry(provenance.source_geometry)
+                    verify_geometry(provenance.derived_geometry)
+                    transform = transforms.get(provenance.transform_id)
+                    if transform is None or transform.transform_hash != provenance.transform_hash:
+                        raise CandidateIntegrityError(
+                            "candidate materialized interface transform does not resolve"
+                        )
+                    active_frame = None
+                    if provenance.derived_reference_frame_id is not None:
+                        active_frame = next(
+                            (
+                                frame
+                                for frame in spec.supplied_reference_frames
+                                if frame.frame_id == provenance.derived_reference_frame_id
+                                and frame.frame_hash == provenance.derived_reference_frame_hash
+                            ),
+                            None,
+                        )
+                        if active_frame is None:
+                            raise CandidateIntegrityError(
+                                "candidate materialized interface frame does not resolve"
+                            )
+                    try:
+                        MaterializedInterfaceVerifier.verify(
+                            provenance, transform, active_interface, active_frame
+                        )
+                    except Exception as exc:
+                        raise CandidateIntegrityError(
+                            f"candidate materialized interface integrity failure: {exc}"
+                        ) from exc
             return CandidatePublication(artifact=artifact, candidate=candidate)
         except CandidateIntegrityError:
             raise
