@@ -14,6 +14,7 @@ from pydantic import (
     StrictInt,
     StrictStr,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -24,6 +25,7 @@ from mechcad_harness.models.physical_mechanism import (
     CanonicalAcceptedDesignChoice,
     CanonicalComponentPropertyAuthority,
     CanonicalComponentSpecification,
+    CanonicalGeneratedPlacementDerivation,
     CanonicalJointPhysicalBinding,
     CanonicalM10VerificationObligation,
     CanonicalMechanicalConnection,
@@ -560,12 +562,20 @@ class PromotableMechanismProjection(PromotionModel):
     connections: tuple[CanonicalMechanicalConnection, ...] = ()
     joint_bindings: tuple[CanonicalJointPhysicalBinding, ...] = ()
     m10_obligations: tuple[CanonicalM10VerificationObligation, ...] = ()
+    generated_placement_derivations: tuple[CanonicalGeneratedPlacementDerivation, ...] = ()
     mapping_identities: tuple[StrictStr, ...] = ()
     projection_hash: StrictStr = "pending"
 
     _validate_text = field_validator("canonical_target_mechanism_id")(_nonblank)
     _validate_hash = field_validator("projection_hash")(_hash_or_pending)
     _validate_ids = field_validator("canonical_instance_ids", "mapping_identities")(_nonblank_tuple)
+
+    @model_serializer(mode="wrap")
+    def serialize_projection(self, handler):
+        payload = handler(self)
+        if not self.generated_placement_derivations:
+            payload.pop("generated_placement_derivations", None)
+        return payload
 
     @model_validator(mode="after")
     def validate_projection(self) -> "PromotableMechanismProjection":

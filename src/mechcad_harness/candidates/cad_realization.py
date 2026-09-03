@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import math
+from dataclasses import replace
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from mechcad_harness.cad_assembly import CadAssemblyProgram, CadRigidTransform, assembly_hash
 from mechcad_harness.cad_assembly import CadComponentInstance
 from mechcad_harness.cad_compilation import MountingPlateDesignSpec, compile_mounting_plate
 from mechcad_harness.cad_program import cad_program_hash
+from mechcad_harness.generated_part_cad import compile_generated_part
 from mechcad_harness.candidates.models import (
     CandidateSourceBinding,
     CandidateSynthesisPolicy,
@@ -25,6 +27,11 @@ from mechcad_harness.candidates.services import (
     CandidateIntegrityError,
     CandidateIntegrityVerifier,
 )
+from mechcad_harness.candidates.generated_authority import (
+    build_candidate_view,
+    candidate_placement_design_variables,
+    m13_local_pose,
+)
 from mechcad_harness.artifacts import ArtifactStore, ArtifactType
 from mechcad_harness.imported_component import (
     ImportedComponentError,
@@ -33,6 +40,25 @@ from mechcad_harness.imported_component import (
     resolve_imported_component,
 )
 from mechcad_harness.models.common import Model
+from mechcad_harness.models.generated_part import (
+    GeneratedAuthorityView,
+    GeneratedAttachmentFaceInterface,
+    GeneratedRotationalInterface,
+    generated_geometry_definition_identities,
+)
+from mechcad_harness.models.generated_placement import (
+    GeneratedPlacementDerivation,
+    _rotation_aligning,
+    _resolve_rotation_input,
+    compose_poses,
+    place_generated_target,
+    pose_from_interface,
+    placement_derivations_hash,
+    resolve_placement_inputs,
+)
+from mechcad_harness.models.supplied_component_interface import (
+    require_authoritatively_consumable_interface,
+)
 from mechcad_harness.state.hashing import canonical_json
 
 
@@ -54,6 +80,12 @@ def _require_hash(value: str) -> str:
 
 def _require_hash_or_pending(value: str) -> str:
     return value if value == "pending" else _require_hash(value)
+
+
+def _require_optional_hash(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _require_hash(value)
 
 
 def _require_nonblank(value: str) -> str:
@@ -128,6 +160,7 @@ class CandidateCadRealizationService:
             for specification in candidate.component_specifications
         }
         parts = []
+        generated_part_ids = set()
         imported_components = []
         instances = []
         verified_sources = []
@@ -140,8 +173,35 @@ class CandidateCadRealizationService:
                 if component.instance_id == mapping.physical_instance_id
             )
             specification = specifications[physical.specification_hash]
-            placement_error = self._placement_error(candidate, mapping)
-            if placement_error:
+            derivation = next(
+                (
+                    item
+                    for item in request.placement_derivations
+                    if item.target_physical_instance_id == mapping.physical_instance_id
+                ),
+                None,
+            )
+            if (
+                request.schema_version.endswith("@2")
+                and specification.generated_part is not None
+                and derivation is None
+            ):
+                return CandidateCadStageOutcome(
+                    status=CandidateCadStageStatus.UNRESOLVED,
+                    reasons=(CandidateCadStageReason.INVALID_PLACEMENT_PROVENANCE,),
+                )
+            if derivation is not None:
+                try:
+                    self._derived_placement(request, mapping, specifications, candidate)
+                except CandidateCadIntegrityError:
+                    return CandidateCadStageOutcome(
+                        status=CandidateCadStageStatus.UNRESOLVED,
+                        reasons=(CandidateCadStageReason.INVALID_PLACEMENT_PROVENANCE,),
+                    )
+                except Exception:
+                    unresolved_reasons.append(CandidateCadStageReason.GEOMETRY_UNAVAILABLE)
+                    continue
+            elif self._placement_error(candidate, mapping):
                 return CandidateCadStageOutcome(
                     status=CandidateCadStageStatus.UNRESOLVED,
                     reasons=(CandidateCadStageReason.INVALID_PLACEMENT_PROVENANCE,),
@@ -167,7 +227,11 @@ class CandidateCadRealizationService:
                 )
                 continue
 
-            if mapping.fidelity is not CandidateGeometryFidelity.DECLARED_BOUNDED_COLLISION_REPRESENTATION:
+            if (
+                specification.generated_part is None
+                and mapping.fidelity
+                is not CandidateGeometryFidelity.DECLARED_BOUNDED_COLLISION_REPRESENTATION
+            ):
                 unresolved_reasons.append(CandidateCadStageReason.UNSUPPORTED_REPRESENTATION)
                 continue
             generated, reason = self._compile_generated(specification, mapping, candidate)
@@ -175,7 +239,10 @@ class CandidateCadRealizationService:
                 unresolved_reasons.append(reason)
                 continue
             assert generated is not None
-            parts.append(generated)
+            if specification.generated_part is None or generated.part_id not in generated_part_ids:
+                parts.append(generated)
+                if specification.generated_part is not None:
+                    generated_part_ids.add(generated.part_id)
             instances.append(
                 CadComponentInstance(
                     instance_id=mapping.cad_instance_id,
@@ -202,7 +269,8 @@ class CandidateCadRealizationService:
             mappings=request.mappings,
             assembly=assembly,
             assembly_hash=assembly_hash(assembly),
-            verified_source_content_identities=tuple(verified_sources),
+            placement_derivations_hash=request.placement_derivations_hash,
+            verified_source_content_identities=tuple(dict.fromkeys(verified_sources)),
             compiler_identity=request.compiler_identity,
             compiler_version=request.compiler_version,
             provider_identity=self.provider_identity,
@@ -211,6 +279,221 @@ class CandidateCadRealizationService:
             status=CandidateCadStageStatus.SUCCESS,
             realization=realization,
         )
+
+    def _derived_placement(self, request, mapping, specifications, candidate):
+        derivations = {
+            item.derivation_id: item for item in request.placement_derivations
+        }
+        target_derivation = next(
+            (
+                item
+                for item in request.placement_derivations
+                if item.target_physical_instance_id == mapping.physical_instance_id
+            ),
+            None,
+        )
+        if target_derivation is None:
+            raise ValueError("generated placement derivation target is missing")
+        components = {
+            component.instance_id: component
+            for component in candidate.realization.components
+        }
+        def design_variable_placement(instance_id):
+            if instance_id not in components:
+                raise ValueError("source physical instance cannot be resolved")
+            return CadRigidTransform(**candidate_placement_design_variables(candidate, instance_id))
+
+        def supplied_frame(specification, frame_ref):
+            frames = tuple(specification.supplied_reference_frames)
+            matches = tuple(
+                frame
+                for frame in frames
+                if frame.frame_id == frame_ref.frame_id
+                and frame.frame_hash == frame_ref.frame_hash
+            )
+            if len(matches) != 1:
+                raise ValueError("source supplied frame cannot be resolved by exact ID and hash")
+            return matches[0]
+
+        def supplied_interface(specification, reference):
+            definitions = tuple(specification.supplied_interface_definitions)
+            matches = tuple(
+                definition
+                for definition in definitions
+                if definition.interface_id == reference.interface_id
+                and definition.interface_hash == reference.interface_hash
+            )
+            if len(matches) != 1:
+                raise ValueError("source supplied interface cannot be resolved by exact ID and hash")
+            definition = matches[0]
+            variant = definition.shaft or definition.mounting_face
+            if variant is None:
+                raise ValueError("source supplied interface has no variant")
+            active_frame_id = getattr(variant, "reference_frame_id", None)
+            active_frame = None
+            if active_frame_id is not None:
+                active_frame = next(
+                    (
+                        frame
+                        for frame in specification.supplied_reference_frames
+                        if frame.frame_id == active_frame_id
+                    ),
+                    None,
+                )
+                if active_frame is None:
+                    raise ValueError("source supplied interface frame cannot be resolved")
+            require_authoritatively_consumable_interface(definition, active_frame)
+            return definition, variant, active_frame
+
+        def source_local_pose(specification, derivation):
+            definition = None
+            variant = None
+            if specification.generated_part is not None:
+                interfaces = tuple(specification.generated_part.interfaces)
+                matches = tuple(
+                    interface
+                    for interface in interfaces
+                    if interface.interface_id == derivation.source_interface_ref.interface_id
+                    and interface.interface_hash == derivation.source_interface_ref.interface_hash
+                )
+                if len(matches) != 1:
+                    raise ValueError("source generated interface cannot be resolved by exact ID and hash")
+                interface = matches[0]
+            else:
+                definition, variant, active_frame = supplied_interface(
+                    specification, derivation.source_interface_ref
+                )
+                interface = variant
+
+            if derivation.rule_id == "frame-generated-placement@1":
+                frame_ref = derivation.source_frame_ref
+                if frame_ref is None:
+                    raise ValueError("source frame is missing")
+                if specification.generated_part is not None:
+                    frames = tuple(specification.generated_part.reference_frames)
+                    matches = tuple(
+                        frame
+                        for frame in frames
+                        if frame.frame_id == frame_ref.frame_id
+                        and frame.frame_hash == frame_ref.frame_hash
+                    )
+                    if len(matches) != 1:
+                        raise ValueError("source generated frame cannot be resolved by exact ID and hash")
+                    return pose_from_interface(matches[0])
+                if definition is None or variant is None:
+                    raise ValueError("source frame interface is missing")
+                if getattr(variant, "reference_frame_id", None) != frame_ref.frame_id:
+                    raise ValueError("source frame is not owned by the source interface")
+                frame = supplied_frame(specification, frame_ref)
+                require_authoritatively_consumable_interface(definition, frame)
+                return m13_local_pose(frame)
+
+            if isinstance(interface, GeneratedRotationalInterface):
+                return pose_from_interface(interface)
+            if isinstance(interface, GeneratedAttachmentFaceInterface):
+                return pose_from_interface(interface)
+            return m13_local_pose(definition, active_frame)
+
+        def target_local_pose(specification, derivation, view):
+            generated = specification.generated_part
+            if generated is None:
+                raise ValueError("derived placement target is not generated")
+            if derivation.rule_id == "coaxial-generated-placement@1":
+                reference = derivation.target_generated_interface_ref
+                records = tuple(generated.interfaces)
+            else:
+                reference = derivation.target_generated_frame_ref
+                records = tuple(generated.reference_frames)
+            if reference is None:
+                raise ValueError("generated placement target reference is missing")
+            id_name = "interface_id" if derivation.rule_id == "coaxial-generated-placement@1" else "frame_id"
+            hash_name = "interface_hash" if derivation.rule_id == "coaxial-generated-placement@1" else "frame_hash"
+            matches = tuple(
+                record
+                for record in records
+                if getattr(record, id_name) == getattr(reference, id_name)
+                and getattr(record, hash_name) == getattr(reference, hash_name)
+            )
+            if len(matches) != 1:
+                raise ValueError("target generated reference cannot be resolved by exact ID and hash")
+            return pose_from_interface(matches[0])
+
+        def resolve_source_placement(instance_id, reference, stack=()):
+            if reference.kind == "design_variable_placement":
+                return design_variable_placement(instance_id)
+            if reference.derivation_id in stack:
+                raise ValueError("placement derivation set must be acyclic")
+            derivation = derivations.get(reference.derivation_id)
+            if derivation is None or derivation.target_physical_instance_id != instance_id:
+                raise ValueError("source instance and placement reference do not resolve as a pair")
+            return derive(derivation, stack + (reference.derivation_id,))
+
+        def derive(derivation, stack=()):
+            source_id = derivation.source_physical_instance_id
+            component = components.get(source_id)
+            if component is None:
+                raise ValueError("source physical instance cannot be resolved")
+            source_specification = specifications[component.specification_hash]
+            source_placement = resolve_source_placement(
+                source_id, derivation.source_placement_ref, stack
+            )
+            source_pose = compose_poses(
+                source_placement, source_local_pose(source_specification, derivation)
+            )
+            target_component = components.get(derivation.target_physical_instance_id)
+            if target_component is None:
+                raise ValueError("target physical instance cannot be resolved")
+            target_specification = specifications[target_component.specification_hash]
+            view = build_candidate_view(candidate, target_specification.specification_hash)
+            reference_frames = list(view.reference_frames)
+            known_frames = {
+                (frame.frame_id, frame.frame_hash) for frame in reference_frames
+            }
+            if source_specification.generated_part is not None:
+                for frame in source_specification.generated_part.reference_frames:
+                    if (frame.frame_id, frame.frame_hash) not in known_frames:
+                        reference_frames.append(frame)
+                        known_frames.add((frame.frame_id, frame.frame_hash))
+            view = replace(view, reference_frames=tuple(reference_frames))
+            inputs = resolve_placement_inputs(derivation, view)
+            if len(inputs) > 1:
+                raise ValueError("generated placement has more than one axial offset")
+            rotation = (
+                _resolve_rotation_input(derivation, view)
+                if derivation.rotation is not None
+                else None
+            )
+            return place_generated_target(
+                derivation.rule_id,
+                source_pose,
+                target_local_pose(target_specification, derivation, view),
+                next(iter(inputs.values()), None),
+                rotation,
+            )
+
+        result = derive(target_derivation)
+        target_hash = (
+            target_derivation.target_generated_interface_ref.interface_hash
+            if target_derivation.target_generated_interface_ref is not None
+            else target_derivation.target_generated_frame_ref.frame_hash
+        )
+        expected_origin = CandidatePlacementOrigin(
+            authority="deterministic_derived_relation",
+            input_identities=(
+                f"candidate:generated-placement:{target_derivation.derivation_id}",
+                target_derivation.source_interface_ref.interface_hash,
+                target_hash,
+                *sorted(item.input_hash for item in target_derivation.inputs),
+                *(() if target_derivation.rotation is None else (target_derivation.rotation.input_hash,)),
+            ),
+            derivation=target_derivation.rule_id,
+            transform=result,
+        )
+        if mapping.placement != result or mapping.placement_origin != expected_origin:
+            raise CandidateCadIntegrityError(
+                "candidate CAD placement does not match semantic derivation"
+            )
+        return result
 
     def _verify_candidate(self, candidate, synthesis_request, synthesis_policy, request) -> None:
         try:
@@ -289,6 +572,14 @@ class CandidateCadRealizationService:
                 != (specification.geometry_source.artifact_id,)
             ):
                 raise CandidateCadIntegrityError("trusted geometry definition identities are not component-scoped")
+            if specification.generated_part is not None and (
+                mapping.fidelity is CandidateGeometryFidelity.EXACT_GENERATED_GEOMETRY
+                and mapping.geometry_definition_identities
+                != generated_geometry_definition_identities(specification.generated_part)
+            ):
+                raise CandidateCadIntegrityError(
+                    "generated geometry definition identities mismatch"
+                )
             self._validate_placement_provenance(candidate, request, specifications, components)
 
         if not requested_design_variable_identities <= candidate_design_variable_identities:
@@ -349,6 +640,36 @@ class CandidateCadRealizationService:
                     f"candidate:source-authority:{specification.geometry_source.source_identity}",
                 }
                 allowed.update(source_authority_inputs)
+            derivation = next(
+                (
+                    item
+                    for item in request.placement_derivations
+                    if item.target_physical_instance_id == mapping.physical_instance_id
+                ),
+                None,
+            )
+            if derivation is not None:
+                target_hash = (
+                    derivation.target_generated_interface_ref.interface_hash
+                    if derivation.target_generated_interface_ref is not None
+                    else derivation.target_generated_frame_ref.frame_hash
+                )
+                expected = (
+                    f"candidate:generated-placement:{derivation.derivation_id}",
+                    derivation.source_interface_ref.interface_hash,
+                    target_hash,
+                    *(sorted(item.input_hash for item in derivation.inputs)),
+                    *(() if derivation.rotation is None else (derivation.rotation.input_hash,)),
+                )
+                if (
+                    mapping.placement_origin.authority != "deterministic_derived_relation"
+                    or mapping.placement_origin.derivation != derivation.rule_id
+                    or mapping.placement_origin.input_identities != expected
+                ):
+                    raise CandidateCadIntegrityError(
+                        "CAD mapping contains a foreign or irrelevant placement provenance identity"
+                    )
+                continue
             identities = set(mapping.placement_origin.input_identities)
             if not identities <= allowed:
                 raise CandidateCadIntegrityError(
@@ -403,6 +724,26 @@ class CandidateCadRealizationService:
         return imported, None
 
     def _compile_generated(self, specification, mapping, candidate):
+        if specification.generated_part is not None:
+            if mapping.fidelity is not CandidateGeometryFidelity.EXACT_GENERATED_GEOMETRY:
+                return None, CandidateCadStageReason.UNSUPPORTED_REPRESENTATION
+            try:
+                compilation = compile_generated_part(
+                    specification.generated_part,
+                    build_candidate_view(candidate, specification.specification_hash),
+                    owning_instance_context=mapping.physical_instance_id,
+                )
+            except Exception as exc:
+                raise CandidateCadIntegrityError(str(exc)) from exc
+            if mapping.source_geometry_identity is not None:
+                raise CandidateCadIntegrityError(
+                    "exact generated geometry cannot claim source geometry"
+                )
+            if mapping.geometry_definition_identities != compilation.geometry_definition_identities:
+                raise CandidateCadIntegrityError("generated geometry definition identities mismatch")
+            if mapping.representation_identity != compilation.program_hash:
+                raise CandidateCadIntegrityError("generated CAD representation identity mismatch")
+            return compilation.program, None
         if specification.component_type not in self._GENERATED_COMPONENT_TYPES:
             return None, CandidateCadStageReason.UNSUPPORTED_REPRESENTATION
         dimensions = self._generated_dimensions(specification, mapping.physical_instance_id, candidate)
@@ -424,6 +765,10 @@ class CandidateCadRealizationService:
         if mapping.representation_identity != cad_program_hash(program):
             raise CandidateCadIntegrityError("generated CAD representation identity mismatch")
         return program, None
+
+    @staticmethod
+    def _candidate_authority_view(candidate, specification) -> GeneratedAuthorityView:
+        return build_candidate_view(candidate, specification.specification_hash)
 
     def _generated_dimensions(self, specification, physical_instance_id, candidate):
         properties = {property.key: property for property in specification.properties}
@@ -499,6 +844,7 @@ class CandidateCadModel(Model):
 class CandidateGeometryFidelity(StrEnum):
     TRUSTED_SOURCE_GEOMETRY = "trusted_source_geometry"
     DECLARED_BOUNDED_COLLISION_REPRESENTATION = "declared_bounded_collision_representation"
+    EXACT_GENERATED_GEOMETRY = "exact_generated_geometry"
 
 
 class CandidatePlacementOrigin(CandidateCadModel):
@@ -565,7 +911,10 @@ class CandidateCadInstanceMapping(CandidateCadModel):
 
 
 class CandidateCadRealizationRequest(CandidateCadModel):
-    schema_version: Literal["candidate-cad-realization-request@1"] = "candidate-cad-realization-request@1"
+    schema_version: Literal[
+        "candidate-cad-realization-request@1",
+        "candidate-cad-realization-request@2",
+    ] = "candidate-cad-realization-request@1"
     candidate_hash: str
     source_binding: CandidateSourceBinding
     source_binding_hash: str = "pending"
@@ -574,15 +923,28 @@ class CandidateCadRealizationRequest(CandidateCadModel):
     compiler_version: str = Field(min_length=1)
     candidate_instance_ids: tuple[str, ...] = Field(min_length=1)
     mappings: tuple[CandidateCadInstanceMapping, ...] = Field(min_length=1)
+    placement_derivations: tuple[GeneratedPlacementDerivation, ...] = ()
+    placement_derivations_hash: str | None = None
     design_variable_identities: tuple[str, ...] = ()
     component_interface_identities: tuple[str, ...] = ()
     request_hash: str = "pending"
 
     _validate_hashes = field_validator("candidate_hash")(_require_hash)
     _validate_derived_hashes = field_validator("source_binding_hash", "request_hash")(_require_hash_or_pending)
+    _validate_placement_derivations_hash = field_validator(
+        "placement_derivations_hash"
+    )(_require_optional_hash)
     _validate_provenance = field_validator(
         "representation_policy_version", "compiler_identity", "compiler_version"
     )(_require_nonblank)
+
+    @model_serializer(mode="wrap")
+    def serialize_request(self, handler):
+        payload = handler(self)
+        if self.schema_version.endswith("@1"):
+            payload.pop("placement_derivations", None)
+            payload.pop("placement_derivations_hash", None)
+        return payload
 
     @model_validator(mode="after")
     def validate_manifest_and_hash(self) -> "CandidateCadRealizationRequest":
@@ -605,6 +967,60 @@ class CandidateCadRealizationRequest(CandidateCadModel):
             object.__setattr__(self, "source_binding_hash", expected_source_hash)
         elif self.source_binding_hash != expected_source_hash:
             raise ValueError("candidate source binding hash mismatch")
+        if self.schema_version.endswith("@1"):
+            if self.placement_derivations:
+                raise ValueError("candidate-cad-realization-request@1 forbids placement derivations")
+            if self.placement_derivations_hash is not None:
+                raise ValueError(
+                    "candidate-cad-realization-request@1 forbids placement derivations hash"
+                )
+        else:
+            derivation_ids = tuple(item.derivation_id for item in self.placement_derivations)
+            target_instance_ids = tuple(
+                item.target_physical_instance_id for item in self.placement_derivations
+            )
+            if len(set(derivation_ids)) != len(derivation_ids):
+                raise ValueError("placement derivation IDs must be unique")
+            if len(set(target_instance_ids)) != len(target_instance_ids):
+                raise ValueError("placement derivation targets must be unique per instance")
+            if self.placement_derivations_hash is None:
+                raise ValueError("candidate-cad-realization-request@2 requires placement derivations hash")
+            expected_derivations_hash = placement_derivations_hash(self.placement_derivations)
+            if self.placement_derivations_hash != expected_derivations_hash:
+                raise ValueError("placement derivations hash mismatch")
+            candidate_instance_ids = set(self.candidate_instance_ids)
+            mappings_by_physical_id = {
+                mapping.physical_instance_id: mapping for mapping in self.mappings
+            }
+            for derivation in self.placement_derivations:
+                if derivation.source_physical_instance_id not in candidate_instance_ids:
+                    raise ValueError(
+                        "placement derivation source is not in candidate instance IDs"
+                    )
+                if derivation.target_physical_instance_id not in candidate_instance_ids:
+                    raise ValueError(
+                        "placement derivation target is not in candidate instance IDs"
+                    )
+                target_mapping = mappings_by_physical_id.get(
+                    derivation.target_physical_instance_id
+                )
+                if target_mapping is None:
+                    raise ValueError(
+                        "placement derivation target is not a mapped physical instance"
+                    )
+                if target_mapping.fidelity is not CandidateGeometryFidelity.EXACT_GENERATED_GEOMETRY:
+                    raise ValueError("placement derivation target must be a generated mapping")
+            for mapping in self.mappings:
+                if mapping.fidelity is CandidateGeometryFidelity.EXACT_GENERATED_GEOMETRY:
+                    matches = tuple(
+                        item
+                        for item in self.placement_derivations
+                        if item.target_physical_instance_id == mapping.physical_instance_id
+                    )
+                    if len(matches) != 1:
+                        raise ValueError(
+                            "generated mapping requires exactly one placement derivation target"
+                        )
         expected = _hash(self, "request_hash")
         if self.request_hash == "pending":
             object.__setattr__(self, "request_hash", expected)
@@ -621,6 +1037,7 @@ class CandidateCadRealization(CandidateCadModel):
     assembly: CadAssemblyProgram
     assembly_hash: str
     representation_identities: tuple[str, ...] = ()
+    placement_derivations_hash: str | None = None
     verified_source_content_identities: tuple[str, ...] = ()
     compiler_identity: str = Field(min_length=1)
     compiler_version: str = Field(min_length=1)
@@ -628,10 +1045,20 @@ class CandidateCadRealization(CandidateCadModel):
     realization_hash: str = "pending"
 
     _validate_hashes = field_validator("candidate_hash", "request_hash", "assembly_hash")(_require_hash)
+    _validate_placement_derivations_hash = field_validator(
+        "placement_derivations_hash"
+    )(_require_optional_hash)
     _validate_realization_hash = field_validator("realization_hash")(_require_hash_or_pending)
     _validate_provenance = field_validator(
         "compiler_identity", "compiler_version", "provider_identity"
     )(_require_nonblank)
+
+    @model_serializer(mode="wrap")
+    def serialize_realization(self, handler):
+        payload = handler(self)
+        if self.placement_derivations_hash is None:
+            payload.pop("placement_derivations_hash", None)
+        return payload
 
     @model_validator(mode="after")
     def validate_realization(self) -> "CandidateCadRealization":
@@ -698,13 +1125,16 @@ class CandidateCadRealization(CandidateCadModel):
         )
         if trusted_source_geometry_identities and not self.verified_source_content_identities:
             raise ValueError("trusted source geometry requires verified source content identity")
-        if len(self.verified_source_content_identities) != len(trusted_source_geometry_identities):
-            if trusted_source_geometry_identities:
-                raise ValueError("trusted source geometry identities must bind one-to-one")
-            raise ValueError("bounded CAD representation cannot claim verified source content")
-        if len(set(trusted_source_geometry_identities)) != len(trusted_source_geometry_identities):
-            raise ValueError("trusted source geometry identities must bind one-to-one")
-        if tuple(self.verified_source_content_identities) != trusted_source_geometry_identities:
+        if len(set(self.verified_source_content_identities)) != len(
+            self.verified_source_content_identities
+        ):
+            raise ValueError(
+                "verified source content identities must be unique and bind one-to-one"
+            )
+        unique_trusted_source_geometry_identities = tuple(
+            dict.fromkeys(trusted_source_geometry_identities)
+        )
+        if tuple(self.verified_source_content_identities) != unique_trusted_source_geometry_identities:
             if trusted_source_geometry_identities:
                 raise ValueError("trusted source geometry identity must match verified source content identity")
             if self.verified_source_content_identities:

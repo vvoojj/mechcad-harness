@@ -15,6 +15,7 @@ from mechcad_harness.cad_assembly import (
 )
 from mechcad_harness.cad_compilation import MountingPlateDesignSpec, compile_mounting_plate
 from mechcad_harness.cad_program import cad_program_hash
+from mechcad_harness.generated_part_cad import compile_generated_part
 from mechcad_harness.imported_component import (
     ImportedComponentError,
     ImportedCadComponent,
@@ -32,7 +33,9 @@ from .canonical_mechanism import (
     CanonicalMechanismReconstruction,
     ProjectArtifactResolver,
     TrustedSourceArtifact,
+    validate_canonical_mechanism,
 )
+from .generated_authority import build_canonical_view
 
 
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -340,7 +343,7 @@ class CanonicalPhysicalCadCompiler:
             reconstruction = CanonicalMechanismReconstruction.model_validate(
                 reconstruction.model_dump(mode="json")
             )
-            mechanism = reconstruction.canonical_mechanism
+            mechanism = validate_canonical_mechanism(reconstruction.canonical_mechanism)
             resolver = self._resolver(reconstruction.project_id)
             sources = {
                 source.artifact_id: self._resolve_source(resolver, reconstruction, source)
@@ -377,7 +380,8 @@ class CanonicalPhysicalCadCompiler:
                 )
 
             mappings = []
-            assemblies = []
+            parts_by_id = {}
+            imported_components = []
             for component in mechanism.components:
                 specification = specifications[component.specification_hash]
                 cad_id = self._cad_id(mechanism.id, component.instance_id)
@@ -407,7 +411,7 @@ class CanonicalPhysicalCadCompiler:
                 if specification.geometry_source is not None:
                     source = specification.geometry_source
                     imported = sources[source.artifact_id][0].model_copy(update={"component_id": cad_id})
-                    assemblies.append(("imported", imported, transform))
+                    imported_components.append(imported)
                     mappings.append(
                         CanonicalPhysicalCadMapping(
                             mechanism_hash=mechanism.mechanism_hash,
@@ -438,7 +442,7 @@ class CanonicalPhysicalCadCompiler:
                     program, identities = self._compile_generated(
                         specification, component.instance_id, cad_id, mechanism
                     )
-                    assemblies.append(("part", program, transform))
+                    parts_by_id.setdefault(program.part_id, program)
                     mappings.append(
                         CanonicalPhysicalCadMapping(
                             mechanism_hash=mechanism.mechanism_hash,
@@ -446,7 +450,11 @@ class CanonicalPhysicalCadCompiler:
                             cad_instance_id=cad_id,
                             component_hash=component.component_hash,
                             specification_hash=component.specification_hash,
-                            fidelity=CanonicalGeometryFidelity.DECLARED_BOUNDED_COLLISION_REPRESENTATION,
+                            fidelity=(
+                                CanonicalGeometryFidelity.EXACT_GENERATED_GEOMETRY
+                                if specification.generated_part is not None
+                                else CanonicalGeometryFidelity.DECLARED_BOUNDED_COLLISION_REPRESENTATION
+                            ),
                             representation_identity=cad_program_hash(program),
                             geometry_definition_identities=identities,
                             placement=transform,
@@ -466,20 +474,26 @@ class CanonicalPhysicalCadCompiler:
                     )
 
             request_hash = self._request_hash(reconstruction, tuple(mappings))
-            parts = tuple(value for kind, value, _ in assemblies if kind == "part")
-            imported_components = tuple(value for kind, value, _ in assemblies if kind == "imported")
             instances = tuple(
                 CadComponentInstance(
                     instance_id=mapping.cad_instance_id,
-                    part_id=mapping.cad_instance_id,
+                    part_id=(
+                        mapping.cad_instance_id
+                        if mapping.fidelity is CanonicalGeometryFidelity.TRUSTED_SOURCE_GEOMETRY
+                        else next(
+                            part.part_id
+                            for part in parts_by_id.values()
+                            if cad_program_hash(part) == mapping.representation_identity
+                        )
+                    ),
                     placement=mapping.placement.model_copy(deep=True),
                 )
                 for mapping in mappings
             )
             assembly = CadAssemblyProgram(
                 assembly_id=f"canonical-assembly-{request_hash[7:23]}",
-                parts=parts,
-                imported_components=imported_components,
+                parts=tuple(parts_by_id.values()),
+                imported_components=tuple(imported_components),
                 instances=instances,
             )
             provenance = tuple(
@@ -568,6 +582,16 @@ class CanonicalPhysicalCadCompiler:
         return imported, source
 
     def _compile_generated(self, specification, instance_id, cad_id, mechanism):
+        if specification.generated_part is not None:
+            try:
+                compilation = compile_generated_part(
+                    specification.generated_part,
+                    build_canonical_view(mechanism, specification.specification_hash),
+                    owning_instance_context=instance_id,
+                )
+            except Exception as exc:
+                raise CanonicalCadIntegrityError(str(exc)) from exc
+            return compilation.program, compilation.geometry_definition_identities
         if specification.component_type not in self._GENERATED_COMPONENT_TYPES:
             raise CanonicalCadIntegrityError(
                 f"canonical component type is not supported for generated CAD: {specification.component_type}"

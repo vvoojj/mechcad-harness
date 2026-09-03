@@ -26,6 +26,10 @@ from mechcad_harness.models.supplied_component_interface import (
     GeometryDerivationStatus,
     GeometryDerivationTransform,
 )
+from mechcad_harness.models.generated_part import (
+    GeneratedPartSpecification,
+    validate_generated_interface_registry,
+)
 from mechcad_harness.models.quaternion import rotate_vector
 from mechcad_harness.state.hashing import canonical_json, state_hash
 
@@ -237,13 +241,18 @@ def _validate_mounting_face_frame(
 
 
 class ComponentSpecificationSnapshot(CandidateModel):
-    schema_version: Literal["component-specification@1", "component-specification@2"] = "component-specification@1"
+    schema_version: Literal[
+        "component-specification@1",
+        "component-specification@2",
+        "component-specification@3",
+    ] = "component-specification@1"
     component_type: str = Field(min_length=1)
     manufacturer: str | None = None
     part_number: str | None = None
     source_identity: str = Field(min_length=1)
     properties: tuple[ComponentPropertySnapshot, ...] = ()
     geometry_source: GeometrySourceReference | None = None
+    generated_part: GeneratedPartSpecification | None = None
     interfaces: tuple[str, ...] = ()
     compatibility_declarations: tuple[str, ...] = ()
     supplied_reference_frames: tuple[SuppliedComponentReferenceFrame, ...] = ()
@@ -269,6 +278,12 @@ class ComponentSpecificationSnapshot(CandidateModel):
             "interfaces": list(self.interfaces),
             "compatibility_declarations": list(self.compatibility_declarations),
         }
+        if self.schema_version.endswith("@3"):
+            payload["generated_part"] = (
+                None
+                if self.generated_part is None
+                else self.generated_part.model_dump(mode="json")
+            )
         if self.schema_version.endswith("@2"):
             payload.update({
                 "supplied_reference_frames": [
@@ -304,6 +319,8 @@ class ComponentSpecificationSnapshot(CandidateModel):
         if any(not value.strip() for value in self.interfaces + self.compatibility_declarations):
             raise ValueError("component interface declarations must not be empty")
         if self.schema_version.endswith("@1"):
+            if self.generated_part is not None:
+                raise ValueError("component-specification@1 must not contain generated_part")
             if any((
                 self.supplied_reference_frames,
                 self.supplied_interface_definitions,
@@ -312,15 +329,32 @@ class ComponentSpecificationSnapshot(CandidateModel):
                 raise ValueError("component-specification@1 must not contain M13 records")
             if self.geometry_source is not None and self.geometry_source.coordinate_system_id is not None:
                 raise ValueError("component-specification@1 requires no coordinate system")
-        elif any((
-            self.supplied_reference_frames,
-            self.supplied_interface_definitions,
-            self.geometry_derivation_transforms,
-        )) and (
-            self.geometry_source is None
-            or self.geometry_source.coordinate_system_id is None
-        ):
-            raise ValueError("component-specification@2 M13 records require a coordinate system")
+        elif self.schema_version.endswith("@2"):
+            if self.generated_part is not None:
+                raise ValueError("component-specification@2 must not contain generated_part")
+            if any(
+                (
+                    self.supplied_reference_frames,
+                    self.supplied_interface_definitions,
+                    self.geometry_derivation_transforms,
+                )
+            ) and (
+                self.geometry_source is None
+                or self.geometry_source.coordinate_system_id is None
+            ):
+                raise ValueError("component-specification@2 M13 records require a coordinate system")
+        else:
+            if self.generated_part is None:
+                raise ValueError("component-specification@3 requires generated_part")
+            if self.geometry_source is not None or any((
+                self.supplied_reference_frames,
+                self.supplied_interface_definitions,
+                self.geometry_derivation_transforms,
+            )):
+                raise ValueError(
+                    "component-specification@3 generated representation is exclusive"
+                )
+            validate_generated_interface_registry(self.generated_part, self.interfaces)
 
         frames = tuple(sorted(self.supplied_reference_frames, key=lambda frame: frame.frame_id))
         definitions = tuple(sorted(

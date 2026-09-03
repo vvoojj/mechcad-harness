@@ -131,6 +131,39 @@ def _canonical_inputs(tmp_path, *, requires_home=False):
     return reconstruction, cad
 
 
+def _topology_registry_mechanism(mechanism):
+    base_specification = mechanism.component_specifications[1]
+    topology_specification = type(base_specification).model_validate(
+        base_specification.model_dump(mode="python")
+        | {
+            "interfaces": (*base_specification.interfaces, "gear", "output", "rotor"),
+            "specification_hash": "pending",
+        }
+    )
+    components = tuple(
+        component.model_copy(
+            update={
+                "specification_hash": topology_specification.specification_hash,
+                "component_hash": "pending",
+            }
+        )
+        if component.specification_hash == base_specification.specification_hash
+        else component
+        for component in mechanism.components
+    )
+    return CanonicalPhysicalMechanism.model_validate(
+        mechanism.model_dump(mode="python")
+        | {
+            "component_specifications": (
+                mechanism.component_specifications[0],
+                topology_specification,
+            ),
+            "components": components,
+            "mechanism_hash": "pending",
+        }
+    )
+
+
 def _proof_result(kwargs, status=ContinuousSingleAxisProofStatus.VERIFIED_CLEAR):
     request = ContinuousSingleAxisProofRequest(
         source_assembly_id=kwargs["assembly"].assembly_id,
@@ -897,7 +930,7 @@ def test_scope_equivalence_result_requires_flag_to_match_differences():
 
 def test_dispositions_follow_selected_topology_and_external_spur_boundary(tmp_path):
     reconstruction, _ = _canonical_inputs(tmp_path)
-    mechanism = reconstruction.mechanism
+    mechanism = _topology_registry_mechanism(reconstruction.mechanism)
     specification_hash = mechanism.component_specifications[1].specification_hash
     components = (
         *mechanism.components,
@@ -961,7 +994,7 @@ def test_dispositions_follow_selected_topology_and_external_spur_boundary(tmp_pa
 
 def test_external_spur_gear_mesh_cannot_become_a_canonical_clearance_requirement(tmp_path):
     reconstruction, _ = _canonical_inputs(tmp_path)
-    mechanism = reconstruction.mechanism
+    mechanism = _topology_registry_mechanism(reconstruction.mechanism)
     specification_hash = mechanism.component_specifications[1].specification_hash
     components = (
         *mechanism.components,

@@ -26,6 +26,8 @@ from .supplied_component_interface import (
     SuppliedComponentInterfaceDefinition,
     SuppliedComponentReferenceFrame,
 )
+from .generated_part import GeneratedPartSpecification, validate_generated_interface_registry
+from .generated_placement import CanonicalGeneratedPlacementDerivation
 
 
 def _canonical_hash(value: Model, identity_field: str) -> str:
@@ -121,6 +123,7 @@ class CanonicalGeometryFidelity(StrEnum):
     DECLARED_BOUNDED_COLLISION_REPRESENTATION = (
         "declared_bounded_collision_representation"
     )
+    EXACT_GENERATED_GEOMETRY = "exact_generated_geometry"
 
 
 class CanonicalComponentProperty(CanonicalModel):
@@ -254,7 +257,9 @@ def _validate_canonical_mounting_face_frame(
 
 class CanonicalComponentSpecification(CanonicalModel):
     schema_version: Literal[
-        "canonical-component-specification@1", "canonical-component-specification@2"
+        "canonical-component-specification@1",
+        "canonical-component-specification@2",
+        "canonical-component-specification@3",
     ] = "canonical-component-specification@1"
     component_type: str = Field(min_length=1)
     manufacturer: str | None = None
@@ -262,6 +267,7 @@ class CanonicalComponentSpecification(CanonicalModel):
     source_identity: str = Field(min_length=1)
     properties: tuple[CanonicalComponentProperty, ...] = ()
     geometry_source: CanonicalGeometrySourceReference | None = None
+    generated_part: GeneratedPartSpecification | None = None
     interfaces: tuple[str, ...] = ()
     compatibility_declarations: tuple[str, ...] = ()
     supplied_reference_frames: tuple[SuppliedComponentReferenceFrame, ...] = ()
@@ -292,6 +298,12 @@ class CanonicalComponentSpecification(CanonicalModel):
             "interfaces": list(self.interfaces),
             "compatibility_declarations": list(self.compatibility_declarations),
         }
+        if self.schema_version.endswith("@3"):
+            payload["generated_part"] = (
+                None
+                if self.generated_part is None
+                else self.generated_part.model_dump(mode="json")
+            )
         if self.schema_version.endswith("@2"):
             payload.update({
                 "supplied_reference_frames": [
@@ -328,6 +340,10 @@ class CanonicalComponentSpecification(CanonicalModel):
         if any(not value.strip() for value in declarations):
             raise ValueError("component declarations must not be empty")
         if self.schema_version.endswith("@1"):
+            if self.generated_part is not None:
+                raise ValueError(
+                    "canonical-component-specification@1 must not contain generated_part"
+                )
             if any((
                 self.supplied_reference_frames,
                 self.supplied_interface_definitions,
@@ -336,15 +352,34 @@ class CanonicalComponentSpecification(CanonicalModel):
                 raise ValueError("canonical-component-specification@1 must not contain M13 records")
             if self.geometry_source is not None and self.geometry_source.coordinate_system_id is not None:
                 raise ValueError("canonical-component-specification@1 requires no coordinate system")
-        elif any((
-            self.supplied_reference_frames,
-            self.supplied_interface_definitions,
-            self.geometry_derivation_transforms,
-        )) and (
-            self.geometry_source is None
-            or self.geometry_source.coordinate_system_id is None
-        ):
-            raise ValueError("canonical-component-specification@2 M13 records require a coordinate system")
+        elif self.schema_version.endswith("@2"):
+            if self.generated_part is not None:
+                raise ValueError(
+                    "canonical-component-specification@2 must not contain generated_part"
+                )
+            if any(
+                (
+                    self.supplied_reference_frames,
+                    self.supplied_interface_definitions,
+                    self.geometry_derivation_transforms,
+                )
+            ) and (
+                self.geometry_source is None
+                or self.geometry_source.coordinate_system_id is None
+            ):
+                raise ValueError("canonical-component-specification@2 M13 records require a coordinate system")
+        else:
+            if self.generated_part is None:
+                raise ValueError("canonical-component-specification@3 requires generated_part")
+            if self.geometry_source is not None or any((
+                self.supplied_reference_frames,
+                self.supplied_interface_definitions,
+                self.geometry_derivation_transforms,
+            )):
+                raise ValueError(
+                    "canonical-component-specification@3 generated representation is exclusive"
+                )
+            validate_generated_interface_registry(self.generated_part, self.interfaces)
 
         frames = tuple(sorted(self.supplied_reference_frames, key=lambda frame: frame.frame_id))
         definitions = tuple(sorted(
@@ -697,7 +732,9 @@ class CanonicalM10VerificationObligation(CanonicalModel):
 
 
 class CanonicalPhysicalMechanism(CanonicalModel):
-    schema_version: Literal["canonical-physical-mechanism@1"] = (
+    schema_version: Literal[
+        "canonical-physical-mechanism@1", "canonical-physical-mechanism@2"
+    ] = (
         "canonical-physical-mechanism@1"
     )
     id: str = Field(min_length=1)
@@ -711,12 +748,54 @@ class CanonicalPhysicalMechanism(CanonicalModel):
     connections: tuple[CanonicalMechanicalConnection, ...] = ()
     joint_bindings: tuple[CanonicalJointPhysicalBinding, ...] = ()
     m10_obligations: tuple[CanonicalM10VerificationObligation, ...] = ()
+    generated_placement_derivations: tuple[CanonicalGeneratedPlacementDerivation, ...] = ()
     promotion_provenance: tuple[str, ...] = ()
     mechanism_hash: str = "pending"
 
     _validate_text = field_validator("id", "name")(_nonblank)
     _validate_hash = field_validator("mechanism_hash")(_hash_or_pending)
     _validate_provenance = field_validator("promotion_provenance")(_nonblank_tuple)
+
+    def _mechanism_payload_for_schema(self) -> dict[str, Any]:
+        payload = {
+            "schema_version": self.schema_version,
+            "id": self.id,
+            "name": self.name,
+            "component_specifications": [
+                specification.model_dump(mode="json")
+                for specification in self.component_specifications
+            ],
+            "components": [component.model_dump(mode="json") for component in self.components],
+            "accepted_design_choices": [
+                choice.model_dump(mode="json") for choice in self.accepted_design_choices
+            ],
+            "placements": [placement.model_dump(mode="json") for placement in self.placements],
+            "connections": [connection.model_dump(mode="json") for connection in self.connections],
+            "joint_bindings": [binding.model_dump(mode="json") for binding in self.joint_bindings],
+            "m10_obligations": [
+                obligation.model_dump(mode="json") for obligation in self.m10_obligations
+            ],
+        }
+        if self.schema_version.endswith("@2"):
+            payload["generated_placement_derivations"] = [
+                derivation.model_dump(mode="json")
+                for derivation in self.generated_placement_derivations
+            ]
+        payload.update(
+            promotion_provenance=list(self.promotion_provenance),
+            mechanism_hash=self.mechanism_hash,
+        )
+        return payload
+
+    def _mechanism_hash_payload(self) -> dict[str, Any]:
+        payload = self._mechanism_payload_for_schema()
+        payload.pop("mechanism_hash")
+        return payload
+
+    @model_serializer(mode="wrap")
+    def serialize_mechanism(self, handler):
+        del handler
+        return self._mechanism_payload_for_schema()
 
     @model_validator(mode="after")
     def validate_mechanism(self) -> "CanonicalPhysicalMechanism":
@@ -733,6 +812,13 @@ class CanonicalPhysicalMechanism(CanonicalModel):
             component.specification_hash not in specifications for component in self.components
         ):
             raise ValueError("physical component references a missing specification")
+        for component in self.components:
+            specification = specifications[component.specification_hash]
+            undeclared_interfaces = set(component.interfaces) - set(specification.interfaces)
+            if undeclared_interfaces:
+                raise ValueError(
+                    "physical component declares an interface outside its specification registry"
+                )
         placements = tuple(placement.placement_id for placement in self.placements)
         if len(set(placements)) != len(placements):
             raise ValueError("placement IDs must be unique")
@@ -797,7 +883,22 @@ class CanonicalPhysicalMechanism(CanonicalModel):
         obligation_keys = tuple(obligation.joint_semantic_key for obligation in self.m10_obligations)
         if len(set(obligation_keys)) != len(obligation_keys):
             raise ValueError("M10 obligation joint keys must be unique")
-        expected = _canonical_hash(self, "mechanism_hash")
+        if self.schema_version.endswith("@1") and self.generated_placement_derivations:
+            raise ValueError(
+                "canonical-physical-mechanism@1 must not contain generated placement derivations"
+            )
+        derivation_ids = tuple(
+            derivation.derivation_id for derivation in self.generated_placement_derivations
+        )
+        if len(set(derivation_ids)) != len(derivation_ids):
+            raise ValueError("generated placement derivation IDs must be unique")
+        encoded = json.dumps(
+            self._mechanism_hash_payload(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        expected = f"sha256:{hashlib.sha256(encoded).hexdigest()}"
         if self.mechanism_hash == "pending":
             object.__setattr__(self, "mechanism_hash", expected)
         elif self.mechanism_hash != expected:

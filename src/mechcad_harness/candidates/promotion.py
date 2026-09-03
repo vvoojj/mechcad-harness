@@ -24,6 +24,8 @@ from .evaluation import (
     _validate_cad_inputs,
     _validate_m10_inputs,
 )
+from .cad_realization import CandidateCadRealizationService
+from .generated_authority import build_candidate_view
 from .models import (
     ComponentPropertyAvailability,
     GeometrySourceReference,
@@ -92,6 +94,13 @@ from mechcad_harness.models.supplied_component_interface import (
     GeometryDerivationStatus,
     MaterializedInterfaceVerifier,
 )
+from mechcad_harness.models.generated_part import (
+    GeneratedAuthorityView,
+    resolve_generated_inputs,
+)
+from mechcad_harness.models.generated_placement import placement_derivations_hash
+from mechcad_harness.models.generated_placement import CanonicalGeneratedPlacementDerivation
+from mechcad_harness.generated_part_cad import verify_generated_part
 from mechcad_harness.state.hashing import canonical_json
 
 
@@ -246,6 +255,8 @@ class CandidatePromotionCompiler:
             raise ValueError("promotion target mechanism path already exists")
         trusted_geometry_ids = self._verify_geometry_sources(request)
         mapping = self.map_instances(request)
+        self._verify_generated_authority_survival(request, mapping)
+        self._verify_placement_derivation_binding(request)
 
         return PromotionReadiness(
             project_id=request.project_id,
@@ -373,6 +384,7 @@ class CandidatePromotionCompiler:
             connections=mechanism.connections,
             joint_bindings=mechanism.joint_bindings,
             m10_obligations=mechanism.m10_obligations,
+            generated_placement_derivations=mechanism.generated_placement_derivations,
             mapping_identities=tuple(component.instance_id for component in mechanism.components),
         )
 
@@ -398,7 +410,16 @@ class CandidatePromotionCompiler:
             self._canonical_choice(variable, classifications, canonical_by_candidate)
             for variable in candidate.design_variables
         )
-        placements = self._canonical_placements(candidate, classifications, canonical_by_candidate)
+        generated_derivations = self._canonical_generated_placement_derivations(
+            request, canonical_by_candidate
+        )
+        placements = self._canonical_placements(
+            candidate,
+            classifications,
+            canonical_by_candidate,
+            request=request,
+            generated_derivations=generated_derivations,
+        )
         placement_ids = {placement.instance_id: placement.placement_id for placement in placements}
         components = tuple(
             CanonicalPhysicalComponent(
@@ -428,6 +449,11 @@ class CandidatePromotionCompiler:
             request, canonical_by_candidate
         )
         return CanonicalPhysicalMechanism(
+            schema_version=(
+                "canonical-physical-mechanism@2"
+                if generated_derivations
+                else "canonical-physical-mechanism@1"
+            ),
             id=request.canonical_target_mechanism_id,
             name=f"Promoted mechanism {request.canonical_target_mechanism_id}",
             component_specifications=specifications,
@@ -437,6 +463,7 @@ class CandidatePromotionCompiler:
             connections=connections,
             joint_bindings=joint_bindings,
             m10_obligations=obligations,
+            generated_placement_derivations=generated_derivations,
             promotion_provenance=(
                 f"candidate:{candidate.candidate_hash}",
                 f"request:{request.request_hash}",
@@ -448,7 +475,9 @@ class CandidatePromotionCompiler:
         geometry = specification.geometry_source
         return CanonicalComponentSpecification(
             schema_version=(
-                "canonical-component-specification@2"
+                "canonical-component-specification@3"
+                if specification.schema_version == "component-specification@3"
+                else "canonical-component-specification@2"
                 if specification.schema_version == "component-specification@2"
                 else "canonical-component-specification@1"
             ),
@@ -479,6 +508,11 @@ class CandidatePromotionCompiler:
                     source_identity=geometry.source_identity,
                     coordinate_system_id=geometry.coordinate_system_id,
                 )
+            ),
+            generated_part=(
+                specification.generated_part
+                if specification.schema_version == "component-specification@3"
+                else None
             ),
             interfaces=specification.interfaces,
             compatibility_declarations=specification.compatibility_declarations,
@@ -511,10 +545,73 @@ class CandidatePromotionCompiler:
         )
 
     @staticmethod
-    def _canonical_placements(candidate, classifications, canonical_by_candidate):
+    def _canonical_placements(
+        candidate,
+        classifications,
+        canonical_by_candidate,
+        *,
+        request=None,
+        generated_derivations=(),
+    ):
         variables = {variable.name: variable for variable in candidate.design_variables}
+        derivations_by_target = {
+            derivation.target_canonical_instance_id: derivation
+            for derivation in generated_derivations
+        }
         placements = []
         for component in candidate.realization.components:
+            generated_derivation = derivations_by_target.get(
+                canonical_by_candidate[component.instance_id]
+            )
+            if generated_derivation is not None:
+                target_mapping = next(
+                    (
+                        mapping
+                        for mapping in request.evaluation.cad_request.mappings
+                        if mapping.physical_instance_id == component.instance_id
+                    ),
+                    None,
+                )
+                if target_mapping is None:
+                    raise ValueError("canonical generated placement mapping is missing")
+                specifications = {
+                    specification.specification_hash: specification
+                    for specification in candidate.component_specifications
+                }
+                transform = CandidateCadRealizationService._derived_placement(
+                    None,
+                    request.evaluation.cad_request,
+                    target_mapping,
+                    specifications,
+                    candidate,
+                )
+                target_hash = (
+                    generated_derivation.target_generated_interface_hash
+                    if generated_derivation.target_generated_interface_hash is not None
+                    else generated_derivation.target_generated_frame_hash
+                )
+                assert target_hash is not None
+                placements.append(
+                    CanonicalPlacement(
+                        placement_id=f"{canonical_by_candidate[component.instance_id]}:placement",
+                        instance_id=canonical_by_candidate[component.instance_id],
+                        origin=CanonicalPlacementOrigin.DETERMINISTIC_RELATION,
+                        input_identities=(
+                            generated_derivation.source_interface_hash,
+                            target_hash,
+                            *sorted(item.input_hash for item in generated_derivation.inputs),
+                            *(() if generated_derivation.rotation is None else (
+                                generated_derivation.rotation.input_hash,
+                            )),
+                        ),
+                        relation=generated_derivation.rule_id,
+                        x_mm=transform.x_mm,
+                        y_mm=transform.y_mm,
+                        z_mm=transform.z_mm,
+                        rotation_quaternion=transform.rotation_quaternion,
+                    )
+                )
+                continue
             names = tuple(
                 f"{component.instance_id}.placement.{axis}" for axis in ("x_mm", "y_mm", "z_mm")
             )
@@ -543,6 +640,46 @@ class CandidatePromotionCompiler:
             )
             placements.append(placement)
         return tuple(placements)
+
+    @staticmethod
+    def _canonical_generated_placement_derivations(request, canonical_by_candidate):
+        cad_request = getattr(getattr(request, "evaluation", None), "cad_request", None)
+        if cad_request is None:
+            return ()
+        result = []
+        for derivation in getattr(cad_request, "placement_derivations", ()):
+            try:
+                source_id = canonical_by_candidate[derivation.source_physical_instance_id]
+                target_id = canonical_by_candidate[derivation.target_physical_instance_id]
+            except KeyError as exc:
+                raise ValueError("canonical generated placement references an unknown instance") from exc
+            source_frame = derivation.source_frame_ref
+            target_frame = derivation.target_generated_frame_ref
+            target_interface = derivation.target_generated_interface_ref
+            result.append(
+                CanonicalGeneratedPlacementDerivation(
+                    derivation_id=derivation.derivation_id,
+                    rule_id=derivation.rule_id,
+                    source_canonical_instance_id=source_id,
+                    source_interface_id=derivation.source_interface_ref.interface_id,
+                    source_interface_hash=derivation.source_interface_ref.interface_hash,
+                    source_frame_id=None if source_frame is None else source_frame.frame_id,
+                    source_frame_hash=None if source_frame is None else source_frame.frame_hash,
+                    source_placement_ref=derivation.source_placement_ref,
+                    target_canonical_instance_id=target_id,
+                    target_generated_interface_id=(
+                        None if target_interface is None else target_interface.interface_id
+                    ),
+                    target_generated_interface_hash=(
+                        None if target_interface is None else target_interface.interface_hash
+                    ),
+                    target_generated_frame_id=None if target_frame is None else target_frame.frame_id,
+                    target_generated_frame_hash=None if target_frame is None else target_frame.frame_hash,
+                    inputs=derivation.inputs,
+                    rotation=derivation.rotation,
+                )
+            )
+        return tuple(result)
 
     def _canonical_motion_semantics(self, request, canonical_by_candidate):
         evaluation = request.evaluation
@@ -947,13 +1084,16 @@ class CandidatePromotionCompiler:
     def _verify_policy(self, policy: CandidatePromotionPolicy, candidate) -> None:
         if policy.allowed_target_family != "canonical_physical_mechanism":
             raise ValueError("promotion target family is not supported")
-        has_v2_specification = any(
-            specification.schema_version == "component-specification@2"
+        has_v2_or_v3_specification = any(
+            specification.schema_version in {
+                "component-specification@2",
+                "component-specification@3",
+            }
             for specification in candidate.component_specifications
         )
         expected_mapping_schema = (
             "candidate-canonical-mapping@2"
-            if has_v2_specification
+            if has_v2_or_v3_specification
             else "candidate-canonical-mapping@1"
         )
         if policy.mapping_schema_version != expected_mapping_schema:
@@ -968,6 +1108,187 @@ class CandidatePromotionCompiler:
         }
         if not {authority.value for authority in expected_authorities} <= actual_authorities:
             raise ValueError("promotion required property authority is missing")
+
+    def _verify_generated_authority_survival(self, request, mapping=()):
+        """Verify generated inputs and relation bindings on both projection layers."""
+        candidate = request.candidate
+        generated_specifications = tuple(
+            specification
+            for specification in candidate.component_specifications
+            if specification.schema_version == "component-specification@3"
+        )
+        if not generated_specifications:
+            return
+
+        expected = self._expected_classifications(request)
+        classifications = self._classifications_by_identity(request, expected)
+        canonical_by_candidate = {
+            item.candidate_instance_id: item.canonical_instance_id for item in mapping
+        }
+        canonical_specifications = tuple(
+            self._canonical_specification(specification)
+            for specification in candidate.component_specifications
+        )
+        canonical_by_candidate_hash = {
+            candidate_specification.specification_hash: canonical_specification
+            for candidate_specification, canonical_specification in zip(
+                candidate.component_specifications, canonical_specifications
+            )
+        }
+        canonical_choices = tuple(
+            self._canonical_choice(variable, classifications, canonical_by_candidate)
+            for variable in candidate.design_variables
+        )
+        canonical_interfaces = tuple(
+            interface
+            for specification in canonical_specifications
+            for interface in specification.supplied_interface_definitions
+        )
+        canonical_frames = tuple(
+            frame
+            for specification in canonical_specifications
+            for frame in specification.supplied_reference_frames
+        )
+        components_by_specification = {
+            specification.specification_hash: tuple(
+                component
+                for component in candidate.realization.components
+                if component.specification_hash == specification.specification_hash
+            )
+            for specification in generated_specifications
+        }
+
+        for specification in generated_specifications:
+            generated = specification.generated_part
+            assert generated is not None
+            canonical = canonical_by_candidate_hash.get(specification.specification_hash)
+            if canonical is None or canonical.generated_part is None:
+                raise ValueError("generated specification did not survive canonical projection")
+            if generated.model_dump(mode="json") != canonical.generated_part.model_dump(mode="json"):
+                raise ValueError("generated specification semantic substitution")
+            generated_identity = (
+                f"candidate:generated-part:{specification.specification_hash}:"
+                f"{generated.generated_part_id}"
+            )
+            if (
+                classifications[generated_identity].classification
+                is not PromotionValueClassification.ACCEPTED_PHYSICAL_FACT
+                or classifications[generated_identity].source_value != generated.generated_part_hash
+            ):
+                raise ValueError("generated part classification is incorrect")
+
+            candidate_view = build_candidate_view(candidate, specification.specification_hash)
+            canonical_view = GeneratedAuthorityView(
+                component_properties=canonical.properties,
+                design_selections={choice.key: choice for choice in canonical_choices},
+                interface_definitions=canonical_interfaces,
+                supplied_interfaces=canonical_interfaces,
+                reference_frames=canonical_frames
+                + tuple(canonical.generated_part.reference_frames),
+                generated_interfaces=tuple(canonical.generated_part.interfaces),
+            )
+            canonical_instances = components_by_specification.get(
+                specification.specification_hash, ()
+            )
+            if not canonical_instances:
+                raise ValueError("generated specification is not bound to a physical instance")
+            for component in canonical_instances:
+                canonical_instance_id = canonical_by_candidate.get(component.instance_id)
+                if canonical_instance_id is None:
+                    raise ValueError("generated specification instance mapping is missing")
+                try:
+                    candidate_values = resolve_generated_inputs(
+                        generated.inputs,
+                        candidate_view,
+                        owning_instance_context=component.instance_id,
+                    )
+                    canonical_values = resolve_generated_inputs(
+                        canonical.generated_part.inputs,
+                        canonical_view,
+                        owning_instance_context=canonical_instance_id,
+                    )
+                    verify_generated_part(
+                        generated,
+                        candidate_view,
+                        owning_instance_context=component.instance_id,
+                    )
+                    verify_generated_part(
+                        canonical.generated_part,
+                        canonical_view,
+                        owning_instance_context=canonical_instance_id,
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        "generated authority input or binding did not survive promotion"
+                    ) from exc
+                if candidate_values != canonical_values:
+                    raise ValueError("generated authority input value substitution")
+
+    def _verify_placement_derivation_binding(self, request):
+        candidate = request.candidate
+        generated_specifications = tuple(
+            specification
+            for specification in candidate.component_specifications
+            if specification.schema_version == "component-specification@3"
+        )
+        if not generated_specifications:
+            return
+        evaluation = request.evaluation
+        cad_request = evaluation.cad_request
+        if (
+            cad_request is None
+            or cad_request.schema_version != "candidate-cad-realization-request@2"
+            or not cad_request.placement_derivations
+        ):
+            raise ValueError("generated promotion requires a non-empty candidate CAD derivation set")
+        expected_hash = placement_derivations_hash(cad_request.placement_derivations)
+        if cad_request.placement_derivations_hash != expected_hash:
+            raise ValueError("promotion placement derivation set hash mismatch")
+        stage = evaluation.cad_stage_outcome
+        realization = stage.realization
+        if realization is None or realization.placement_derivations_hash != expected_hash:
+            raise ValueError("promotion CAD realization derivation set binding mismatch")
+        if realization.request_hash != cad_request.request_hash:
+            raise ValueError("promotion CAD request derivation set substitution")
+        if evaluation.m10_stage_outcome.cad_realization_hash != realization.realization_hash:
+            raise ValueError("promotion selected M10 realization derivation set mismatch")
+
+        specifications = {
+            specification.specification_hash: specification
+            for specification in candidate.component_specifications
+        }
+        generated_targets = {
+            component.instance_id
+            for component in candidate.realization.components
+            if specifications[component.specification_hash].schema_version
+            == "component-specification@3"
+        }
+        derivation_targets = {
+            derivation.target_physical_instance_id
+            for derivation in cad_request.placement_derivations
+        }
+        if derivation_targets != generated_targets:
+            raise ValueError("promotion derivation set does not cover generated targets")
+
+        mappings = {
+            mapping.physical_instance_id: mapping for mapping in cad_request.mappings
+        }
+        for derivation in cad_request.placement_derivations:
+            mapping = mappings.get(derivation.target_physical_instance_id)
+            if mapping is None:
+                raise ValueError("promotion generated placement mapping is missing")
+            try:
+                CandidateCadRealizationService._derived_placement(
+                    None,
+                    cad_request,
+                    mapping,
+                    specifications,
+                    candidate,
+                )
+            except Exception as exc:
+                raise ValueError(
+                    "promotion candidate CAD placement does not match semantic derivation"
+                ) from exc
 
     def _verify_geometry_sources(self, request: CandidatePromotionRequest) -> tuple[str, ...]:
         sources = []
@@ -1163,6 +1484,27 @@ class CandidatePromotionCompiler:
                         PromotionValueClassification.CANONICAL_REDERIVATION_INPUT,
                     ),
                 )
+            generated_part = getattr(specification, "generated_part", None)
+            if generated_part is not None:
+                add_expected(
+                    f"candidate:generated-part:{specification.specification_hash}:"
+                    f"{generated_part.generated_part_id}",
+                    _ExpectedClassification(
+                        True,
+                        generated_part.generated_part_hash,
+                        PromotionValueClassification.ACCEPTED_PHYSICAL_FACT,
+                    ),
+                )
+        cad_request = getattr(getattr(request, "evaluation", None), "cad_request", None)
+        for derivation in getattr(cad_request, "placement_derivations", ()):
+            add_expected(
+                f"candidate:generated-placement:{derivation.derivation_id}",
+                _ExpectedClassification(
+                    True,
+                    derivation.derivation_hash,
+                    PromotionValueClassification.CANONICAL_REDERIVATION_INPUT,
+                ),
+            )
         for variable in candidate.design_variables:
             key = f"candidate:design-variable:{variable.name}"
             add_expected(key, _ExpectedClassification(True, variable.value))

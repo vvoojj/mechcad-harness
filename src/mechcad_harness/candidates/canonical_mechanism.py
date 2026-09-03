@@ -8,12 +8,22 @@ from pydantic import Field, StrictInt, StrictStr, field_validator, model_validat
 
 from mechcad_harness.backends.models import BackendProvenance
 from mechcad_harness.artifacts import ArtifactStore, ArtifactType, EngineeringArtifact
+from mechcad_harness.cad_assembly import CadRigidTransform
+from mechcad_harness.generated_part_cad import verify_generated_part
 from mechcad_harness.models.geometry_identity import GeometryArtifactIdentity
-from mechcad_harness.models import CanonicalPhysicalMechanism
+from mechcad_harness.models import CanonicalPhysicalMechanism, CanonicalPlacementOrigin
+from mechcad_harness.models.generated_placement import (
+    _resolve_rotation_input,
+    compose_poses,
+    place_generated_target,
+    pose_from_interface,
+    resolve_placement_inputs,
+)
 from mechcad_harness.models.supplied_component_interface import (
     GeometryDerivationStatus,
     MaterializedInterfaceVerifier,
 )
+from mechcad_harness.models import supplied_component_interface as m13
 from mechcad_harness.state import StateManager, state_hash as calculate_state_hash
 
 from .promotion_models import (
@@ -22,6 +32,7 @@ from .promotion_models import (
     _nonblank,
     _require_hash,
 )
+from .generated_authority import build_canonical_view, m13_local_pose
 
 
 class ProjectArtifactResolver:
@@ -260,7 +271,392 @@ class CanonicalPhysicalMechanismCompiler:
             for component in validated.components
         ):
             raise ValueError("canonical component specification binding is invalid")
+        components_by_specification = {
+            specification_hash: tuple(
+                component
+                for component in validated.components
+                if component.specification_hash == specification_hash
+            )
+            for specification_hash in specification_hashes
+        }
+        for specification in validated.component_specifications:
+            if specification.generated_part is None:
+                continue
+            contexts = components_by_specification[specification.specification_hash]
+            for component in contexts or (None,):
+                try:
+                    verify_generated_part(
+                        specification.generated_part,
+                        build_canonical_view(validated, specification.specification_hash),
+                        owning_instance_context=(
+                            None if component is None else component.instance_id
+                        ),
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        "canonical generated specification authority integrity failure"
+                    ) from exc
+        CanonicalPhysicalMechanismCompiler._validate_generated_placements(validated)
         return validated
+
+    @staticmethod
+    def _validate_generated_placements(mechanism: CanonicalPhysicalMechanism) -> None:
+        derivations = mechanism.generated_placement_derivations
+        specifications = {
+            specification.specification_hash: specification
+            for specification in mechanism.component_specifications
+        }
+        if not derivations:
+            generated_instance_ids = {
+                component.instance_id
+                for component in mechanism.components
+                if specifications[component.specification_hash].generated_part is not None
+            }
+            if any(
+                placement.instance_id in generated_instance_ids
+                for placement in mechanism.placements
+            ):
+                raise ValueError(
+                    "canonical generated placement derivation set is missing"
+                )
+            return
+        target_instance_ids = tuple(
+            derivation.target_canonical_instance_id for derivation in derivations
+        )
+        if len(set(target_instance_ids)) != len(target_instance_ids):
+            raise ValueError(
+                "canonical generated placement target instance IDs must be unique"
+            )
+        components = {
+            component.instance_id: component for component in mechanism.components
+        }
+        placements = {placement.instance_id: placement for placement in mechanism.placements}
+        generated_instance_ids = {
+            component.instance_id
+            for component in mechanism.components
+            if specifications[component.specification_hash].generated_part is not None
+        }
+        generated_placement_instance_ids = {
+            placement.instance_id
+            for placement in mechanism.placements
+            if placement.instance_id in generated_instance_ids
+        }
+        generated_placements = tuple(
+            placement
+            for placement in mechanism.placements
+            if placement.instance_id in generated_instance_ids
+        )
+        if len(generated_placement_instance_ids) != len(generated_placements):
+            raise ValueError(
+                "canonical generated placements must have one record per target instance"
+            )
+        if generated_placement_instance_ids != set(target_instance_ids):
+            raise ValueError(
+                "canonical generated placements must correspond exactly to derivation targets"
+            )
+        derivations_by_id = {derivation.derivation_id: derivation for derivation in derivations}
+        view_by_specification = {
+            specification.specification_hash: build_canonical_view(
+                mechanism, specification.specification_hash
+            )
+            for specification in mechanism.component_specifications
+        }
+        resolving: set[str] = set()
+        resolved: dict[str, CadRigidTransform] = {}
+
+        def generated_interface(component, specification, interface_id, interface_hash):
+            generated = specification.generated_part
+            if generated is None:
+                raise ValueError("canonical generated placement requires a generated target")
+            if interface_id not in component.interfaces:
+                raise ValueError(
+                    "canonical generated placement interface is not declared by its component"
+                )
+            matches = tuple(
+                interface
+                for interface in generated.interfaces
+                if interface.interface_id == interface_id
+                and interface.interface_hash == interface_hash
+            )
+            if len(matches) != 1:
+                raise ValueError("canonical generated interface reference does not resolve")
+            return matches[0]
+
+        def generated_frame(specification, frame_id, frame_hash):
+            generated = specification.generated_part
+            if generated is None:
+                return None
+            matches = tuple(
+                frame
+                for frame in generated.reference_frames
+                if frame.frame_id == frame_id and frame.frame_hash == frame_hash
+            )
+            if len(matches) != 1:
+                return None
+            return matches[0]
+
+        def supplied_interface(component, specification, interface_id, interface_hash):
+            if interface_id not in component.interfaces:
+                raise ValueError(
+                    "canonical source interface is not declared by its component"
+                )
+            matches = tuple(
+                definition
+                for definition in specification.supplied_interface_definitions
+                if definition.interface_id == interface_id
+                and definition.interface_hash == interface_hash
+            )
+            if len(matches) != 1:
+                raise ValueError("canonical supplied interface reference does not resolve")
+            definition = matches[0]
+            variant = definition.shaft or definition.mounting_face
+            active_frame = None
+            frame_id = getattr(variant, "reference_frame_id", None)
+            if frame_id is not None:
+                active_frame = next(
+                    (frame for frame in specification.supplied_reference_frames if frame.frame_id == frame_id),
+                    None,
+                )
+                if active_frame is None:
+                    raise ValueError("canonical supplied interface frame does not resolve")
+            return definition, definition.shaft or definition.mounting_face, active_frame
+
+        def source_local_pose(derivation):
+            source_component = components.get(derivation.source_canonical_instance_id)
+            if source_component is None:
+                raise ValueError("canonical placement source instance does not resolve")
+            specification = specifications[source_component.specification_hash]
+            generated = specification.generated_part
+            if generated is not None:
+                generated_interface(
+                    source_component,
+                    specification,
+                    derivation.source_interface_id,
+                    derivation.source_interface_hash,
+                )
+            else:
+                definition, variant, active_frame = supplied_interface(
+                    source_component,
+                    specification,
+                    derivation.source_interface_id,
+                    derivation.source_interface_hash,
+                )
+            if derivation.rule_id == "frame-generated-placement@1":
+                if derivation.source_frame_id is None or derivation.source_frame_hash is None:
+                    raise ValueError("canonical source frame is missing")
+                frame = generated_frame(
+                    specification, derivation.source_frame_id, derivation.source_frame_hash
+                )
+                if frame is not None:
+                    return pose_from_interface(frame)
+                frame_matches = tuple(
+                    candidate
+                    for candidate in specification.supplied_reference_frames
+                    if candidate.frame_id == derivation.source_frame_id
+                    and candidate.frame_hash == derivation.source_frame_hash
+                )
+                if len(frame_matches) != 1:
+                    raise ValueError("canonical source frame reference does not resolve")
+                if (
+                    variant.reference_frame_id != frame_matches[0].frame_id
+                    or active_frame is None
+                    or active_frame.frame_id != frame_matches[0].frame_id
+                    or active_frame.frame_hash != frame_matches[0].frame_hash
+                ):
+                    raise ValueError(
+                        "canonical source frame is not the exact frame declared by the source interface"
+                    )
+                m13.require_authoritatively_consumable_interface(
+                    definition, frame_matches[0]
+                )
+                return m13_local_pose(frame_matches[0])
+            if generated is not None:
+                return pose_from_interface(
+                    generated_interface(
+                        source_component,
+                        specification,
+                        derivation.source_interface_id,
+                        derivation.source_interface_hash,
+                    )
+                )
+            definition, _, active_frame = supplied_interface(
+                source_component,
+                specification,
+                derivation.source_interface_id,
+                derivation.source_interface_hash,
+            )
+            return m13_local_pose(definition, active_frame)
+
+        def source_placement(instance_id, reference):
+            if reference.kind == "design_variable_placement":
+                placement = placements.get(instance_id)
+                if placement is None:
+                    raise ValueError(
+                        "canonical source placement record is missing"
+                    )
+                if (
+                    placement.origin is not CanonicalPlacementOrigin.ACCEPTED_DESIGN_CHOICE
+                    or placement.relation != "accepted-design-variable-placement@1"
+                    or placement.rotation_quaternion != (1.0, 0.0, 0.0, 0.0)
+                ):
+                    raise ValueError("canonical source placement authority is invalid")
+                choices = tuple(
+                    next(
+                        (
+                            choice
+                            for choice in mechanism.accepted_design_choices
+                            if choice.key == f"{instance_id}.placement.{axis}"
+                        ),
+                        None,
+                    )
+                    for axis in ("x_mm", "y_mm", "z_mm")
+                )
+                if any(choice is None for choice in choices):
+                    raise ValueError(
+                        "canonical source placement design choices are missing"
+                    )
+                if any(
+                    isinstance(choice.value, bool)
+                    or not isinstance(choice.value, (int, float))
+                    for choice in choices
+                ):
+                    raise ValueError(
+                        "canonical source placement design choices are not numeric"
+                    )
+                expected_inputs = tuple(
+                    identity
+                    for choice in choices
+                    for identity in choice.source_identities
+                )
+                if placement.input_identities != expected_inputs:
+                    raise ValueError(
+                        "canonical source placement design choice identities mismatch"
+                    )
+                expected_coordinates = tuple(float(choice.value) for choice in choices)
+                if (
+                    placement.x_mm,
+                    placement.y_mm,
+                    placement.z_mm,
+                ) != expected_coordinates:
+                    raise ValueError(
+                        "canonical source placement design choice values mismatch"
+                    )
+                return CadRigidTransform(
+                    x_mm=placement.x_mm,
+                    y_mm=placement.y_mm,
+                    z_mm=placement.z_mm,
+                    rotation_quaternion=placement.rotation_quaternion,
+                )
+            dependency = derivations_by_id.get(reference.derivation_id)
+            if dependency is None or dependency.target_canonical_instance_id != instance_id:
+                raise ValueError("canonical source placement reference does not resolve")
+            return derive(dependency)
+
+        def target_local_pose(derivation):
+            target_component = components.get(derivation.target_canonical_instance_id)
+            if target_component is None:
+                raise ValueError("canonical placement target instance does not resolve")
+            specification = specifications[target_component.specification_hash]
+            if derivation.rule_id == "coaxial-generated-placement@1":
+                interface_id = derivation.target_generated_interface_id
+                interface_hash = derivation.target_generated_interface_hash
+                if interface_id is None or interface_hash is None:
+                    raise ValueError("canonical target interface is missing")
+                return pose_from_interface(
+                    generated_interface(
+                        target_component, specification, interface_id, interface_hash
+                    )
+                )
+            frame_id = derivation.target_generated_frame_id
+            frame_hash = derivation.target_generated_frame_hash
+            if frame_id is None or frame_hash is None:
+                raise ValueError("canonical target frame is missing")
+            frame = generated_frame(specification, frame_id, frame_hash)
+            if frame is None:
+                raise ValueError("canonical target frame does not resolve")
+            return pose_from_interface(frame)
+
+        def derive(derivation):
+            if derivation.derivation_id in resolving:
+                raise ValueError("canonical placement derivation set must be acyclic")
+            if derivation.derivation_id in resolved:
+                return resolved[derivation.derivation_id]
+            resolving.add(derivation.derivation_id)
+            source_component = components.get(derivation.source_canonical_instance_id)
+            if source_component is None:
+                raise ValueError("canonical placement source instance does not resolve")
+            source_pose = compose_poses(
+                source_placement(
+                    derivation.source_canonical_instance_id,
+                    derivation.source_placement_ref,
+                ),
+                source_local_pose(derivation),
+            )
+            target_component = components.get(derivation.target_canonical_instance_id)
+            if target_component is None:
+                raise ValueError("canonical placement target instance does not resolve")
+            target_view = view_by_specification[target_component.specification_hash]
+            inputs = resolve_placement_inputs(derivation, target_view)
+            if len(inputs) > 1:
+                raise ValueError("canonical generated placement has more than one axial offset")
+            rotation = (
+                _resolve_rotation_input(derivation, target_view)
+                if derivation.rotation is not None
+                else None
+            )
+            result = place_generated_target(
+                derivation.rule_id,
+                source_pose,
+                target_local_pose(derivation),
+                next(iter(inputs.values()), None),
+                rotation,
+            )
+            resolving.remove(derivation.derivation_id)
+            resolved[derivation.derivation_id] = result
+            return result
+
+        for derivation in derivations:
+            target = derivation.target_canonical_instance_id
+            target_component = components.get(target)
+            if target_component is None:
+                raise ValueError("canonical placement derivation target is unknown")
+            target_specification = specifications[target_component.specification_hash]
+            if target_specification.generated_part is None:
+                raise ValueError("canonical placement derivation target is not generated")
+            expected = derive(derivation)
+            placement = placements.get(target)
+            if placement is None:
+                raise ValueError("canonical generated placement record is missing")
+            target_hash = (
+                derivation.target_generated_interface_hash
+                if derivation.target_generated_interface_hash is not None
+                else derivation.target_generated_frame_hash
+            )
+            if target_hash is None:
+                raise ValueError("canonical generated placement target identity is missing")
+            expected_inputs = (
+                derivation.source_interface_hash,
+                target_hash,
+                *sorted(item.input_hash for item in derivation.inputs),
+                *(
+                    ()
+                    if derivation.rotation is None
+                    else (derivation.rotation.input_hash,)
+                ),
+            )
+            actual = CadRigidTransform(
+                x_mm=placement.x_mm,
+                y_mm=placement.y_mm,
+                z_mm=placement.z_mm,
+                rotation_quaternion=placement.rotation_quaternion,
+            )
+            if (
+                actual != expected
+                or placement.origin.value != "deterministic_relation"
+                or placement.relation != derivation.rule_id
+                or placement.input_identities != expected_inputs
+            ):
+                raise ValueError("canonical placement does not match its generated derivation")
 
     def _verify_sources(
         self, project_id: str, mechanism: CanonicalPhysicalMechanism
@@ -406,6 +802,14 @@ class CanonicalPhysicalMechanismCompiler:
         return resolver
 
 
+def validate_canonical_mechanism(
+    mechanism: CanonicalPhysicalMechanism,
+) -> CanonicalPhysicalMechanism:
+    """Re-run canonical semantic integrity checks at every trusted boundary."""
+
+    return CanonicalPhysicalMechanismCompiler._validate_mechanism(mechanism)
+
+
 def _projection_from_mechanism(
     mechanism: CanonicalPhysicalMechanism,
 ) -> PromotableMechanismProjection:
@@ -421,6 +825,7 @@ def _projection_from_mechanism(
         connections=mechanism.connections,
         joint_bindings=mechanism.joint_bindings,
         m10_obligations=mechanism.m10_obligations,
+        generated_placement_derivations=mechanism.generated_placement_derivations,
         mapping_identities=tuple(
             component.instance_id for component in mechanism.components
         ),
@@ -446,5 +851,6 @@ __all__ = [
     "CanonicalPhysicalMechanismCompiler",
     "ProjectArtifactResolver",
     "TrustedSourceArtifact",
+    "validate_canonical_mechanism",
     "normalized_projection",
 ]

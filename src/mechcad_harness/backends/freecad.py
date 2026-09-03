@@ -161,6 +161,17 @@ def freecad_object_name(operation_id: str) -> str:
     return f"op_{encoded}"
 
 
+def _base_kind(program) -> str:
+    from mechcad_harness.cad_program import BasePlateOperation, CylindricalStockOperation
+
+    base = program.operations[0]
+    if isinstance(base, BasePlateOperation):
+        return "plate"
+    if isinstance(base, CylindricalStockOperation):
+        return "cylindrical"
+    raise ValueError("unsupported CAD base operation")
+
+
 def freecad_provenance(project_id: str, run_id: str, revision: int, state_hash: str, request: FreeCADFixtureRequest, artifact_sha256: str, kind: str, freecad_version: str, artifact_path: str = "pending") -> FreeCADArtifactProvenance:
     return FreeCADArtifactProvenance(project_id=project_id, run_id=run_id, bound_revision=revision, bound_state_hash=state_hash, backend_name="freecad", backend_adapter_version=FREECAD_BACKEND_VERSION, freecad_version=freecad_version, fixture_input_hash=_fixture_hash(request), artifact_kind=kind, artifact_path=artifact_path, artifact_sha256=artifact_sha256, creation_status="verified")
 
@@ -193,7 +204,7 @@ class FreeCADBackend:
 
     @staticmethod
     def compile_program(program: CadPartProgram, fcstd_path: str, step_path: str) -> str:
-        from mechcad_harness.cad_program import BasePlateOperation, RectangularPocketOperation, ThroughHoleOperation, ThroughSlotOperation
+        from mechcad_harness.cad_program import AxialBoreOperation, BasePlateOperation, CylindricalStockOperation, RectangularPocketOperation, ThroughHoleOperation, ThroughSlotOperation
         from mechcad_harness.cad_manifest import build_program_manifest
         manifest = build_program_manifest(program)
         manifest_json = json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
@@ -202,6 +213,11 @@ class FreeCADBackend:
             if isinstance(operation, BasePlateOperation):
                 lines.append(f"base = Part.makeBox({operation.length_mm!r}, {operation.width_mm!r}, {operation.thickness_mm!r})")
                 lines.append("shape = base")
+            elif isinstance(operation, CylindricalStockOperation):
+                lines.append(f"base = Part.makeCylinder({operation.diameter_mm / 2!r}, {operation.length_mm!r}, FreeCAD.Vector(0, 0, 0))")
+                lines.append("shape = base")
+            elif isinstance(operation, AxialBoreOperation):
+                lines.append(f"shape = shape.cut(Part.makeCylinder({operation.diameter_mm / 2!r}, {operation.depth_mm!r}, FreeCAD.Vector(0, 0, {operation.start_z_mm!r})))")
             elif isinstance(operation, ThroughHoleOperation):
                 lines.append(f"shape = shape.cut(Part.makeCylinder({operation.diameter_mm / 2!r}, {program.operations[0].thickness_mm!r}, FreeCAD.Vector({operation.x_mm!r}, {operation.y_mm!r}, 0)))")
             elif isinstance(operation, RectangularPocketOperation):
@@ -296,30 +312,40 @@ class FreeCADBackend:
         return self._verify_persisted(program, workspace, project_id, run_id, revision, state_hash, discovery, fcstd_artifact, step_artifact)
 
     def _verify_persisted(self, program, workspace, project_id, run_id, revision, state_hash, discovery, fcstd_artifact, step_artifact):
-        from mechcad_harness.cad_program import BasePlateOperation, RectangularPocketOperation, ThroughHoleOperation, ThroughSlotOperation
+        from mechcad_harness.cad_program import AxialBoreOperation, BasePlateOperation, RectangularPocketOperation, ThroughHoleOperation, ThroughSlotOperation
         base = program.operations[0]
-        assert isinstance(base, BasePlateOperation)
+        base_kind = _base_kind(program)
         fcstd_path = (Path(workspace) / fcstd_artifact.relative_path).resolve()
         step_path = (Path(workspace) / step_artifact.relative_path).resolve()
-        expected = (base.length_mm, base.width_mm, base.thickness_mm)
+        if base_kind == "plate":
+            assert isinstance(base, BasePlateOperation)
+            expected = (base.length_mm, base.width_mm, base.thickness_mm)
+        else:
+            expected = (base.diameter_mm, base.diameter_mm, base.length_mm)
         probe_lines = []
         for operation in program.operations:
-            if isinstance(operation, ThroughHoleOperation):
-                probe_lines.append(f"hole_{operation.operation_id} = not shape.isInside(FreeCAD.Vector({operation.x_mm!r}, {operation.y_mm!r}, 4), 1e-7, True)")
+            if isinstance(operation, AxialBoreOperation):
+                probe_z = operation.start_z_mm + operation.depth_mm / 2
+                probe_key = f"bore_{operation.operation_id}"
+                probe_lines.append(f"probe_values[{probe_key!r}] = not shape.isInside(FreeCAD.Vector(0, 0, {probe_z!r}), 1e-7, True)")
+            elif isinstance(operation, ThroughHoleOperation):
+                probe_key = f"hole_{operation.operation_id}"
+                probe_lines.append(f"probe_values[{probe_key!r}] = not shape.isInside(FreeCAD.Vector({operation.x_mm!r}, {operation.y_mm!r}, 4), 1e-7, True)")
             elif isinstance(operation, RectangularPocketOperation):
-                probe_lines.append(f"pocket_{operation.operation_id} = not shape.isInside(FreeCAD.Vector({operation.x_mm + operation.length_mm / 2!r}, {operation.y_mm + operation.width_mm / 2!r}, {base.thickness_mm - operation.depth_mm / 2!r}), 1e-7, True)")
+                probe_key = f"pocket_{operation.operation_id}"
+                probe_lines.append(f"probe_values[{probe_key!r}] = not shape.isInside(FreeCAD.Vector({operation.x_mm + operation.length_mm / 2!r}, {operation.y_mm + operation.width_mm / 2!r}, {base.thickness_mm - operation.depth_mm / 2!r}), 1e-7, True)")
             elif isinstance(operation, ThroughSlotOperation):
                 major_offset = operation.length_mm / 2 - operation.width_mm / 4
                 points = ((operation.center_x_mm, operation.center_y_mm), (operation.center_x_mm + (major_offset if operation.orientation == "x" else 0), operation.center_y_mm + (major_offset if operation.orientation == "y" else 0)), (operation.center_x_mm - (major_offset if operation.orientation == "x" else 0), operation.center_y_mm - (major_offset if operation.orientation == "y" else 0)))
                 for index, point in enumerate(points, start=1):
-                    probe_lines.append(f"slot_{operation.operation_id}_{index} = not shape.isInside(FreeCAD.Vector({point[0]!r}, {point[1]!r}, {base.thickness_mm / 2!r}), 1e-7, True)")
-        probe_names = [f"hole_{operation.operation_id}" for operation in program.operations if isinstance(operation, ThroughHoleOperation)] + [f"pocket_{operation.operation_id}" for operation in program.operations if isinstance(operation, RectangularPocketOperation)] + [f"slot_{operation.operation_id}_{index}" for operation in program.operations if isinstance(operation, ThroughSlotOperation) for index in range(1, 4)]
-        probe_payload = "{" + ",".join(f"{name!r}: {name}" for name in probe_names) + "}"
+                    probe_key = f"slot_{operation.operation_id}_{index}"
+                    probe_lines.append(f"probe_values[{probe_key!r}] = not shape.isInside(FreeCAD.Vector({point[0]!r}, {point[1]!r}, {base.thickness_mm / 2!r}), 1e-7, True)")
         from mechcad_harness.cad_manifest import build_program_manifest
         expected_manifest = build_program_manifest(program)
         final_name = expected_manifest.operations[-1].internal_name
         expected_manifest_json = json.dumps(expected_manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
         fcstd_script = f'''import FreeCAD, json
+probe_values = {{}}
 doc = FreeCAD.openDocument({str(fcstd_path)!r})
 obj = doc.getObject({final_name!r})
 if obj is None or obj.Shape.isNull(): raise RuntimeError("expected FCStd object is invalid")
@@ -334,18 +360,23 @@ if [entry["internal_name"] for entry in parsed["operations"]] != {[entry.interna
 box = obj.Shape.BoundBox
 shape = obj.Shape
 {chr(10).join(probe_lines)}
-print("M7A1_JSON=" + json.dumps({{"status":"verified","object_name":obj.Name,"shape_valid":shape.isValid(),"x_length_mm":box.XLength,"y_length_mm":box.YLength,"z_length_mm":box.ZLength,"volume_mm3":shape.Volume,"solid_count":len(shape.Solids),"feature_probes":{probe_payload}}}, sort_keys=True))
+print("M7A1_JSON=" + json.dumps({{"status":"verified","object_name":obj.Name,"shape_valid":shape.isValid(),"x_length_mm":box.XLength,"y_length_mm":box.YLength,"z_length_mm":box.ZLength,"volume_mm3":shape.Volume,"solid_count":len(shape.Solids),"feature_probes":probe_values}}, sort_keys=True))
 FreeCAD.closeDocument(doc.Name)
 '''
         step_probe_lines = []
         for operation in program.operations:
-            if isinstance(operation, ThroughSlotOperation):
+            if isinstance(operation, AxialBoreOperation):
+                probe_z = operation.start_z_mm + operation.depth_mm / 2
+                probe_key = f"bore_{operation.operation_id}"
+                step_probe_lines.append(f"probe_values[{probe_key!r}] = not shape.isInside(FreeCAD.Vector(0, 0, {probe_z!r}), 1e-7, True)")
+            elif isinstance(operation, ThroughSlotOperation):
                 major_offset = operation.length_mm / 2 - operation.width_mm / 4
                 points = ((operation.center_x_mm, operation.center_y_mm), (operation.center_x_mm + (major_offset if operation.orientation == "x" else 0), operation.center_y_mm + (major_offset if operation.orientation == "y" else 0)), (operation.center_x_mm - (major_offset if operation.orientation == "x" else 0), operation.center_y_mm - (major_offset if operation.orientation == "y" else 0)))
                 for index, point in enumerate(points, start=1):
-                    step_probe_lines.append(f"slot_{operation.operation_id}_{index} = not shape.isInside(FreeCAD.Vector({point[0]!r}, {point[1]!r}, {base.thickness_mm / 2!r}), 1e-7, True)")
-        step_probe_payload = "{" + ",".join(f"{name!r}: {name}" for name in [f"slot_{operation.operation_id}_{index}" for operation in program.operations if isinstance(operation, ThroughSlotOperation) for index in range(1, 4)]) + "}"
+                    probe_key = f"slot_{operation.operation_id}_{index}"
+                    step_probe_lines.append(f"probe_values[{probe_key!r}] = not shape.isInside(FreeCAD.Vector({point[0]!r}, {point[1]!r}, {base.thickness_mm / 2!r}), 1e-7, True)")
         step_script = f'''import FreeCAD, Part, json
+probe_values = {{}}
 doc = FreeCAD.newDocument("M7A1StepVerify")
 Part.insert({str(step_path)!r}, doc.Name)
 doc.recompute()
@@ -354,7 +385,7 @@ if not objects: raise RuntimeError("STEP import produced no shape")
 shape = objects[0].Shape
 box = shape.BoundBox
 {chr(10).join(step_probe_lines)}
-print("M7A1_JSON=" + json.dumps({{"status":"verified","object_name":objects[0].Name,"shape_valid":shape.isValid(),"x_length_mm":box.XLength,"y_length_mm":box.YLength,"z_length_mm":box.ZLength,"volume_mm3":shape.Volume,"solid_count":len(shape.Solids),"feature_probes":{step_probe_payload}}}, sort_keys=True))
+print("M7A1_JSON=" + json.dumps({{"status":"verified","object_name":objects[0].Name,"shape_valid":shape.isValid(),"x_length_mm":box.XLength,"y_length_mm":box.YLength,"z_length_mm":box.ZLength,"volume_mm3":shape.Volume,"solid_count":len(shape.Solids),"feature_probes":probe_values}}, sort_keys=True))
 FreeCAD.closeDocument(doc.Name)
 '''
         with tempfile.TemporaryDirectory(prefix="mechcad-freecad-verify-") as directory:

@@ -11,7 +11,7 @@ from mechcad_harness.backends.freecad import freecad_object_name
 
 class CadOperationManifestEntry(Model):
     operation_id: str = Field(min_length=1)
-    operation_kind: Literal["base_plate", "through_hole", "rectangular_pocket", "through_slot"]
+    operation_kind: Literal["base_plate", "through_hole", "rectangular_pocket", "through_slot", "cylindrical_stock", "axial_bore"]
     internal_name: str = Field(min_length=1)
 
 

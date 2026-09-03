@@ -4,8 +4,10 @@ import pytest
 from pydantic import ValidationError
 
 from mechcad_harness.cad_program import (
+    AxialBoreOperation,
     BasePlateOperation,
     CadPartProgram,
+    CylindricalStockOperation,
     ThroughHoleOperation,
     RectangularPocketOperation,
     cad_program_hash,
@@ -17,9 +19,126 @@ def base():
     return BasePlateOperation(operation_id="base", length_mm=80, width_mm=60, thickness_mm=8)
 
 
+def cylindrical_base():
+    return CylindricalStockOperation(operation_id="stock", diameter_mm=40, length_mm=30)
+
+
 def test_valid_program_variants_and_coordinate_convention():
     program = CadPartProgram(part_id="bracket", operations=(base(), ThroughHoleOperation(operation_id="h1", x_mm=10, y_mm=10, diameter_mm=6), RectangularPocketOperation(operation_id="p1", x_mm=25, y_mm=20, length_mm=30, width_mm=20, depth_mm=3)))
     assert program.coordinate_system == "lower-left-bottom; +X length, +Y width, +Z thickness"
+
+
+def test_m13_2_valid_cylindrical_program_uses_cylinder_coordinate_convention():
+    program = CadPartProgram(
+        part_id="hub",
+        operations=(
+            cylindrical_base(),
+            AxialBoreOperation(operation_id="bore", diameter_mm=20, start_z_mm=2, depth_mm=24),
+        ),
+        coordinate_system="base-center; +Z cylinder-axis",
+    )
+
+    assert program.coordinate_system == "base-center; +Z cylinder-axis"
+    assert isinstance(program.operations[0], CylindricalStockOperation)
+    assert isinstance(program.operations[1], AxialBoreOperation)
+
+
+def test_m13_2_cylindrical_program_allows_stock_without_bore():
+    program = CadPartProgram(
+        part_id="shaft",
+        operations=(cylindrical_base(),),
+        coordinate_system="base-center; +Z cylinder-axis",
+    )
+
+    assert len(program.operations) == 1
+
+
+@pytest.mark.parametrize(
+    "bore",
+    [
+        AxialBoreOperation(operation_id="equal", diameter_mm=40, start_z_mm=0, depth_mm=30),
+        AxialBoreOperation(operation_id="wide", diameter_mm=41, start_z_mm=0, depth_mm=30),
+        AxialBoreOperation(operation_id="long", diameter_mm=20, start_z_mm=10, depth_mm=21),
+    ],
+)
+def test_m13_2_bore_must_be_contained_by_cylindrical_stock(bore):
+    with pytest.raises(ValidationError):
+        CadPartProgram(
+            part_id="hub",
+            operations=(cylindrical_base(), bore),
+            coordinate_system="base-center; +Z cylinder-axis",
+        )
+
+
+@pytest.mark.parametrize(
+    "program_factory",
+    [
+        lambda: CadPartProgram(
+            part_id="plate",
+            operations=(base(),),
+            coordinate_system="base-center; +Z cylinder-axis",
+        ),
+        lambda: CadPartProgram(
+            part_id="hub",
+            operations=(cylindrical_base(),),
+            coordinate_system="lower-left-bottom; +X length, +Y width, +Z thickness",
+        ),
+    ],
+)
+def test_m13_2_coordinate_system_must_match_first_base(program_factory):
+    with pytest.raises(ValidationError):
+        program_factory()
+
+
+def test_m13_2_plate_operations_are_rejected_on_cylindrical_base():
+    with pytest.raises(ValidationError):
+        CadPartProgram(
+            part_id="hub",
+            operations=(
+                cylindrical_base(),
+                ThroughHoleOperation(operation_id="hole", x_mm=0, y_mm=0, diameter_mm=4),
+            ),
+            coordinate_system="base-center; +Z cylinder-axis",
+        )
+
+
+def test_m13_2_cylindrical_operations_are_rejected_on_plate_base():
+    with pytest.raises(ValidationError):
+        CadPartProgram(
+            part_id="plate",
+            operations=(
+                base(),
+                AxialBoreOperation(operation_id="bore", diameter_mm=4, start_z_mm=0, depth_mm=2),
+            ),
+        )
+
+
+def test_m13_2_mixed_base_operations_are_rejected():
+    with pytest.raises(ValidationError):
+        CadPartProgram(
+            part_id="mixed",
+            operations=(
+                cylindrical_base(),
+                BasePlateOperation(operation_id="plate", length_mm=40, width_mm=40, thickness_mm=5),
+            ),
+            coordinate_system="base-center; +Z cylinder-axis",
+        )
+
+
+@pytest.mark.parametrize(
+    "operation_factory",
+    [
+        lambda: CylindricalStockOperation(operation_id="stock", diameter_mm=0, length_mm=30),
+        lambda: CylindricalStockOperation(operation_id="stock", diameter_mm=40, length_mm=0),
+        lambda: CylindricalStockOperation(operation_id="stock", diameter_mm=math.inf, length_mm=30),
+        lambda: AxialBoreOperation(operation_id="bore", diameter_mm=20, start_z_mm=0, depth_mm=0),
+        lambda: AxialBoreOperation(operation_id="bore", diameter_mm=20, start_z_mm=-1, depth_mm=2),
+        lambda: AxialBoreOperation(operation_id="bore", diameter_mm=20, start_z_mm=0, depth_mm=math.nan),
+    ],
+)
+def test_m13_2_cylindrical_dimensions_must_be_positive_and_finite(operation_factory):
+    with pytest.raises((ValidationError, ValueError)):
+        operation_factory()
 
 
 @pytest.mark.parametrize("operations", [(), (ThroughHoleOperation(operation_id="h", x_mm=1, y_mm=1, diameter_mm=1),), (base(), base()), (ThroughHoleOperation(operation_id="h", x_mm=1, y_mm=1, diameter_mm=1), base())])

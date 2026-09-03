@@ -41,6 +41,7 @@ from mechcad_harness.continuous_proof import ContinuousSingleAxisProofRequest
 from mechcad_harness.kinematic_sweep import CadKinematicSweepRequest, SweepAggregateClassification
 from mechcad_harness.cad_assembly import assembly_hash
 from mechcad_harness.models.common import Model
+from mechcad_harness.models.generated_part import generated_geometry_definition_identities
 from mechcad_harness.revolute_drive import (
     DriveAdmissibility,
     RevoluteDriveAdmissibilityResult,
@@ -308,6 +309,8 @@ def _validate_cad_inputs(
         raise ValueError("CAD request candidate instance inventory mismatch")
     if realization.request_hash != request.request_hash:
         raise ValueError("CAD realization request identity mismatch")
+    if realization.placement_derivations_hash != request.placement_derivations_hash:
+        raise ValueError("CAD realization placement derivations identity mismatch")
     if realization.candidate_hash != candidate.candidate_hash:
         raise ValueError("CAD realization candidate identity mismatch")
     if realization.mappings != request.mappings:
@@ -327,12 +330,24 @@ def _validate_cad_inputs(
             raise ValueError("CAD mapping references a missing candidate specification")
         if mapping.candidate_hash != candidate.candidate_hash:
             raise ValueError("CAD mapping candidate identity mismatch")
+        if (
+            specification.geometry_source is not None
+            and mapping.fidelity is not CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY
+        ):
+            raise ValueError("source-backed specification requires trusted source geometry")
         if mapping.fidelity is CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY:
             source = specification.geometry_source
             if source is None or mapping.source_geometry_identity != source.artifact_hash:
                 raise ValueError("CAD mapping trusted source identity mismatch")
             if mapping.geometry_definition_identities != (source.artifact_id,):
                 raise ValueError("CAD mapping trusted source definition mismatch")
+        elif specification.generated_part is not None:
+            if mapping.fidelity is not CandidateGeometryFidelity.EXACT_GENERATED_GEOMETRY:
+                raise ValueError("generated CAD mapping requires exact generated fidelity")
+            if mapping.geometry_definition_identities != generated_geometry_definition_identities(
+                specification.generated_part
+            ):
+                raise ValueError("CAD mapping generated definition mismatch")
         elif mapping.source_geometry_identity is not None:
             raise ValueError("CAD bounded mapping cannot carry a source identity")
         candidate_design_inputs = {
@@ -350,6 +365,10 @@ def _validate_cad_inputs(
         )
         if specification.geometry_source is not None:
             allowed_geometry_inputs.add(specification.geometry_source.artifact_id)
+        if specification.generated_part is not None:
+            allowed_geometry_inputs.update(
+                generated_geometry_definition_identities(specification.generated_part)
+            )
         if any(
             identity not in allowed_geometry_inputs
             for identity in mapping.geometry_definition_identities
@@ -510,6 +529,8 @@ def _validate_stored_stage_context(
         raise ValueError("candidate evaluation CAD identity mismatch")
     if cad_request.request_hash != realization.request_hash:
         raise ValueError("candidate evaluation CAD request identity mismatch")
+    if realization.placement_derivations_hash != cad_request.placement_derivations_hash:
+        raise ValueError("candidate evaluation placement derivations identity mismatch")
     if m10_binding.candidate_hash != candidate_hash:
         raise ValueError("candidate evaluation M10 candidate identity mismatch")
     if m10_request.candidate_hash != candidate_hash:

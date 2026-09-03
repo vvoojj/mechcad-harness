@@ -17,6 +17,12 @@ from .cad_realization import (
     CandidateCadStageReason, CandidateCadStageStatus, CandidateGeometryFidelity,
     CandidatePlacementOrigin,
 )
+from .generated_authority import (
+    build_canonical_view,
+    build_candidate_view,
+    candidate_placement_design_variables,
+    m13_local_pose,
+)
 from .m10_evaluation import (
     CandidateCollisionPairClassification,
     CandidateCollisionPairInventory,

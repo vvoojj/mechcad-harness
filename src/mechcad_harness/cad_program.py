@@ -42,6 +42,31 @@ class BasePlateOperation(CadOperation):
         return self
 
 
+class CylindricalStockOperation(CadOperation):
+    operation_type: Literal["cylindrical_stock"] = "cylindrical_stock"
+    diameter_mm: float = Field(gt=0)
+    length_mm: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def finite(self) -> "CylindricalStockOperation":
+        if any(not math.isfinite(value) for value in (self.diameter_mm, self.length_mm)):
+            raise ValueError("cylindrical stock dimensions must be finite")
+        return self
+
+
+class AxialBoreOperation(CadOperation):
+    operation_type: Literal["axial_bore"] = "axial_bore"
+    diameter_mm: float = Field(gt=0)
+    start_z_mm: float = Field(ge=0)
+    depth_mm: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def finite(self) -> "AxialBoreOperation":
+        if any(not math.isfinite(value) for value in (self.diameter_mm, self.start_z_mm, self.depth_mm)):
+            raise ValueError("axial bore values must be finite")
+        return self
+
+
 class ThroughHoleOperation(CadOperation):
     operation_type: Literal["through_hole"] = "through_hole"
     x_mm: float
@@ -87,13 +112,16 @@ class ThroughSlotOperation(CadOperation):
         return self
 
 
-CadOperationValue = Annotated[BasePlateOperation | ThroughHoleOperation | RectangularPocketOperation | ThroughSlotOperation, Field(discriminator="operation_type")]
+CadOperationValue = Annotated[BasePlateOperation | CylindricalStockOperation | AxialBoreOperation | ThroughHoleOperation | RectangularPocketOperation | ThroughSlotOperation, Field(discriminator="operation_type")]
 
 
 class CadPartProgram(Model):
     part_id: str = Field(min_length=1)
     operations: tuple[CadOperationValue, ...] = Field(min_length=1)
-    coordinate_system: Literal["lower-left-bottom; +X length, +Y width, +Z thickness"] = "lower-left-bottom; +X length, +Y width, +Z thickness"
+    coordinate_system: Literal[
+        "lower-left-bottom; +X length, +Y width, +Z thickness",
+        "base-center; +Z cylinder-axis",
+    ] = "lower-left-bottom; +X length, +Y width, +Z thickness"
 
     @field_validator("part_id")
     @classmethod
@@ -107,30 +135,47 @@ class CadPartProgram(Model):
         ids = [operation.operation_id for operation in self.operations]
         if len(set(ids)) != len(ids):
             raise ValueError("operation IDs must be unique")
-        bases = [index for index, operation in enumerate(self.operations) if isinstance(operation, BasePlateOperation)]
+        bases = [
+            index
+            for index, operation in enumerate(self.operations)
+            if isinstance(operation, (BasePlateOperation, CylindricalStockOperation))
+        ]
         if bases != [0]:
             raise ValueError("program must contain exactly one base operation first")
         base = self.operations[0]
-        assert isinstance(base, BasePlateOperation)
-        for operation in self.operations[1:]:
-            if isinstance(operation, ThroughHoleOperation):
-                radius = operation.diameter_mm / 2
-                if not radius <= operation.x_mm <= base.length_mm - radius or not radius <= operation.y_mm <= base.width_mm - radius:
-                    raise ValueError("through hole must lie inside base plate")
-            elif isinstance(operation, RectangularPocketOperation):
-                if operation.x_mm < 0 or operation.y_mm < 0 or operation.x_mm + operation.length_mm > base.length_mm or operation.y_mm + operation.width_mm > base.width_mm:
-                    raise ValueError("pocket footprint must lie inside base plate")
-                if operation.depth_mm >= base.thickness_mm:
-                    raise ValueError("pocket depth must be less than base thickness")
-            elif isinstance(operation, ThroughSlotOperation):
-                half_major = operation.length_mm / 2
-                half_minor = operation.width_mm / 2
-                half_x = half_major if operation.orientation == "x" else half_minor
-                half_y = half_minor if operation.orientation == "x" else half_major
-                if operation.center_x_mm - half_x < 0 or operation.center_x_mm + half_x > base.length_mm or operation.center_y_mm - half_y < 0 or operation.center_y_mm + half_y > base.width_mm:
-                    raise ValueError("through slot must lie inside base plate")
-            else:
-                raise ValueError("unsupported CAD operation")
+        if isinstance(base, BasePlateOperation):
+            if self.coordinate_system != "lower-left-bottom; +X length, +Y width, +Z thickness":
+                raise ValueError("plate base requires the plate coordinate system")
+            for operation in self.operations[1:]:
+                if isinstance(operation, ThroughHoleOperation):
+                    radius = operation.diameter_mm / 2
+                    if not radius <= operation.x_mm <= base.length_mm - radius or not radius <= operation.y_mm <= base.width_mm - radius:
+                        raise ValueError("through hole must lie inside base plate")
+                elif isinstance(operation, RectangularPocketOperation):
+                    if operation.x_mm < 0 or operation.y_mm < 0 or operation.x_mm + operation.length_mm > base.length_mm or operation.y_mm + operation.width_mm > base.width_mm:
+                        raise ValueError("pocket footprint must lie inside base plate")
+                    if operation.depth_mm >= base.thickness_mm:
+                        raise ValueError("pocket depth must be less than base thickness")
+                elif isinstance(operation, ThroughSlotOperation):
+                    half_major = operation.length_mm / 2
+                    half_minor = operation.width_mm / 2
+                    half_x = half_major if operation.orientation == "x" else half_minor
+                    half_y = half_minor if operation.orientation == "x" else half_major
+                    if operation.center_x_mm - half_x < 0 or operation.center_x_mm + half_x > base.length_mm or operation.center_y_mm - half_y < 0 or operation.center_y_mm + half_y > base.width_mm:
+                        raise ValueError("through slot must lie inside base plate")
+                else:
+                    raise ValueError("unsupported CAD operation")
+        else:
+            assert isinstance(base, CylindricalStockOperation)
+            if self.coordinate_system != "base-center; +Z cylinder-axis":
+                raise ValueError("cylindrical base requires the cylinder coordinate system")
+            for operation in self.operations[1:]:
+                if not isinstance(operation, AxialBoreOperation):
+                    raise ValueError("cylindrical base only supports axial bores")
+                if operation.diameter_mm >= base.diameter_mm:
+                    raise ValueError("axial bore diameter must be less than stock diameter")
+                if operation.start_z_mm + operation.depth_mm > base.length_mm:
+                    raise ValueError("axial bore must lie inside cylindrical stock")
         return self
 
 

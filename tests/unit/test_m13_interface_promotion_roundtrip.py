@@ -9,6 +9,7 @@ from mechcad_harness.candidates import (
     CandidatePromotionCompiler,
     CandidatePromotionPolicy,
     ComponentSpecificationSnapshot,
+    CandidateGeometryFidelity,
     ProjectArtifactResolver,
     PromotionClassification,
     PromotionValueClassification,
@@ -646,7 +647,14 @@ def test_end_to_end_promotion_scopes_m13_classifications_by_distinct_specificati
     candidate = type(candidate).model_validate(candidate_payload)
 
     m12 = _m12_result(candidate)
-    cad, m10, scope, binding, m10_request, cad_request = _bound_m10_inputs(candidate)
+    cad, m10, scope, binding, m10_request, cad_request = _bound_m10_inputs(
+        candidate, trusted_source_artifact=artifact
+    )
+    assert {
+        mapping.fidelity
+        for mapping in cad.realization.mappings
+        if mapping.physical_instance_id in {"motor", "driver"}
+    } == {CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY}
     evaluation = _evaluation_service().evaluate(
         candidate,
         synthesis_request,

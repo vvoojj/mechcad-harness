@@ -11,6 +11,7 @@ from mechcad_harness.candidates import (
     CandidateCadStageOutcome,
     CandidateCadStageReason,
     CandidateCadStageStatus,
+    CandidateGeometryFidelity,
     CandidateEvaluation,
     CandidateEvaluationCurrentnessService,
     CandidateEvaluationOutcome,
@@ -23,6 +24,8 @@ from mechcad_harness.candidates import (
     CandidateM10EvaluationRequest,
     CandidateIntegrityError,
 )
+from mechcad_harness.cad_assembly import assembly_hash
+from mechcad_harness.imported_component import ImportedCadComponent, imported_component_hash
 from mechcad_harness.candidates.m10_evaluation import CandidateM10StageReason
 from mechcad_harness.candidates.models import (
     MechanicalDesignCandidate,
@@ -100,7 +103,7 @@ def _evaluation_candidate(state=None):
     return candidate, synthesis_request, synthesis_policy
 
 
-def _bound_m10_inputs(candidate):
+def _bound_m10_inputs(candidate, *, trusted_source_artifact=None):
     base_realization = _realization()
     mappings = tuple(
         mapping.model_copy(update={"candidate_hash": candidate.candidate_hash, "mapping_hash": "pending"})
@@ -111,6 +114,71 @@ def _bound_m10_inputs(candidate):
         "mappings": mappings,
         "realization_hash": "pending",
     })
+    if trusted_source_artifact is not None:
+        specifications = {
+            specification.specification_hash: specification
+            for specification in candidate.component_specifications
+        }
+        components = {
+            component.instance_id: component for component in candidate.realization.components
+        }
+        imported_components = []
+        trusted_part_ids = set()
+        trusted_mappings = []
+        for mapping in realization.mappings:
+            specification = specifications[components[mapping.physical_instance_id].specification_hash]
+            source = specification.geometry_source
+            if source is None:
+                trusted_mappings.append(mapping)
+                continue
+            if (source.artifact_id, source.artifact_hash) != (
+                trusted_source_artifact.artifact_id,
+                trusted_source_artifact.sha256,
+            ):
+                raise AssertionError("trusted fixture artifact does not match source geometry")
+            part_id = next(
+                instance.part_id
+                for instance in realization.assembly.instances
+                if instance.instance_id == mapping.cad_instance_id
+            )
+            imported = ImportedCadComponent(
+                component_id=part_id,
+                artifact_id=trusted_source_artifact.artifact_id,
+                artifact_hash=trusted_source_artifact.sha256,
+                source_revision=trusted_source_artifact.bound_revision,
+                source_state_hash=trusted_source_artifact.bound_state_hash,
+            )
+            imported_components.append(imported)
+            trusted_part_ids.add(part_id)
+            trusted_mappings.append(
+                mapping.model_copy(
+                    update={
+                        "fidelity": CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY,
+                        "representation_identity": imported_component_hash(imported),
+                        "source_geometry_identity": trusted_source_artifact.sha256,
+                        "geometry_definition_identities": (trusted_source_artifact.artifact_id,),
+                        "mapping_hash": "pending",
+                    }
+                )
+            )
+        assembly = realization.assembly.model_copy(
+            update={
+                "parts": tuple(
+                    part
+                    for part in realization.assembly.parts
+                    if part.part_id not in trusted_part_ids
+                ),
+                "imported_components": tuple(imported_components),
+            }
+        )
+        realization = realization.model_copy(
+            update={
+                "mappings": tuple(trusted_mappings),
+                "assembly": assembly,
+                "assembly_hash": assembly_hash(assembly),
+                "realization_hash": "pending",
+            }
+        )
     from mechcad_harness.candidates.cad_realization import CandidateCadRealization
 
     cad_request = CandidateCadRealizationRequest(
@@ -128,6 +196,11 @@ def _bound_m10_inputs(candidate):
         mappings=realization.mappings,
         assembly=realization.assembly,
         assembly_hash=realization.assembly_hash,
+        verified_source_content_identities=(
+            (trusted_source_artifact.sha256,)
+            if trusted_source_artifact is not None
+            else ()
+        ),
         compiler_identity="fixture",
         compiler_version="1",
         provider_identity="fixture",
