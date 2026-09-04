@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import copy
 import json
 import math
 import tempfile
@@ -48,6 +49,16 @@ class FreeCADTransientAssemblyMeasurementProvider:
         self.workspace = Path(workspace) if workspace is not None else None
         self.project_id = project_id
 
+    def composition_snapshot(self) -> "FreeCADTransientAssemblyMeasurementProvider":
+        """Capture the provider execution boundary for production-owned v2 use."""
+        return FreeCADTransientAssemblyMeasurementProvider(
+            execute=self.execute,
+            execute_in_workspace=self.execute_in_workspace,
+            backend=copy(self.backend),
+            workspace=self.workspace,
+            project_id=self.project_id,
+        )
+
     def exact_measure(
         self,
         request: TransientAssemblyAnalysisRequest,
@@ -65,7 +76,7 @@ class FreeCADTransientAssemblyMeasurementProvider:
                     if self.execute_in_workspace is not None
                     else self._execute_in_workspace(request, program, workspace)
                 )
-        if tuple((moving, stationary) for moving, stationary, _, _ in measurements) != request.pairs:
+        if tuple((first, second) for first, second, _, _ in measurements) != request.pairs:
             raise ValueError("exact measurement pairs do not match requested pair inventory")
         return measurements
 
@@ -366,9 +377,9 @@ class FreeCADTransientAssemblyMeasurementProvider:
                 "    shapes[instance_id] = shape",
                 f"pairs = {pairs!r}",
                 "measurements = []",
-                "for moving, stationary in pairs:",
-                "    a, b = shapes[moving], shapes[stationary]",
-                "    measurements.append({'moving_instance_id': moving, 'stationary_instance_id': stationary, 'interference_volume_mm3': float(a.common(b).Volume), 'exact_distance_mm': float(a.distToShape(b)[0])})",
+                "for first, second in pairs:",
+                "    a, b = shapes[first], shapes[second]",
+                "    measurements.append({'moving_instance_id': first, 'stationary_instance_id': second, 'interference_volume_mm3': float(a.common(b).Volume), 'exact_distance_mm': float(a.distToShape(b)[0])})",
                 "print('M7C1_JSON=' + json.dumps({'measurements': measurements}, sort_keys=True))",
                 "FreeCAD.closeDocument(doc.Name)",
                 "",

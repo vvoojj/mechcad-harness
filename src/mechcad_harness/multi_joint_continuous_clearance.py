@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Mapping
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -11,14 +13,19 @@ from mechcad_harness.cad_assembly import CadAssemblyProgram, assembly_hash
 from mechcad_harness.kinematic_sweep import CollisionClassification
 from mechcad_harness.models.common import Model
 from mechcad_harness.multi_joint_continuous_path import (
+    BODY_MEMBER_REACH_BOUND_PLUMBING_VERSION,
+    MULTI_JOINT_CONTINUOUS_PATH_PROOF_VERSION,
     MultiJointContinuousPathRequest,
+    MultiJointContinuousPathRequestV2,
     ReachBoundTable,
+    ReachBoundTableV2,
     derive_reach_bounds,
 )
 from mechcad_harness.multi_joint_kinematics import (
     JointConfiguration,
     MultiJointKinematicsService,
     joint_configuration_hash,
+    validate_v2_exact_pair_scope,
 )
 from mechcad_harness.transient_assembly_analysis import TransientAssemblyAnalysisRequest
 
@@ -56,9 +63,31 @@ class MultiJointContinuousCollisionWitness(Model):
     classification: CollisionClassification
 
 
+class MultiJointContinuousCollisionWitnessV2(Model):
+    schema_version: Literal["multi-joint-continuous-collision-witness@2"]
+    location: ProofWitnessLocation
+    configuration: JointConfiguration
+    configuration_hash: str = Field(min_length=1)
+    transformed_assembly_hash: str = Field(min_length=1)
+    first_instance_id: str = Field(min_length=1)
+    second_instance_id: str = Field(min_length=1)
+    interference_volume_mm3: float = Field(ge=0)
+    exact_distance_mm: float = Field(ge=0)
+    classification: CollisionClassification
+
+
 class ContinuousExactPairResult(Model):
     moving_instance_id: str = Field(min_length=1)
     stationary_instance_id: str = Field(min_length=1)
+    interference_volume_mm3: float = Field(ge=0)
+    exact_distance_mm: float = Field(ge=0)
+    classification: CollisionClassification
+
+
+class ContinuousExactPairResultV2(Model):
+    schema_version: Literal["continuous-exact-pair-result@2"]
+    first_instance_id: str = Field(min_length=1)
+    second_instance_id: str = Field(min_length=1)
     interference_volume_mm3: float = Field(ge=0)
     exact_distance_mm: float = Field(ge=0)
     classification: CollisionClassification
@@ -74,9 +103,31 @@ class ContinuousExactEvaluation(Model):
     produced_requested_clearance_witness: bool
 
 
+class ContinuousExactEvaluationV2(Model):
+    schema_version: Literal["continuous-exact-evaluation@2"]
+    evaluation_index: int = Field(ge=0)
+    location: ProofWitnessLocation
+    configuration: JointConfiguration
+    configuration_hash: str = Field(min_length=1)
+    transformed_assembly_hash: str = Field(min_length=1)
+    pair_results: tuple[ContinuousExactPairResultV2, ...] = Field(min_length=1)
+    produced_requested_clearance_witness: bool
+
+
 class ContinuousPairCertificate(Model):
     moving_instance_id: str = Field(min_length=1)
     stationary_instance_id: str = Field(min_length=1)
+    exact_distance_mm: float = Field(ge=0)
+    motion_bound_A_mm: float = Field(ge=0)
+    motion_bound_B_mm: float = Field(ge=0)
+    pair_motion_bound_mm: float = Field(ge=0)
+    certified_lower_clearance_mm: float
+
+
+class ContinuousPairCertificateV2(Model):
+    schema_version: Literal["continuous-pair-certificate@2"]
+    first_instance_id: str = Field(min_length=1)
+    second_instance_id: str = Field(min_length=1)
     exact_distance_mm: float = Field(ge=0)
     motion_bound_A_mm: float = Field(ge=0)
     motion_bound_B_mm: float = Field(ge=0)
@@ -95,6 +146,19 @@ class ContinuousIntervalCertificate(Model):
     pair_certificates: tuple[ContinuousPairCertificate, ...] = Field(min_length=1)
 
 
+class ContinuousIntervalCertificateV2(Model):
+    schema_version: Literal["continuous-interval-certificate@2"]
+    segment_index: int = Field(ge=0)
+    t_start: float
+    t_end: float
+    t_reference: float
+    reference_configuration: JointConfiguration
+    reference_configuration_hash: str = Field(min_length=1)
+    transformed_assembly_hash: str = Field(min_length=1)
+    reach_bound_algorithm_version: Literal["body-member-reach-bound-plumbing@2.0"]
+    pair_certificates: tuple[ContinuousPairCertificateV2, ...] = Field(min_length=1)
+
+
 class UnresolvedInterval(Model):
     segment_index: int = Field(ge=0)
     t_start: float
@@ -108,6 +172,13 @@ class ContinuousSegmentResult(Model):
     segment_index: int = Field(ge=0)
     certified_intervals: tuple[ContinuousIntervalCertificate, ...] = ()
     unresolved_intervals: tuple[UnresolvedInterval, ...] = ()
+
+
+class ContinuousSegmentResultV2(Model):
+    schema_version: Literal["continuous-segment-result@2"]
+    segment_index: int = Field(ge=0)
+    certified_intervals: tuple[ContinuousIntervalCertificateV2, ...]
+    unresolved_intervals: tuple[UnresolvedInterval, ...]
 
 
 class MultiJointContinuousClearanceProofResult(Model):
@@ -136,6 +207,35 @@ class MultiJointContinuousClearanceProofResult(Model):
         return self
 
 
+class MultiJointContinuousClearanceProofResultV2(Model):
+    schema_version: Literal["multi-joint-continuous-clearance-proof-result@2"]
+    request_hash: str = Field(min_length=1)
+    source_assembly_hash: str = Field(min_length=1)
+    model_hash: str = Field(min_length=1)
+    proof_algorithm_version: Literal["conservative-multi-joint-path-clearance-proof@1.0"]
+    reach_bound_algorithm_version: Literal["body-member-reach-bound-plumbing@2.0"]
+    status: MultiJointContinuousProofStatus
+    segment_results: tuple[ContinuousSegmentResultV2, ...]
+    certified_leaf_certificates: tuple[ContinuousIntervalCertificateV2, ...]
+    unresolved_intervals: tuple[UnresolvedInterval, ...]
+    collision_witness: MultiJointContinuousCollisionWitnessV2 | None
+    reach_bounds: ReachBoundTableV2
+    exact_evaluations: tuple[ContinuousExactEvaluationV2, ...]
+    exact_evaluations_count: int = Field(ge=0)
+    cache_hits: int = Field(ge=0)
+    continuous_path_verified: bool
+    minimum_certified_lower_clearance_mm: float | None
+    result_hash: str = "pending"
+
+    @model_validator(mode="after")
+    def validate_flag(self):
+        if self.continuous_path_verified != (
+            self.status is MultiJointContinuousProofStatus.VERIFIED_CLEAR
+        ):
+            raise ValueError("continuous_path_verified does not match proof status")
+        return self
+
+
 def _digest(value: object) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
@@ -145,20 +245,58 @@ def continuous_clearance_result_hash(result: MultiJointContinuousClearanceProofR
     return _digest(result.model_dump(mode="json", exclude={"result_hash"}))
 
 
+def multi_joint_continuous_clearance_proof_result_v2_hash(
+    result: MultiJointContinuousClearanceProofResultV2,
+) -> str:
+    return _digest(result.model_dump(mode="json", exclude={"result_hash"}))
+
+
+def parse_multi_joint_continuous_result(
+    payload: Mapping[str, object]
+    | MultiJointContinuousClearanceProofResult
+    | MultiJointContinuousClearanceProofResultV2,
+) -> MultiJointContinuousClearanceProofResult | MultiJointContinuousClearanceProofResultV2:
+    if isinstance(payload, MultiJointContinuousClearanceProofResult):
+        return payload
+    if isinstance(payload, MultiJointContinuousClearanceProofResultV2):
+        return payload
+    if not isinstance(payload, Mapping):
+        raise TypeError("continuous clearance result must be a mapping or typed model")
+    if "schema_version" not in payload:
+        return MultiJointContinuousClearanceProofResult.model_validate(payload)
+    schema_version = payload["schema_version"]
+    if schema_version == "multi-joint-continuous-clearance-proof-result@2":
+        return MultiJointContinuousClearanceProofResultV2.model_validate(payload)
+    raise ValueError(f"unsupported continuous clearance result schema: {schema_version!r}")
+
+
 class MultiJointContinuousClearanceProofService:
     def __init__(self, *, exact_measure, extent_provider, kinematics_service=None):
         self.exact_measure = exact_measure
         self.extent_provider = extent_provider
         self.kinematics_service = kinematics_service or MultiJointKinematicsService()
 
-    def execute(self, request: MultiJointContinuousPathRequest, assembly: CadAssemblyProgram):
+    def execute(
+        self,
+        request: MultiJointContinuousPathRequest | MultiJointContinuousPathRequestV2,
+        assembly: CadAssemblyProgram,
+    ):
         if request.source_assembly_id != assembly.assembly_id or request.source_assembly_hash != assembly_hash(assembly):
             raise ValueError("source assembly identity mismatch")
+        if isinstance(request, MultiJointContinuousPathRequestV2):
+            request.validate_request()
+            pairs = tuple(
+                (pair.first_instance_id, pair.second_instance_id)
+                for pair in validate_v2_exact_pair_scope(
+                    assembly, request.model, request.exact_pair_scope
+                )
+            )
+        else:
+            pairs = request.pairs
         extents = self.extent_provider(assembly, request.model, tuple(
             item.instance_id for item in assembly.instances
         ))
         bounds = derive_reach_bounds(assembly, request.model, extents)
-        pairs = request.pairs
         cache = {}
         exact_calls = 0
         cache_hits = 0
@@ -199,18 +337,38 @@ class MultiJointContinuousClearanceProofService:
                         volume_tolerance_mm3=request.volume_tolerance_mm3,
                         distance_tolerance_mm=request.distance_tolerance_mm,
                     )
-                    pair_results.append(ContinuousExactPairResult(
-                        moving_instance_id=moving,
-                        stationary_instance_id=stationary,
-                        interference_volume_mm3=volume,
-                        exact_distance_mm=distance,
-                        classification=classification,
-                    ))
+                    if isinstance(request, MultiJointContinuousPathRequestV2):
+                        pair_results.append(ContinuousExactPairResultV2(
+                            schema_version="continuous-exact-pair-result@2",
+                            first_instance_id=moving,
+                            second_instance_id=stationary,
+                            interference_volume_mm3=volume,
+                            exact_distance_mm=distance,
+                            classification=classification,
+                        ))
+                    else:
+                        pair_results.append(ContinuousExactPairResult(
+                            moving_instance_id=moving,
+                            stationary_instance_id=stationary,
+                            interference_volume_mm3=volume,
+                            exact_distance_mm=distance,
+                            classification=classification,
+                        ))
                     if classification in (CollisionClassification.INTERFERENCE, CollisionClassification.TOUCHING) or distance <= request.required_clearance_mm:
                         evaluation_witness = True
                         if first_witness is None:
                             first_witness = (moving, stationary, volume, distance, classification)
-                exact_evaluations.append(ContinuousExactEvaluation(
+                evaluation_type = (
+                    ContinuousExactEvaluationV2
+                    if isinstance(request, MultiJointContinuousPathRequestV2)
+                    else ContinuousExactEvaluation
+                )
+                exact_evaluations.append(evaluation_type(
+                    **(
+                        {"schema_version": "continuous-exact-evaluation@2"}
+                        if isinstance(request, MultiJointContinuousPathRequestV2)
+                        else {}
+                    ),
                     evaluation_index=exact_calls,
                     location=location,
                     configuration=configuration,
@@ -231,13 +389,32 @@ class MultiJointContinuousClearanceProofService:
                 )
                 if witness is None and (classification in (CollisionClassification.INTERFERENCE, CollisionClassification.TOUCHING) or distance <= request.required_clearance_mm):
                     location_value = location
-                    witness = MultiJointContinuousCollisionWitness(
+                    witness_type = (
+                        MultiJointContinuousCollisionWitnessV2
+                        if isinstance(request, MultiJointContinuousPathRequestV2)
+                        else MultiJointContinuousCollisionWitness
+                    )
+                    witness = witness_type(
+                        **(
+                            {"schema_version": "multi-joint-continuous-collision-witness@2"}
+                            if isinstance(request, MultiJointContinuousPathRequestV2)
+                            else {}
+                        ),
                         location=location_value,
                         configuration=configuration,
                         configuration_hash=joint_configuration_hash(configuration),
                         transformed_assembly_hash=fk.transformed_assembly_hash,
-                        moving_instance_id=moving,
-                        stationary_instance_id=stationary,
+                        **(
+                            {
+                                "first_instance_id": moving,
+                                "second_instance_id": stationary,
+                            }
+                            if isinstance(request, MultiJointContinuousPathRequestV2)
+                            else {
+                                "moving_instance_id": moving,
+                                "stationary_instance_id": stationary,
+                            }
+                        ),
                         interference_volume_mm3=volume,
                         exact_distance_mm=distance,
                         classification=classification,
@@ -291,21 +468,56 @@ class MultiJointContinuousClearanceProofService:
                     body_bounds.append(total)
                 relative = sum(body_bounds)
                 lower = distance - relative
-                pair_certificates.append(ContinuousPairCertificate(
-                    moving_instance_id=moving, stationary_instance_id=stationary,
+                certificate_type = (
+                    ContinuousPairCertificateV2
+                    if isinstance(request, MultiJointContinuousPathRequestV2)
+                    else ContinuousPairCertificate
+                )
+                pair_certificates.append(certificate_type(
+                    **(
+                        {"schema_version": "continuous-pair-certificate@2"}
+                        if isinstance(request, MultiJointContinuousPathRequestV2)
+                        else {}
+                    ),
+                    **(
+                        {
+                            "first_instance_id": moving,
+                            "second_instance_id": stationary,
+                        }
+                        if isinstance(request, MultiJointContinuousPathRequestV2)
+                        else {
+                            "moving_instance_id": moving,
+                            "stationary_instance_id": stationary,
+                        }
+                    ),
                     exact_distance_mm=distance, motion_bound_A_mm=body_bounds[0],
                     motion_bound_B_mm=body_bounds[1], pair_motion_bound_mm=relative,
                     certified_lower_clearance_mm=lower,
                 ))
                 interval_clear &= lower > request.required_clearance_mm + request.proof_guard_mm
             if interval_clear:
-                certificates.append(ContinuousIntervalCertificate(
+                interval_type = (
+                    ContinuousIntervalCertificateV2
+                    if isinstance(request, MultiJointContinuousPathRequestV2)
+                    else ContinuousIntervalCertificate
+                )
+                interval_kwargs = dict(
+                    **(
+                        {"schema_version": "continuous-interval-certificate@2"}
+                        if isinstance(request, MultiJointContinuousPathRequestV2)
+                        else {}
+                    ),
                     segment_index=segment_index, t_start=start, t_end=end,
                     t_reference=midpoint, reference_configuration=configuration,
                     reference_configuration_hash=joint_configuration_hash(configuration),
                     transformed_assembly_hash=fk.transformed_assembly_hash,
                     pair_certificates=tuple(pair_certificates),
-                ))
+                )
+                if isinstance(request, MultiJointContinuousPathRequestV2):
+                    interval_kwargs["reach_bound_algorithm_version"] = (
+                        BODY_MEMBER_REACH_BOUND_PLUMBING_VERSION
+                    )
+                certificates.append(interval_type(**interval_kwargs))
                 return
             if depth >= request.max_depth or end - start <= request.minimum_path_interval:
                 unresolved.append(UnresolvedInterval(segment_index=segment_index, t_start=start, t_end=end, t_reference=midpoint, reason="conservative bound did not certify", resource_limit_reached=False))
@@ -316,7 +528,17 @@ class MultiJointContinuousClearanceProofService:
 
         for segment_index in range(len(request.path.waypoints) - 1):
             prove(segment_index, 0.0, 1.0, 0)
-            segment_results.append(ContinuousSegmentResult(
+            segment_type = (
+                ContinuousSegmentResultV2
+                if isinstance(request, MultiJointContinuousPathRequestV2)
+                else ContinuousSegmentResult
+            )
+            segment_results.append(segment_type(
+                **(
+                    {"schema_version": "continuous-segment-result@2"}
+                    if isinstance(request, MultiJointContinuousPathRequestV2)
+                    else {}
+                ),
                 segment_index=segment_index,
                 certified_intervals=tuple(item for item in certificates if item.segment_index == segment_index),
                 unresolved_intervals=tuple(item for item in unresolved if item.segment_index == segment_index),
@@ -339,11 +561,26 @@ class MultiJointContinuousClearanceProofService:
 
     def _result(self, request, bounds, segments, unresolved, witness, exact_calls, cache_hits, certificates=(), exact_evaluations=()):
         status = MultiJointContinuousProofStatus.COLLISION_WITNESS if witness else (MultiJointContinuousProofStatus.NOT_PROVEN if unresolved else MultiJointContinuousProofStatus.VERIFIED_CLEAR)
-        result = MultiJointContinuousClearanceProofResult(
+        result_type = (
+            MultiJointContinuousClearanceProofResultV2
+            if isinstance(request, MultiJointContinuousPathRequestV2)
+            else MultiJointContinuousClearanceProofResult
+        )
+        result = result_type(
+            **(
+                {"schema_version": "multi-joint-continuous-clearance-proof-result@2"}
+                if isinstance(request, MultiJointContinuousPathRequestV2)
+                else {}
+            ),
             request_hash=request.request_hash, source_assembly_hash=request.source_assembly_hash,
             model_hash=request.model_hash,
             proof_algorithm_version="conservative-multi-joint-path-clearance-proof@1.0",
-            reach_bound_algorithm_version=bounds.algorithm_version, status=status,
+            reach_bound_algorithm_version=(
+                BODY_MEMBER_REACH_BOUND_PLUMBING_VERSION
+                if isinstance(request, MultiJointContinuousPathRequestV2)
+                else bounds.algorithm_version
+            ),
+            status=status,
             segment_results=segments, certified_leaf_certificates=certificates,
             unresolved_intervals=unresolved, collision_witness=witness,
             reach_bounds=bounds, exact_evaluations=exact_evaluations,
@@ -351,17 +588,31 @@ class MultiJointContinuousClearanceProofService:
             cache_hits=cache_hits, continuous_path_verified=status is MultiJointContinuousProofStatus.VERIFIED_CLEAR,
             minimum_certified_lower_clearance_mm=(min((pair.certified_lower_clearance_mm for leaf in certificates for pair in leaf.pair_certificates), default=None)),
         )
-        return result.model_copy(update={"result_hash": continuous_clearance_result_hash(result)})
+        result_hash = (
+            multi_joint_continuous_clearance_proof_result_v2_hash(result)
+            if isinstance(request, MultiJointContinuousPathRequestV2)
+            else continuous_clearance_result_hash(result)
+        )
+        return result.model_copy(update={"result_hash": result_hash})
 
 
 __all__ = [
     "ContinuousExactEvaluation",
+    "ContinuousExactEvaluationV2",
     "ContinuousExactPairResult",
+    "ContinuousExactPairResultV2",
     "ContinuousPairCertificate",
+    "ContinuousPairCertificateV2",
+    "ContinuousIntervalCertificateV2",
+    "ContinuousSegmentResultV2",
     "MultiJointContinuousClearanceProofResult",
+    "MultiJointContinuousClearanceProofResultV2",
     "MultiJointContinuousClearanceProofService",
     "MultiJointContinuousCollisionWitness",
+    "MultiJointContinuousCollisionWitnessV2",
     "MultiJointContinuousProofStatus",
     "ProofWitnessLocation",
     "continuous_clearance_result_hash",
+    "multi_joint_continuous_clearance_proof_result_v2_hash",
+    "parse_multi_joint_continuous_result",
 ]

@@ -1,5 +1,6 @@
 import hashlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Callable
 from typing import Iterable
@@ -44,6 +45,9 @@ from mechcad_harness.analysis_provenance import (
     DETERMINISTIC_EXECUTION_MODE,
     DETERMINISTIC_PROVIDER_NAME,
     DETERMINISTIC_PROVIDER_VERSION,
+    validate_trusted_multi_joint_reach_bound_version,
+    validate_trusted_multi_joint_proof_version,
+    validate_trusted_multi_joint_sweep_version,
 )
 from mechcad_harness.models.evidence import Evidence
 from mechcad_harness.continuous_proof import (
@@ -56,25 +60,37 @@ from mechcad_harness.multi_joint_kinematics import (
     JointConfiguration,
     KinematicForwardKinematicsResult,
     KinematicModel,
+    KinematicModelV2,
+    MULTI_JOINT_FORWARD_KINEMATICS_VERSION,
     MultiJointKinematicsService,
     kinematic_model_hash,
     joint_configuration_hash,
+    revalidate_v2_kinematic_model,
 )
 from mechcad_harness.multi_joint_collision_sweep import (
     MULTI_JOINT_EXACT_COLLISION_SWEEP_VERSION,
+    MULTI_JOINT_EXACT_COLLISION_SWEEP_V2_VERSION,
+    MULTI_JOINT_FORWARD_KINEMATICS_V2_VERSION,
     MultiJointCollisionSweepRequest,
+    MultiJointCollisionSweepRequestV2,
     MultiJointCollisionSweepResult,
+    MultiJointCollisionSweepResultV2,
     MultiJointDiscreteCollisionSweepService,
 )
 from mechcad_harness.multi_joint_continuous_path import (
     MultiJointContinuousPathRequest,
+    MultiJointContinuousPathRequestV2,
     MultiJointPath,
 )
 from mechcad_harness.multi_joint_continuous_clearance import (
     MultiJointContinuousClearanceProofResult,
+    MultiJointContinuousClearanceProofResultV2,
     MultiJointContinuousClearanceProofService,
     continuous_clearance_result_hash,
+    multi_joint_continuous_clearance_proof_result_v2_hash,
+    parse_multi_joint_continuous_result,
 )
+from mechcad_harness.multi_joint_pair_scope import ExactConstituentPair
 from mechcad_harness.structural.runtime import (
     FREECAD_IDENTITY,
     discover_calculix,
@@ -205,6 +221,18 @@ def _structural_tolerance_snapshot(tolerances):
         tolerances.centroid_mm,
         tolerances.normal_abs_dot,
     )
+
+
+@dataclass(frozen=True)
+class _KinematicMeasurementProviderSnapshot:
+    exact_measure: Callable
+    geometry_radial_bounds: Callable | None
+    trusted_local_geometry_extents: Callable | None
+    provider_name: str
+    provider_version: str
+    execution_mode: str
+    backend_provenance: Callable[[], object] | None
+    real_freecad: bool
 
 
 class ProductionStateBinding(Model):
@@ -386,6 +414,7 @@ class ProductionApplication:
         "kinematic_measure",
         "_kinematic_measurement_provider",
         "_kinematic_measurement_provider_attested",
+        "_kinematic_measurement_provider_snapshot",
         "candidate_integrity_verifier",
         "candidate_currentness_service",
         "candidate_publication_service",
@@ -491,8 +520,53 @@ class ProductionApplication:
         else:
             self._kinematic_measurement_provider = None
             self.kinematic_measure = kinematic_measure
+            provider = None
         self._kinematic_measurement_provider_attested = (
             provider_was_created_by_default_composition
+        )
+        if provider is None:
+            provider_snapshot = _KinematicMeasurementProviderSnapshot(
+                exact_measure=self.kinematic_measure,
+                geometry_radial_bounds=None,
+                trusted_local_geometry_extents=None,
+                provider_name=DETERMINISTIC_PROVIDER_NAME,
+                provider_version=DETERMINISTIC_PROVIDER_VERSION,
+                execution_mode=DETERMINISTIC_EXECUTION_MODE,
+                backend_provenance=None,
+                real_freecad=False,
+            )
+        else:
+            v2_provider = (
+                provider.composition_snapshot()
+                if type(provider) is FreeCADTransientAssemblyMeasurementProvider
+                else provider
+            )
+            provider_snapshot = _KinematicMeasurementProviderSnapshot(
+                exact_measure=v2_provider.exact_measure,
+                geometry_radial_bounds=getattr(v2_provider, "geometry_radial_bounds", None),
+                trusted_local_geometry_extents=getattr(
+                    v2_provider, "trusted_local_geometry_extents", None
+                ),
+                provider_name=v2_provider.provider_name,
+                provider_version=v2_provider.provider_version,
+                execution_mode=v2_provider.execution_mode,
+                backend_provenance=(
+                    v2_provider.provenance
+                    if provider_was_created_by_default_composition
+                    and type(provider) is FreeCADTransientAssemblyMeasurementProvider
+                    and type(v2_provider.backend) is FreeCADBackend
+                    else None
+                ),
+                real_freecad=(
+                    provider_was_created_by_default_composition
+                    and type(provider) is FreeCADTransientAssemblyMeasurementProvider
+                    and provider.execute is None
+                    and provider.execute_in_workspace is None
+                    and type(provider.backend) is FreeCADBackend
+                ),
+            )
+        object.__setattr__(
+            self, "_kinematic_measurement_provider_snapshot", provider_snapshot
         )
         structural_geometry_adapter = StructuralFreeCADGeometryAdapter(discover_freecad())
         structural_region_resolver = StructuralRegionResolver()
@@ -618,6 +692,25 @@ class ProductionApplication:
             and provider.execute_in_workspace is None
             and type(provider.backend) is FreeCADBackend
         )
+
+    def _v2_kinematic_provider_snapshot(self) -> _KinematicMeasurementProviderSnapshot:
+        return object.__getattribute__(self, "_kinematic_measurement_provider_snapshot")
+
+    @staticmethod
+    def _require_v1_kinematic_model(model, operation: str) -> None:
+        if type(model) is not KinematicModel:
+            raise TypeError(f"{operation} requires a v1 KinematicModel")
+        if model.evaluator_version != MULTI_JOINT_FORWARD_KINEMATICS_VERSION:
+            raise ValueError("v1 kinematic model evaluator version is not trusted")
+
+    @staticmethod
+    def _require_v2_kinematic_model(model, operation: str) -> KinematicModelV2:
+        if type(model) is not KinematicModelV2:
+            raise TypeError(f"{operation} requires a v2 KinematicModelV2")
+        validated = revalidate_v2_kinematic_model(model)
+        if validated.evaluator_version != MULTI_JOINT_FORWARD_KINEMATICS_V2_VERSION:
+            raise ValueError("v2 kinematic model evaluator version is not trusted")
+        return validated
 
     def _persist_idempotent_evidence(self, evidence: Evidence) -> None:
         evidence_path = (
@@ -945,6 +1038,7 @@ class ProductionApplication:
         moving_instance_ids: tuple[str, ...],
         stationary_instance_ids: tuple[str, ...],
     ) -> MultiJointCollisionSweepResult:
+        self._require_v1_kinematic_model(model, "v1 collision sweep")
         self.assembly_service.validate_source(
             self.project_id, source_revision, source_state_hash
         )
@@ -981,17 +1075,37 @@ class ProductionApplication:
         source_revision: int,
         source_state_hash: str,
     ) -> None:
-        provider = self._kinematic_measurement_provider
-        if self._is_real_freecad_measurement_provider(provider):
-            provider_name = provider.provider_name
-            provider_version = provider.provider_version
-            execution_mode = provider.execution_mode
-            backend_provenance = provider.provenance()
+        validate_trusted_multi_joint_sweep_version(result.evaluator_version)
+        if request.evaluator_version != result.evaluator_version:
+            raise ValueError("collision sweep evaluator version mismatch")
+        if isinstance(request, MultiJointCollisionSweepRequestV2):
+            provider_snapshot = self._v2_kinematic_provider_snapshot()
+            if provider_snapshot.real_freecad:
+                provider_name = provider_snapshot.provider_name
+                provider_version = provider_snapshot.provider_version
+                execution_mode = provider_snapshot.execution_mode
+                backend_provenance = (
+                    provider_snapshot.backend_provenance()
+                    if provider_snapshot.backend_provenance is not None
+                    else None
+                )
+            else:
+                provider_name = DETERMINISTIC_PROVIDER_NAME
+                provider_version = DETERMINISTIC_PROVIDER_VERSION
+                execution_mode = DETERMINISTIC_EXECUTION_MODE
+                backend_provenance = None
         else:
-            provider_name = DETERMINISTIC_PROVIDER_NAME
-            provider_version = DETERMINISTIC_PROVIDER_VERSION
-            execution_mode = DETERMINISTIC_EXECUTION_MODE
-            backend_provenance = None
+            provider = self._kinematic_measurement_provider
+            if self._is_real_freecad_measurement_provider(provider):
+                provider_name = provider.provider_name
+                provider_version = provider.provider_version
+                execution_mode = provider.execution_mode
+                backend_provenance = provider.provenance()
+            else:
+                provider_name = DETERMINISTIC_PROVIDER_NAME
+                provider_version = DETERMINISTIC_PROVIDER_VERSION
+                execution_mode = DETERMINISTIC_EXECUTION_MODE
+                backend_provenance = None
 
         provenance = AnalysisExecutionProvenance(
             request_hash=request.request_hash,
@@ -1029,6 +1143,46 @@ class ProductionApplication:
             analysis_execution_provenance=provenance,
         )
         self._persist_idempotent_evidence(evidence)
+
+    def analyze_multi_joint_collision_sweep_v2(
+        self,
+        *,
+        source_revision: int,
+        source_state_hash: str,
+        assembly: CadAssemblyProgram,
+        model: KinematicModelV2,
+        configurations: tuple[JointConfiguration, ...],
+        exact_pair_scope: tuple[ExactConstituentPair, ...],
+    ) -> MultiJointCollisionSweepResultV2:
+        model = self._require_v2_kinematic_model(model, "v2 collision sweep")
+        self.assembly_service.validate_source(
+            self.project_id, source_revision, source_state_hash
+        )
+        request = MultiJointCollisionSweepRequestV2(
+            schema_version="multi-joint-collision-sweep-request@2",
+            source_assembly_id=assembly.assembly_id,
+            source_assembly_hash=assembly_hash(assembly),
+            model=model,
+            configurations=configurations,
+            exact_pair_scope=exact_pair_scope,
+            evaluator_version=MULTI_JOINT_EXACT_COLLISION_SWEEP_V2_VERSION,
+        )
+        provider_snapshot = self._v2_kinematic_provider_snapshot()
+        transient_service = TransientAssemblyAnalysisService(
+            provider_snapshot.exact_measure
+        )
+        result = MultiJointDiscreteCollisionSweepService(
+            transient_analysis_service=transient_service,
+        ).execute(request, assembly)
+        if not isinstance(result, MultiJointCollisionSweepResultV2):
+            raise ValueError("v2 collision sweep returned a non-v2 result")
+        self._record_multi_joint_collision_sweep_provenance(
+            request=request,
+            result=result,
+            source_revision=source_revision,
+            source_state_hash=source_state_hash,
+        )
+        return result
 
     def get_multi_joint_collision_sweep_evidence(self, result_hash: str):
         evidence_dir = self.state_manager.workspace / "projects" / self.project_id / "evidence"
@@ -1134,6 +1288,7 @@ class ProductionApplication:
         minimum_path_interval: float = 1e-6,
         max_exact_evaluations: int = 4096,
     ) -> MultiJointContinuousClearanceProofResult:
+        self._require_v1_kinematic_model(model, "v1 continuous multi-joint proof")
         self.assembly_service.validate_source(self.project_id, source_revision, source_state_hash)
         provider = self._kinematic_measurement_provider
         if not self._is_real_freecad_measurement_provider(provider):
@@ -1164,8 +1319,98 @@ class ProductionApplication:
         )
         return result
 
+    def prove_continuous_multi_joint_path_clearance_v2(
+        self,
+        *,
+        source_revision: int,
+        source_state_hash: str,
+        assembly: CadAssemblyProgram,
+        model: KinematicModelV2,
+        path: MultiJointPath,
+        exact_pair_scope: tuple[ExactConstituentPair, ...],
+        required_clearance_mm: float = 0.0,
+        proof_guard_mm: float = 1e-6,
+        max_depth: int = 16,
+        minimum_path_interval: float = 1e-6,
+        max_exact_evaluations: int = 4096,
+    ) -> MultiJointContinuousClearanceProofResultV2:
+        model = self._require_v2_kinematic_model(model, "v2 continuous multi-joint proof")
+        self.assembly_service.validate_source(
+            self.project_id, source_revision, source_state_hash
+        )
+        provider_snapshot = self._v2_kinematic_provider_snapshot()
+        if not provider_snapshot.real_freecad:
+            raise ValueError(
+                "continuous multi-joint proof requires the real FreeCAD measurement provider"
+            )
+        request = MultiJointContinuousPathRequestV2(
+            schema_version="multi-joint-continuous-path-request@2",
+            source_assembly_id=assembly.assembly_id,
+            source_assembly_hash=assembly_hash(assembly),
+            model=model,
+            path=path,
+            exact_pair_scope=exact_pair_scope,
+            required_clearance_mm=required_clearance_mm,
+            proof_guard_mm=proof_guard_mm,
+            max_depth=max_depth,
+            minimum_path_interval=minimum_path_interval,
+            max_exact_evaluations=max_exact_evaluations,
+        )
+        service = MultiJointContinuousClearanceProofService(
+            exact_measure=provider_snapshot.exact_measure,
+            extent_provider=lambda source, requested_model, instance_ids: provider_snapshot.trusted_local_geometry_extents(source, instance_ids),
+        )
+        result = service.execute(request, assembly)
+        if not isinstance(result, MultiJointContinuousClearanceProofResultV2):
+            raise ValueError("v2 continuous multi-joint proof returned a non-v2 result")
+        self._record_multi_joint_continuous_proof_provenance(
+            request=request,
+            result=result,
+            source_revision=source_revision,
+            source_state_hash=source_state_hash,
+        )
+        return result
+
     def _record_multi_joint_continuous_proof_provenance(self, *, request, result, source_revision, source_state_hash):
-        provider = self._kinematic_measurement_provider
+        if isinstance(request, MultiJointContinuousPathRequestV2):
+            if not isinstance(result, MultiJointContinuousClearanceProofResultV2):
+                raise ValueError("v2 continuous proof returned a non-v2 result")
+            validate_trusted_multi_joint_proof_version(result.proof_algorithm_version)
+            validate_trusted_multi_joint_reach_bound_version(
+                result.reach_bound_algorithm_version
+            )
+            if result.reach_bound_algorithm_version != "body-member-reach-bound-plumbing@2.0":
+                raise ValueError("v2 continuous proof reach-bound version is not trusted")
+            reach_bound_plumbing_version = result.reach_bound_algorithm_version
+            provider_snapshot = self._v2_kinematic_provider_snapshot()
+            if not provider_snapshot.real_freecad:
+                raise ValueError("v2 continuous proof provider is not trusted")
+            provider_name = provider_snapshot.provider_name
+            provider_version = provider_snapshot.provider_version
+            execution_mode = provider_snapshot.execution_mode
+            backend_provenance = (
+                provider_snapshot.backend_provenance()
+                if provider_snapshot.backend_provenance is not None
+                else None
+            )
+        else:
+            if not isinstance(result, MultiJointContinuousClearanceProofResult):
+                raise ValueError("v1 continuous proof returned a non-v1 result")
+            validate_trusted_multi_joint_proof_version(result.proof_algorithm_version)
+            if result.reach_bound_algorithm_version != "articulated-descendant-reach-bound@1.0":
+                raise ValueError("v1 continuous proof reach-bound version is not trusted")
+            reach_bound_plumbing_version = None
+            provider = self._kinematic_measurement_provider
+            if self._is_real_freecad_measurement_provider(provider):
+                provider_name = provider.provider_name
+                provider_version = provider.provider_version
+                execution_mode = provider.execution_mode
+                backend_provenance = provider.provenance()
+            else:
+                provider_name = DETERMINISTIC_PROVIDER_NAME
+                provider_version = DETERMINISTIC_PROVIDER_VERSION
+                execution_mode = DETERMINISTIC_EXECUTION_MODE
+                backend_provenance = None
         provenance = ContinuousProofExecutionProvenance(
             request_hash=request.request_hash,
             result_hash=result.result_hash,
@@ -1174,10 +1419,11 @@ class ProductionApplication:
             path_hash=request.path.path_hash,
             proof_algorithm_version=result.proof_algorithm_version,
             reach_bound_algorithm_version=result.reach_bound_algorithm_version,
-            provider_name=provider.provider_name,
-            provider_version=provider.provider_version,
-            execution_mode=provider.execution_mode,
-            backend_provenance=provider.provenance(),
+            reach_bound_plumbing_version=reach_bound_plumbing_version,
+            provider_name=provider_name,
+            provider_version=provider_version,
+            execution_mode=execution_mode,
+            backend_provenance=backend_provenance,
         )
         import hashlib
         evidence_id = "EVD-MJCP-" + hashlib.sha256((request.request_hash + result.result_hash).encode()).hexdigest()[:24]
@@ -1218,8 +1464,13 @@ class ProductionApplication:
             raise EvidenceIntegrityError(
                 f"M10-4 evidence result payload missing: {result_hash}"
             )
-        result = MultiJointContinuousClearanceProofResult.model_validate(payload)
-        if result.result_hash != result_hash or result.result_hash != continuous_clearance_result_hash(result):
+        result = parse_multi_joint_continuous_result(payload)
+        expected_hash = (
+            multi_joint_continuous_clearance_proof_result_v2_hash(result)
+            if isinstance(result, MultiJointContinuousClearanceProofResultV2)
+            else continuous_clearance_result_hash(result)
+        )
+        if result.result_hash != result_hash or result.result_hash != expected_hash:
             raise EvidenceIntegrityError(
                 f"M10-4 evidence result payload mismatch: {result_hash}"
             )
@@ -1696,7 +1947,7 @@ class ProductionApplication:
         source_revision: int,
         source_state_hash: str,
         assembly: CadAssemblyProgram,
-        model: KinematicModel,
+        model: KinematicModel | KinematicModelV2,
         configuration: JointConfiguration,
     ) -> KinematicForwardKinematicsResult:
         """Evaluate deterministic forward kinematics for a multi-joint configuration.
@@ -1705,12 +1956,24 @@ class ProductionApplication:
         FreeCAD dependency.  The result contains a transformed CadAssemblyProgram
         that may later be used for exact FreeCAD measurement in M10-3.
         """
+        if type(model) is KinematicModel:
+            expected_evaluator_version = MULTI_JOINT_FORWARD_KINEMATICS_VERSION
+        elif type(model) is KinematicModelV2:
+            model = revalidate_v2_kinematic_model(model)
+            expected_evaluator_version = MULTI_JOINT_FORWARD_KINEMATICS_V2_VERSION
+        else:
+            raise TypeError("configuration evaluation requires a v1 or v2 kinematic model")
+        if model.evaluator_version != expected_evaluator_version:
+            raise ValueError("kinematic model evaluator version is not trusted")
+
         self.assembly_service.validate_source(
             self.project_id, source_revision, source_state_hash
         )
 
         service = MultiJointKinematicsService()
         result = service.evaluate(assembly, model, configuration)
+        if result.evaluator_version != expected_evaluator_version:
+            raise ValueError("forward-kinematics evaluator version is not trusted")
 
         self._record_multi_joint_kinematics_provenance(
             model_hash=result.model_hash,

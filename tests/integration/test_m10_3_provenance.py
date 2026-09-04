@@ -9,6 +9,7 @@ import pytest
 import mechcad_harness.application as application_module
 from mechcad_harness.agents import AgentIdentity, FakeAgentAdapter
 from mechcad_harness.application import ProductionApplication
+from mechcad_harness.backends.freecad import FreeCADBackend
 from mechcad_harness.cad_service import CadSourceBindingError
 from mechcad_harness.cad_assembly import (
     CadAssemblyProgram,
@@ -27,6 +28,11 @@ from mechcad_harness.multi_joint_kinematics import (
     RevoluteJointModel,
     kinematic_model_hash,
 )
+from mechcad_harness.multi_joint_collision_sweep import (
+    MULTI_JOINT_EXACT_COLLISION_SWEEP_V2_VERSION,
+    MultiJointCollisionSweepResultV2,
+)
+from mechcad_harness.multi_joint_pair_scope import ExactConstituentPair
 from mechcad_harness.state import StateManager
 from mechcad_harness.transient_assembly_analysis import (
     TransientAssemblyAnalysisRequest,
@@ -53,6 +59,8 @@ def _application(tmp_path, *, measure=None):
                         "invalidates": [
                             "analysis.multi_joint_collision_sweep",
                             "analysis.kinematic_sweep",
+                            "analysis.multi_joint_kinematics",
+                            "analysis.continuous_multi_joint_clearance_proof",
                         ],
                     }
                 ],
@@ -201,6 +209,31 @@ def _run(
     )
 
 
+def _v2_fixture():
+    from tests.unit.test_m13_3p_rigid_body_groups import _grouped_fk_fixture
+
+    return _grouped_fk_fixture()
+
+
+def _run_v2(application, *, assembly=None, model=None, exact_pair_scope=None):
+    assembly, model = _v2_fixture() if assembly is None else (assembly, model)
+    source = application.load_state()
+    return application.analyze_multi_joint_collision_sweep_v2(
+        source_revision=source.revision,
+        source_state_hash=source.state_hash,
+        assembly=assembly,
+        model=model,
+        configurations=(
+            JointConfiguration(
+                model_id=model.model_id,
+                positions={joint.joint_id: 0.0 for joint in model.joints},
+            ),
+        ),
+        exact_pair_scope=exact_pair_scope
+        or (ExactConstituentPair(first_instance_id="A2", second_instance_id="B1"),),
+    )
+
+
 def _assert_no_m10_3_evidence(application):
     evidence_dir = (
         application.state_manager.workspace
@@ -230,6 +263,171 @@ def test_public_multi_joint_entrypoint_exposes_no_trusted_overrides():
         "exact_measure",
     ):
         assert forbidden not in parameters
+
+
+def test_public_v2_multi_joint_entrypoint_is_explicit_and_has_no_overrides():
+    parameters = inspect.signature(
+        ProductionApplication.analyze_multi_joint_collision_sweep_v2
+    ).parameters
+    assert tuple(parameters) == (
+        "self",
+        "source_revision",
+        "source_state_hash",
+        "assembly",
+        "model",
+        "configurations",
+        "exact_pair_scope",
+    )
+    for forbidden in (
+        "moving_instance_ids",
+        "stationary_instance_ids",
+        "evaluator_version",
+        "provider_name",
+        "provider_version",
+        "backend_provenance",
+        "measurement_provider",
+        "exact_measure",
+        "caller_trust_identity",
+        "schema_version",
+    ):
+        assert forbidden not in parameters
+
+
+def test_v1_collision_entrypoint_rejects_v2_model(tmp_path):
+    application = _application(tmp_path, measure=_measure)
+    assembly, model = _v2_fixture()
+    source = application.load_state()
+
+    with pytest.raises(TypeError, match="v1"):
+        application.analyze_multi_joint_collision_sweep(
+            source_revision=source.revision,
+            source_state_hash=source.state_hash,
+            assembly=assembly,
+            model=model,
+            configurations=(
+                JointConfiguration(
+                    model_id=model.model_id,
+                    positions={joint.joint_id: 0.0 for joint in model.joints},
+                ),
+            ),
+            moving_instance_ids=("A1",),
+            stationary_instance_ids=("B1", "R1", "R2", "A2", "B2"),
+        )
+
+
+def test_v2_collision_entrypoint_rejects_v1_model(tmp_path):
+    application = _application(tmp_path, measure=_measure)
+    source = application.load_state()
+
+    with pytest.raises(TypeError, match="v2"):
+        application.analyze_multi_joint_collision_sweep_v2(
+            source_revision=source.revision,
+            source_state_hash=source.state_hash,
+            assembly=_assembly(),
+            model=_model(),
+            configurations=(),
+            exact_pair_scope=(),
+        )
+
+
+def test_v2_collision_uses_composition_snapshot_after_provider_execute_mutation(
+    tmp_path, monkeypatch
+):
+    def composed_measure(_provider, request, assembly, _workspace):
+        return _measure(request, assembly)
+
+    monkeypatch.setattr(
+        FreeCADTransientAssemblyMeasurementProvider,
+        "_execute_in_workspace",
+        composed_measure,
+    )
+    monkeypatch.setattr(FreeCADBackend, "provenance", lambda _backend: None)
+    application = _application(tmp_path)
+    provider = application._kinematic_measurement_provider
+    provider.provider_name = "spoof-provider"
+    provider.provider_version = "spoof-provider@9.0"
+    provider.execution_mode = "spoofed"
+    provider.provenance = lambda: None
+    provider.execute = lambda request, assembly: tuple(
+        (moving, stationary, 0.0, 999.0)
+        for moving, stationary in request.pairs
+    )
+    provider.backend = object()
+
+    result = _run_v2(application)
+    pair = result.configuration_results[0].pair_results[0]
+    assert pair.exact_distance_mm == 1.0
+    evidence = application.get_multi_joint_collision_sweep_evidence(result.result_hash)
+
+    assert evidence is not None
+    provenance = evidence.analysis_execution_provenance
+    assert provenance is not None
+    assert provenance.provider_name == "freecad-transient-exact"
+    assert provenance.provider_version == "mechcad-freecad-transient@1.0"
+    assert provenance.execution_mode == "freecadcmd-subprocess"
+
+
+def test_v2_collision_provenance_uses_composition_snapshot_after_provider_replacement(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        FreeCADTransientAssemblyMeasurementProvider,
+        "exact_measure",
+        staticmethod(_measure),
+    )
+    monkeypatch.setattr(FreeCADBackend, "provenance", lambda _backend: None)
+    application = _application(tmp_path)
+    object.__setattr__(application, "_kinematic_measurement_provider", object())
+
+    result = _run_v2(application)
+    evidence = application.get_multi_joint_collision_sweep_evidence(result.result_hash)
+
+    assert evidence is not None
+    provenance = evidence.analysis_execution_provenance
+    assert provenance is not None
+    assert provenance.provider_name == "freecad-transient-exact"
+    assert provenance.provider_version == "mechcad-freecad-transient@1.0"
+    assert provenance.execution_mode == "freecadcmd-subprocess"
+
+
+def test_v2_collision_entrypoint_returns_v2_and_persists_v2_provenance(tmp_path):
+    application = _application(tmp_path, measure=_measure)
+
+    result = _run_v2(application)
+
+    assert isinstance(result, MultiJointCollisionSweepResultV2)
+    assert result.evaluator_version == MULTI_JOINT_EXACT_COLLISION_SWEEP_V2_VERSION
+    evidence = application.get_multi_joint_collision_sweep_evidence(result.result_hash)
+    assert evidence is not None
+    provenance = evidence.analysis_execution_provenance
+    assert provenance is not None
+    assert provenance.request_hash == result.request_hash
+    assert provenance.result_hash == result.result_hash
+    assert provenance.model_hash == result.model_hash
+    assert provenance.sweep_version == MULTI_JOINT_EXACT_COLLISION_SWEEP_V2_VERSION
+    assert evidence.input_hash == result.request_hash
+    assert evidence.output_hash == result.result_hash
+
+
+def test_evaluate_multi_joint_configuration_dispatches_v2_through_fk_service(tmp_path):
+    application = _application(tmp_path, measure=_measure)
+    assembly, model = _v2_fixture()
+    source = application.load_state()
+    configuration = JointConfiguration(
+        model_id=model.model_id,
+        positions={joint.joint_id: 0.0 for joint in model.joints},
+    )
+
+    result = application.evaluate_multi_joint_configuration(
+        source_revision=source.revision,
+        source_state_hash=source.state_hash,
+        assembly=assembly,
+        model=model,
+        configuration=configuration,
+    )
+
+    assert result.evaluator_version == model.evaluator_version
+    assert result.model_hash == kinematic_model_hash(model)
 
 
 def test_deterministic_composition_persists_bound_m10_3_provenance(tmp_path):
@@ -416,6 +614,17 @@ def test_legacy_provenance_payload_without_model_hash_remains_compatible():
     provenance = AnalysisExecutionProvenance.model_validate(payload)
     assert provenance.model_hash is None
     assert provenance.model_dump(mode="json", exclude_none=True) == payload
+
+
+def test_multi_joint_provenance_rejects_unknown_sweep_version():
+    from mechcad_harness.analysis_provenance import (
+        validate_trusted_multi_joint_sweep_version,
+    )
+
+    with pytest.raises(ValueError, match="trusted"):
+        validate_trusted_multi_joint_sweep_version(
+            "multi-joint-exact-collision-sweep@9.0"
+        )
 
 
 def test_evidence_store_preserves_legacy_persisted_shape_hash_and_id(tmp_path):

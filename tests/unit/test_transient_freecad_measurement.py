@@ -195,6 +195,21 @@ def test_measurement_script_compounds_all_imported_candidates():
     assert script.count("candidates[0].Shape.copy()") == 1
 
 
+def test_measurement_script_uses_neutral_pair_locals_and_legacy_output_keys():
+    program = _assembly_with_imported()
+    script = FreeCADTransientAssemblyMeasurementProvider._measurement_script(
+        program,
+        (("imp_inst", "obs_inst"),),
+        {"obstacle": "o.step"},
+        {"IMP": "x.step"},
+        {"IMP"},
+    )
+
+    assert "for first, second in pairs:" in script
+    assert "'moving_instance_id': first" in script
+    assert "'stationary_instance_id': second" in script
+
+
 def test_radial_script_compounds_all_imported_candidates():
     records = [("imp_inst", True, "x.step", 0.0, 0.0, 0.0, (0.0, 0.0, 1.0), 0.0)]
     script = FreeCADTransientAssemblyMeasurementProvider._radial_script(

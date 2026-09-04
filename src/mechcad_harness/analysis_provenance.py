@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import Field
+from pydantic import Field, model_serializer
 
 from mechcad_harness.backends.models import BackendProvenance
 from mechcad_harness.models.common import Model, utc_now
@@ -18,6 +18,36 @@ TRANSIENT_MEASUREMENT_EXECUTION_MODE = "freecadcmd-subprocess"
 DETERMINISTIC_PROVIDER_NAME = "deterministic-test-provider"
 DETERMINISTIC_PROVIDER_VERSION = "deterministic-test@1.0"
 DETERMINISTIC_EXECUTION_MODE = "deterministic-injected"
+
+_TRUSTED_MULTI_JOINT_SWEEP_VERSIONS = frozenset({
+    "multi-joint-exact-collision-sweep@1.0",
+    "multi-joint-exact-collision-sweep@2.0",
+})
+_TRUSTED_REACH_BOUND_VERSIONS = frozenset({
+    "articulated-descendant-reach-bound@1.0",
+    "body-member-reach-bound-plumbing@2.0",
+})
+_TRUSTED_MULTI_JOINT_PROOF_VERSION = (
+    "conservative-multi-joint-path-clearance-proof@1.0"
+)
+
+
+def validate_trusted_multi_joint_sweep_version(value: str) -> str:
+    if value not in _TRUSTED_MULTI_JOINT_SWEEP_VERSIONS:
+        raise ValueError("multi-joint sweep version is not trusted")
+    return value
+
+
+def validate_trusted_multi_joint_reach_bound_version(value: str) -> str:
+    if value not in _TRUSTED_REACH_BOUND_VERSIONS:
+        raise ValueError("multi-joint reach-bound version is not trusted")
+    return value
+
+
+def validate_trusted_multi_joint_proof_version(value: str) -> str:
+    if value != _TRUSTED_MULTI_JOINT_PROOF_VERSION:
+        raise ValueError("multi-joint proof version is not trusted")
+    return value
 
 
 class AnalysisExecutionProvenance(Model):
@@ -39,7 +69,6 @@ class AnalysisExecutionProvenance(Model):
     backend_provenance: BackendProvenance | None = None
     recorded_at: datetime = Field(default_factory=utc_now)
 
-
 class ContinuousProofExecutionProvenance(Model):
     """Trusted execution provenance binding a continuous single-axis clearance
     proof result to the exact measurement provider and backend/runtime.
@@ -55,8 +84,16 @@ class ContinuousProofExecutionProvenance(Model):
     path_hash: str | None = None
     proof_algorithm_version: str = Field(min_length=1)
     reach_bound_algorithm_version: str | None = None
+    reach_bound_plumbing_version: str | None = None
     provider_name: str = Field(min_length=1)
     provider_version: str = Field(min_length=1)
     execution_mode: str = Field(min_length=1)
     backend_provenance: BackendProvenance | None = None
     recorded_at: datetime = Field(default_factory=utc_now)
+
+    @model_serializer(mode="wrap")
+    def _serialize_legacy_without_v2_plumbing(self, handler):
+        payload = handler(self)
+        if self.reach_bound_plumbing_version is None:
+            payload.pop("reach_bound_plumbing_version", None)
+        return payload

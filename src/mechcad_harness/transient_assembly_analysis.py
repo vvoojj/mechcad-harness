@@ -35,7 +35,7 @@ class TransientAssemblyAnalysisService:
         if request.transformed_assembly_hash != transformed_hash:
             raise ValueError("transformed assembly hash mismatch")
         measurements = tuple(self.exact_measure(request, transformed_assembly))
-        if tuple((moving, stationary) for moving, stationary, _, _ in measurements) != request.pairs:
+        if tuple((first, second) for first, second, _, _ in measurements) != request.pairs:
             raise ValueError("exact measurement pairs do not match requested pair inventory")
         return TransientAssemblyAnalysisResult(
             source_assembly_hash=request.source_assembly_hash,

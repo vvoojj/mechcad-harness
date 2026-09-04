@@ -7,13 +7,21 @@ import pytest
 
 from mechcad_harness.application import ProductionApplication
 from mechcad_harness.analysis_provenance import ContinuousProofExecutionProvenance
+from mechcad_harness.backends.freecad import FreeCADBackend
+from mechcad_harness.multi_joint_pair_scope import ExactConstituentPair
 from mechcad_harness.dependency import DependencyGraph, EvidenceStore
 from mechcad_harness.models.evidence import Evidence
 from mechcad_harness.models import Component, DesignState
 from mechcad_harness.multi_joint_continuous_clearance import (
     MultiJointContinuousClearanceProofResult,
+    MultiJointContinuousClearanceProofResultV2,
     MultiJointContinuousProofStatus,
     continuous_clearance_result_hash,
+    multi_joint_continuous_clearance_proof_result_v2_hash,
+)
+from mechcad_harness.multi_joint_kinematics import JointConfiguration
+from mechcad_harness.transient_freecad_measurement import (
+    FreeCADTransientAssemblyMeasurementProvider,
 )
 from mechcad_harness.state import StateManager
 
@@ -147,3 +155,146 @@ def test_m10_4_evidence_write_failure_leaves_no_record(tmp_path, monkeypatch):
         store.write_evidence("PRJ-M10-4-FAIL", evidence)
     evidence_path = workspace / "projects" / "PRJ-M10-4-FAIL" / "evidence" / "EVD-M10-4-FAIL.json"
     assert not evidence_path.exists()
+
+
+def test_v2_production_proof_persists_and_reloads_v2_result(tmp_path, monkeypatch):
+    from tests.integration.test_m10_3_provenance import _application, _measure
+    from tests.unit.test_m13_3p_rigid_body_groups import _grouped_fk_fixture
+    from mechcad_harness.multi_joint_continuous_path import MultiJointPath
+
+    assembly, model = _grouped_fk_fixture()
+    def composed_measure(_provider, request, _assembly, _workspace):
+        distance = 1.0 if type(_provider.backend) is FreeCADBackend else 999.0
+        return tuple(
+            (first, second, 0.0, distance)
+            for first, second in request.pairs
+        )
+
+    def composed_local_radii(_provider, _assembly, instance_ids):
+        radius = 1.0 if type(_provider.backend) is FreeCADBackend else 999.0
+        return {instance_id: radius for instance_id in instance_ids}
+
+    monkeypatch.setattr(
+        FreeCADTransientAssemblyMeasurementProvider,
+        "_execute_in_workspace",
+        composed_measure,
+    )
+    monkeypatch.setattr(
+        FreeCADTransientAssemblyMeasurementProvider,
+        "_component_local_geometry_radii",
+        composed_local_radii,
+    )
+    monkeypatch.setattr(FreeCADBackend, "provenance", lambda _backend: None)
+    application = _application(tmp_path)
+    provider = application._kinematic_measurement_provider
+    provider.provider_name = "spoof-provider"
+    provider.provider_version = "spoof-provider@9.0"
+    provider.execution_mode = "spoofed"
+    provider.provenance = lambda: None
+    provider.backend = object()
+    source = application.load_state()
+    path = MultiJointPath(
+        model_id=model.model_id,
+        waypoints=(
+            JointConfiguration(
+                model_id=model.model_id,
+                positions={joint.joint_id: 0.0 for joint in model.joints},
+            ),
+            JointConfiguration(
+                model_id=model.model_id,
+                positions={joint.joint_id: 1.0 for joint in model.joints},
+            ),
+        ),
+    )
+    result = application.prove_continuous_multi_joint_path_clearance_v2(
+        source_revision=source.revision,
+        source_state_hash=source.state_hash,
+        assembly=assembly,
+        model=model,
+        path=path,
+        exact_pair_scope=(
+            ExactConstituentPair(first_instance_id="A2", second_instance_id="B1"),
+        ),
+        max_depth=0,
+    )
+
+    assert isinstance(result, MultiJointContinuousClearanceProofResultV2)
+    evidence = application.get_multi_joint_continuous_proof_evidence(result.result_hash)
+    assert evidence is not None
+    assert evidence.continuous_proof_execution_provenance is not None
+    assert evidence.continuous_proof_execution_provenance.request_hash == result.request_hash
+    assert evidence.continuous_proof_execution_provenance.result_hash == result.result_hash
+    assert evidence.continuous_proof_execution_provenance.reach_bound_plumbing_version == result.reach_bound_algorithm_version
+    assert evidence.continuous_proof_execution_provenance.provider_name == "freecad-transient-exact"
+    assert evidence.continuous_proof_execution_provenance.provider_version == "mechcad-freecad-transient@1.0"
+    assert evidence.continuous_proof_execution_provenance.execution_mode == "freecadcmd-subprocess"
+    assert result.reach_bounds.for_instance_joint("A2", "J1").local_geometry_radius_mm == 1.0
+
+    reloaded = application.get_multi_joint_continuous_proof_result(result.result_hash)
+
+    assert isinstance(reloaded, MultiJointContinuousClearanceProofResultV2)
+    assert reloaded == result
+    assert reloaded.result_hash == multi_joint_continuous_clearance_proof_result_v2_hash(reloaded)
+
+
+def test_v2_continuous_entrypoint_rejects_v1_model(tmp_path):
+    from tests.integration.test_m10_3_provenance import _application, _assembly, _measure, _model
+    from mechcad_harness.multi_joint_continuous_path import MultiJointPath
+
+    application = _application(tmp_path, measure=_measure)
+    model = _model()
+    configuration = JointConfiguration(
+        model_id=model.model_id,
+        positions={joint.joint_id: 0.0 for joint in model.joints},
+    )
+    path = MultiJointPath(
+        model_id=model.model_id,
+        waypoints=(configuration, configuration),
+    )
+    source = application.load_state()
+
+    with pytest.raises(TypeError, match="v2"):
+        application.prove_continuous_multi_joint_path_clearance_v2(
+            source_revision=source.revision,
+            source_state_hash=source.state_hash,
+            assembly=_assembly(),
+            model=model,
+            path=path,
+            exact_pair_scope=(),
+        )
+
+
+def test_v2_proof_entrypoint_exposes_only_explicit_typed_inputs():
+    import inspect
+
+    parameters = inspect.signature(
+        ProductionApplication.prove_continuous_multi_joint_path_clearance_v2
+    ).parameters
+    assert tuple(parameters) == (
+        "self",
+        "source_revision",
+        "source_state_hash",
+        "assembly",
+        "model",
+        "path",
+        "exact_pair_scope",
+        "required_clearance_mm",
+        "proof_guard_mm",
+        "max_depth",
+        "minimum_path_interval",
+        "max_exact_evaluations",
+    )
+    for forbidden in (
+        "moving_instance_ids",
+        "stationary_instance_ids",
+        "evaluator_version",
+        "provider_name",
+        "provider_version",
+        "backend_provenance",
+        "measurement_provider",
+        "exact_measure",
+        "caller_trust_identity",
+        "schema_version",
+        "proof_version",
+    ):
+        assert forbidden not in parameters
