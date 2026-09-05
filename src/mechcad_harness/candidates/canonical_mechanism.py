@@ -35,6 +35,13 @@ from .promotion_models import (
 from .generated_authority import build_canonical_view, m13_local_pose
 
 
+def _revalidate_canonical_physical_fields(
+    mechanism: CanonicalPhysicalMechanism,
+) -> CanonicalPhysicalMechanism:
+    """Reconstruct nested canonical authority, including the M13-3 branch."""
+    return CanonicalPhysicalMechanism.model_validate(mechanism.model_dump(mode="json"))
+
+
 class ProjectArtifactResolver:
     """Project-wide lookup over a store whose run scope is operational only."""
 
@@ -235,9 +242,7 @@ class CanonicalPhysicalMechanismCompiler:
     @staticmethod
     def _validate_mechanism(mechanism: CanonicalPhysicalMechanism) -> CanonicalPhysicalMechanism:
         try:
-            validated = CanonicalPhysicalMechanism.model_validate(
-                mechanism.model_dump(mode="json")
-            )
+            validated = _revalidate_canonical_physical_fields(mechanism)
         except Exception as exc:
             raise ValueError(f"canonical mechanism integrity failure: {exc}") from exc
 
@@ -826,6 +831,12 @@ def _projection_from_mechanism(
         joint_bindings=mechanism.joint_bindings,
         m10_obligations=mechanism.m10_obligations,
         generated_placement_derivations=mechanism.generated_placement_derivations,
+        physical_rigid_body_bindings=mechanism.physical_rigid_body_bindings,
+        physical_revolute_joint_bindings=mechanism.physical_revolute_joint_bindings,
+        kinematic_root_physical_body_id=mechanism.kinematic_root_physical_body_id,
+        kinematic_root_binding_hash=mechanism.kinematic_root_binding_hash,
+        physical_pair_classification_bindings=mechanism.physical_pair_classification_bindings,
+        multi_joint_verification_obligations=mechanism.multi_joint_verification_obligations,
         mapping_identities=tuple(
             component.instance_id for component in mechanism.components
         ),

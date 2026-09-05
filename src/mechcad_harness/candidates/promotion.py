@@ -24,6 +24,14 @@ from .evaluation import (
     _validate_cad_inputs,
     _validate_m10_inputs,
 )
+from .multi_joint_m10_evaluation import (
+    CandidateMultiJointM10Evaluation,
+    CandidateMultiJointM10EvaluationRequest,
+)
+from .multi_joint_selection import (
+    CandidateMultiJointSelection,
+    CandidateMultiJointSelectionService,
+)
 from .cad_realization import CandidateCadRealizationService
 from .generated_authority import build_candidate_view
 from .models import (
@@ -38,6 +46,7 @@ from .promotion_models import (
     CandidatePromotionCompilation,
     CandidatePromotionPolicy,
     CandidatePromotionRequest,
+    CandidateMultiJointPromotionRequest,
     PrePromotionM10ScopeProjection,
     PromotableMechanismProjection,
     PromotionClassification,
@@ -52,6 +61,7 @@ from .promotion_models import (
 )
 from .promotion_artifacts import PromotionManifestService
 from .selection import CandidateSelectionService, candidate_selection_hash
+from .multi_joint_selection import candidate_multi_joint_selection_hash
 from .services import (
     CandidateCurrentness,
     CandidateCurrentnessService,
@@ -85,6 +95,15 @@ from mechcad_harness.models.physical_mechanism import (
     CanonicalPlacementOrigin,
     CanonicalGeometryFidelity,
     CanonicalPhysicalMechanism,
+    CanonicalPhysicalPairClassificationBinding,
+    CanonicalPhysicalRigidBodyBinding,
+    CanonicalPhysicalRevoluteJointBinding,
+    CanonicalGeneratedReferenceFrameAxisSource,
+    CanonicalGeneratedRotationalInterfaceAxisSource,
+    CanonicalSuppliedReferenceFrameAxisSource,
+    CanonicalSuppliedRotationalInterfaceAxisSource,
+    CanonicalMultiJointVerificationObligation,
+    physical_kinematic_root_hash,
 )
 from mechcad_harness.models.geometry_identity import (
     GeometryArtifactIdentity,
@@ -98,7 +117,34 @@ from mechcad_harness.models.generated_part import (
     GeneratedAuthorityView,
     resolve_generated_inputs,
 )
-from mechcad_harness.models.generated_placement import placement_derivations_hash
+from mechcad_harness.candidates.models import (
+    GeneratedReferenceFrameAxisSource,
+    GeneratedRotationalInterfaceAxisSource,
+    PhysicalRigidBodyBinding,
+    PhysicalRevoluteJointBinding,
+    SuppliedReferenceFrameAxisSource,
+    SuppliedRotationalInterfaceAxisSource,
+)
+from mechcad_harness.models.multi_joint_verification import (
+    MultiJointVerificationConfigurationSet,
+)
+from mechcad_harness.models.physical_pair_policy import (
+    physical_pair_classification_set_hash,
+)
+from mechcad_harness.multi_joint_kinematics import (
+    joint_configuration_hash,
+)
+from .multi_joint_m10_bridge import (
+    physical_to_m10_v2_model_id,
+    resolve_candidate_placement,
+    validate_complete_physical_pair_policy,
+    validate_physical_body_pair_consistency,
+    validate_physical_kinematic_tree,
+)
+from mechcad_harness.models.generated_placement import (
+    GeneratedPlacementDerivation,
+    placement_derivations_hash,
+)
 from mechcad_harness.models.generated_placement import CanonicalGeneratedPlacementDerivation
 from mechcad_harness.generated_part_cad import verify_generated_part
 from mechcad_harness.state.hashing import canonical_json
@@ -196,6 +242,88 @@ class PromotionReadiness(Model):
         return self
 
 
+class MultiJointPromotionReadiness(Model):
+    """Immutable proof that a multi-joint request may enter projection."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    schema_version: Literal["candidate-multi-joint-promotion-readiness@1"] = (
+        "candidate-multi-joint-promotion-readiness@1"
+    )
+    project_id: StrictStr = Field(min_length=1)
+    source_revision: StrictInt = Field(gt=0)
+    source_state_hash: StrictStr
+    source_binding_hash: StrictStr
+    request_hash: StrictStr
+    candidate_hash: StrictStr
+    synthesis_request_hash: StrictStr
+    synthesis_policy_hash: StrictStr
+    m12_3_result_hash: StrictStr
+    multi_joint_evaluation_hash: StrictStr
+    multi_joint_selection_hash: StrictStr
+    scope_hash: StrictStr
+    configuration_set_hash: StrictStr
+    promotion_policy_hash: StrictStr
+    canonical_target_mechanism_id: StrictStr = Field(min_length=1)
+    mapping: tuple[CandidateCanonicalInstanceMapping, ...] = Field(min_length=1)
+    classification_identities: tuple[StrictStr, ...] = Field(min_length=1)
+    trusted_geometry_artifact_ids: tuple[StrictStr, ...] = ()
+    readiness_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "source_state_hash",
+        "source_binding_hash",
+        "request_hash",
+        "candidate_hash",
+        "synthesis_request_hash",
+        "synthesis_policy_hash",
+        "m12_3_result_hash",
+        "multi_joint_evaluation_hash",
+        "multi_joint_selection_hash",
+        "scope_hash",
+        "configuration_set_hash",
+        "promotion_policy_hash",
+    )(_strict_hash)
+    _validate_readiness_hash = field_validator("readiness_hash")(
+        lambda value: value if value == "pending" else _require_hash(value)
+    )
+    _validate_text = field_validator("project_id", "canonical_target_mechanism_id")(_nonblank)
+    _validate_classification_identities = field_validator("classification_identities")(
+        _strict_hashes
+    )
+    _validate_artifact_ids = field_validator("trusted_geometry_artifact_ids")(
+        _strict_nonblank_values
+    )
+
+    @field_validator("trusted_geometry_artifact_ids")
+    @classmethod
+    def validate_artifact_order(cls, values):
+        if len(set(values)) != len(values):
+            raise ValueError("multi-joint readiness geometry artifact IDs must be unique")
+        if values != tuple(sorted(values)):
+            raise ValueError(
+                "multi-joint readiness geometry artifact IDs must be lexically sorted"
+            )
+        return values
+
+    @model_validator(mode="after")
+    def validate_readiness(self) -> "MultiJointPromotionReadiness":
+        candidate_ids = tuple(item.candidate_instance_id for item in self.mapping)
+        canonical_ids = tuple(item.canonical_instance_id for item in self.mapping)
+        if candidate_ids != tuple(sorted(candidate_ids)):
+            raise ValueError("multi-joint readiness mapping must be canonically sorted")
+        if len(set(candidate_ids)) != len(candidate_ids) or len(set(canonical_ids)) != len(canonical_ids):
+            raise ValueError("multi-joint readiness mapping IDs must be unique")
+        if self.classification_identities != tuple(sorted(self.classification_identities)):
+            raise ValueError("multi-joint readiness classifications must be lexically sorted")
+        expected = _hash(self, "readiness_hash")
+        if self.readiness_hash == "pending":
+            object.__setattr__(self, "readiness_hash", expected)
+        elif self.readiness_hash != expected:
+            raise ValueError("multi-joint promotion readiness hash mismatch")
+        return self
+
+
 class CandidatePromotionCompiler:
     """Perform the non-mutating, pre-application promotion trust boundary."""
 
@@ -281,6 +409,397 @@ class CandidatePromotionCompiler:
             ),
             trusted_geometry_artifact_ids=trusted_geometry_ids,
         )
+
+    def validate_multi_joint_readiness(
+        self, request: CandidateMultiJointPromotionRequest
+    ) -> MultiJointPromotionReadiness:
+        request = self._revalidate_multi_joint_promotion_request(request)
+        current = self.state_manager.load_current_state(request.project_id)
+        current_hash = state_hash(current)
+        if (request.source_revision, request.source_state_hash) != (
+            current.revision,
+            current_hash,
+        ):
+            raise ValueError("multi-joint promotion source revision or state hash is stale")
+
+        self._verify_candidate(request.candidate, request)
+        self._verify_multi_joint_m12_result(request)
+        self._verify_multi_joint_chain(request)
+        self._verify_policy(request.promotion_policy, request.candidate)
+        if any(
+            mechanism.id == request.canonical_target_mechanism_id
+            for mechanism in current.physical_mechanisms
+        ):
+            raise ValueError("promotion target mechanism path already exists")
+        trusted_geometry_ids = self._verify_geometry_sources(request)
+        mapping = self.map_multi_joint_instances(request)
+        expected = self._expected_multi_joint_classifications(request)
+        self._classifications_by_identity(request, expected)
+        return MultiJointPromotionReadiness(
+            project_id=request.project_id,
+            source_revision=request.source_revision,
+            source_state_hash=request.source_state_hash,
+            source_binding_hash=_hash(request.candidate.source_binding),
+            request_hash=request.request_hash,
+            candidate_hash=request.candidate.candidate_hash,
+            synthesis_request_hash=request.synthesis_request.request_hash,
+            synthesis_policy_hash=request.synthesis_policy.policy_hash,
+            m12_3_result_hash=request.m12_3_result.result_hash,
+            multi_joint_evaluation_hash=request.multi_joint_evaluation.evaluation_hash,
+            multi_joint_selection_hash=request.multi_joint_selection.selection_hash,
+            scope_hash=request.multi_joint_request.scope_hash,
+            configuration_set_hash=request.multi_joint_request.configuration_set_hash,
+            promotion_policy_hash=request.promotion_policy.policy_hash,
+            canonical_target_mechanism_id=request.canonical_target_mechanism_id,
+            mapping=mapping,
+            classification_identities=tuple(
+                sorted(item.classification_hash for item in request.classifications)
+            ),
+            trusted_geometry_artifact_ids=tuple(sorted(trusted_geometry_ids)),
+        )
+
+    def compile_multi_joint(
+        self, state, request: CandidateMultiJointPromotionRequest
+    ) -> CandidatePromotionCompilation:
+        request = self._revalidate_multi_joint_promotion_request(request)
+        current = self.state_manager.load_current_state(request.project_id)
+        current_hash = state_hash(current)
+        supplied_hash = state_hash(state)
+        if (state.revision, supplied_hash) != (current.revision, current_hash):
+            raise ValueError("promotion compile state is not the current canonical state")
+        if (request.source_revision, request.source_state_hash) != (
+            state.revision,
+            supplied_hash,
+        ):
+            raise ValueError("promotion compile request is not bound to the supplied state")
+
+        readiness = self.validate_multi_joint_readiness(request)
+        mechanism = self._compile_multi_joint_mechanism(request, readiness.mapping)
+        projection = self._projection(mechanism)
+        operation = ChangeOperation(
+            operation="add",
+            path=f"/physical_mechanisms/{mechanism.id}",
+            value=mechanism.model_dump(mode="json"),
+        )
+        proposal = ChangeProposal(
+            id=f"promotion:{mechanism.id}",
+            title=f"Promote {mechanism.id}",
+            status=ProposalStatus.DRAFT,
+            base_revision=state.revision,
+            base_state_hash=supplied_hash,
+            actor="mechcad-physical-mechanism",
+            operations=[operation],
+        )
+        return CandidatePromotionCompilation(
+            canonical_mechanism=mechanism,
+            proposal=proposal,
+            promotion_proposal_hash=promotion_proposal_hash(
+                state.revision, supplied_hash, (operation,)
+            ),
+            mapping=readiness.mapping,
+            projection=projection,
+        )
+
+    @staticmethod
+    def _revalidate_multi_joint_promotion_request(
+        request: CandidateMultiJointPromotionRequest,
+    ) -> CandidateMultiJointPromotionRequest:
+        if type(request) is not CandidateMultiJointPromotionRequest:
+            raise ValueError("multi-joint promotion request must be a typed request")
+        try:
+            return CandidateMultiJointPromotionRequest.model_validate(
+                request.model_dump(mode="json")
+            )
+        except Exception as exc:
+            raise ValueError(f"multi-joint promotion request integrity failure: {exc}") from exc
+
+    def _verify_multi_joint_m12_result(
+        self, request: CandidateMultiJointPromotionRequest
+    ) -> None:
+        result = request.m12_3_result
+        candidate = request.candidate
+        if result.result_hash != admissibility_result_hash(result):
+            raise ValueError("promotion M12-3 result identity is stale")
+        if result.status is not DriveAdmissibility.ADMISSIBLE:
+            raise ValueError("promotion requires an ADMISSIBLE M12-3 result")
+        if (
+            result.candidate_hash != candidate.candidate_hash
+            or result.source_binding_hash != _hash(candidate.source_binding)
+            or result.synthesis_request_hash != request.synthesis_request.request_hash
+            or result.synthesis_policy_hash != request.synthesis_policy.policy_hash
+        ):
+            raise ValueError("promotion M12-3 result binding mismatch")
+        if result.design_variables != candidate.design_variables:
+            raise ValueError("promotion M12-3 design variable substitution")
+        specifications = {
+            specification.specification_hash: specification
+            for specification in candidate.component_specifications
+        }
+        components = {
+            component.instance_id: component
+            for component in candidate.realization.components
+        }
+        properties = {
+            (component.instance_id, prop.key): (
+                component,
+                specifications[component.specification_hash],
+                prop,
+            )
+            for component in candidate.realization.components
+            for prop in specifications[component.specification_hash].properties
+        }
+        for binding in result.consumed_property_bindings:
+            actual = properties.get((binding.component_instance_id, binding.property_key))
+            if actual is None:
+                raise ValueError("promotion M12-3 consumed property substitution")
+            _, specification, prop = actual
+            if (
+                binding.specification_hash != specification.specification_hash
+                or binding.property_hash != prop.property_hash
+                or binding.source_identity != prop.source_identity
+                or binding.authority.value != prop.authority.value
+            ):
+                raise ValueError("promotion M12-3 consumed property binding substitution")
+        if any(
+            binding.component_instance_id not in components
+            for binding in result.consumed_property_bindings
+        ):
+            raise ValueError("promotion M12-3 consumed property references an unknown instance")
+
+    def _verify_multi_joint_chain(self, request: CandidateMultiJointPromotionRequest) -> None:
+        candidate = request.candidate
+        multi_request = CandidateMultiJointM10EvaluationRequest.model_validate(
+            request.multi_joint_request.model_dump(mode="json")
+        )
+        evaluation = CandidateMultiJointM10Evaluation.model_validate(
+            request.multi_joint_evaluation.model_dump(mode="json")
+        )
+        selection = CandidateMultiJointSelection.model_validate(
+            request.multi_joint_selection.model_dump(mode="json")
+        )
+        if candidate.candidate_hash != candidate_hash(candidate):
+            raise ValueError("multi-joint promotion candidate hash mismatch")
+        realization = candidate.realization
+        derivations = request.generated_placement_derivations
+        expected_derivations_hash = (
+            None if not derivations else placement_derivations_hash(derivations)
+        )
+        if request.placement_derivations_hash != expected_derivations_hash:
+            raise ValueError("multi-joint promotion placement derivation hash is stale")
+        if (
+            multi_request.placement_derivations != derivations
+            or multi_request.placement_derivations_hash != request.placement_derivations_hash
+        ):
+            raise ValueError("multi-joint promotion selected CAD derivation substitution")
+        component_ids = {component.instance_id for component in realization.components}
+        specifications = {
+            specification.specification_hash: specification
+            for specification in candidate.component_specifications
+        }
+        generated_ids = {
+            component.instance_id
+            for component in realization.components
+            if specifications[component.specification_hash].generated_part is not None
+        }
+        if {
+            derivation.target_physical_instance_id for derivation in derivations
+        } != generated_ids:
+            raise ValueError("multi-joint promotion placement derivation coverage mismatch")
+        if any(
+            derivation.source_physical_instance_id not in component_ids
+            or derivation.target_physical_instance_id not in component_ids
+            for derivation in derivations
+        ):
+            raise ValueError("multi-joint promotion placement derivation instance mismatch")
+        try:
+            for target_id in sorted(generated_ids):
+                resolve_candidate_placement(candidate, target_id, derivations)
+        except Exception as exc:
+            raise ValueError("multi-joint promotion semantic placement replay failed") from exc
+        if multi_request.physical_mechanism_hash != realization.realization_hash:
+            raise ValueError("multi-joint promotion physical mechanism binding mismatch")
+        if multi_request.physical_body_binding_hashes != tuple(
+            sorted(item.binding_hash for item in realization.physical_rigid_body_bindings)
+        ):
+            raise ValueError("multi-joint promotion physical body binding mismatch")
+        if multi_request.physical_joint_binding_hashes != tuple(
+            sorted(item.binding_hash for item in realization.physical_revolute_joint_bindings)
+        ):
+            raise ValueError("multi-joint promotion physical joint binding mismatch")
+        if multi_request.kinematic_root_binding_hash != realization.kinematic_root_binding_hash:
+            raise ValueError("multi-joint promotion kinematic root binding mismatch")
+        if multi_request.physical_pair_classification_set_hash != physical_pair_classification_set_hash(
+            realization.physical_pair_classification_bindings
+        ):
+            raise ValueError("multi-joint promotion physical pair policy binding mismatch")
+        physical_instance_ids = tuple(
+            component.instance_id for component in realization.components
+        )
+        pair_map = validate_complete_physical_pair_policy(
+            realization.physical_pair_classification_bindings,
+            physical_instance_ids,
+        )
+        validate_physical_body_pair_consistency(
+            realization.physical_rigid_body_bindings, pair_map
+        )
+        validate_physical_kinematic_tree(realization)
+        if multi_request.request_hash != _hash(multi_request, "request_hash"):
+            raise ValueError("multi-joint promotion request identity is stale")
+        if evaluation.evaluation_hash != _hash(evaluation, "evaluation_hash"):
+            raise ValueError("multi-joint promotion evaluation identity is stale")
+        if selection.selection_hash != candidate_selection_hash(selection):
+            raise ValueError("multi-joint promotion selection identity is stale")
+        expected_model_id = physical_to_m10_v2_model_id(
+            (item.physical_body_id for item in candidate.realization.physical_rigid_body_bindings),
+            (item.physical_joint_id for item in candidate.realization.physical_revolute_joint_bindings),
+        )
+        configuration_set = MultiJointVerificationConfigurationSet.model_validate(
+            multi_request.scope.configuration_set.model_dump(mode="json")
+        )
+        if configuration_set != multi_request.scope.configuration_set:
+            raise ValueError("multi-joint promotion configuration set replay mismatch")
+        if multi_request.configuration_set_hash != configuration_set.configuration_set_hash:
+            raise ValueError("multi-joint promotion configuration-set binding mismatch")
+        if multi_request.configuration_hashes != configuration_set.configuration_hashes:
+            raise ValueError("multi-joint promotion ordered configuration hashes mismatch")
+        joint_ids = {
+            joint.physical_joint_id
+            for joint in candidate.realization.physical_revolute_joint_bindings
+        }
+        for configuration in configuration_set.configurations:
+            if configuration.model_id != expected_model_id:
+                raise ValueError("multi-joint promotion configuration model ID mismatch")
+            if set(configuration.positions) != joint_ids:
+                raise ValueError("multi-joint promotion configuration joint keys mismatch")
+            for joint in candidate.realization.physical_revolute_joint_bindings:
+                value = configuration.positions[joint.physical_joint_id]
+                if joint.min_angle_deg is not None and value < joint.min_angle_deg:
+                    raise ValueError("multi-joint promotion configuration is below its limit")
+                if joint.max_angle_deg is not None and value > joint.max_angle_deg:
+                    raise ValueError("multi-joint promotion configuration is above its limit")
+        request_fields = (
+            "project_id",
+            "source_revision",
+            "source_state_hash",
+            "source_binding_hash",
+            "candidate_hash",
+            "physical_to_m10_bridge_hash",
+            "m10_model_hash",
+            "physical_pair_classification_set_hash",
+            "inventory_hash",
+            "exact_pair_scope_hash",
+            "scope_hash",
+            "configuration_set_hash",
+        )
+        for field in request_fields:
+            if getattr(multi_request, field) != getattr(evaluation, field):
+                raise ValueError(f"multi-joint promotion evaluation {field} binding mismatch")
+            if getattr(multi_request, field) != getattr(selection, field):
+                raise ValueError(f"multi-joint promotion selection {field} binding mismatch")
+        if evaluation.candidate_request_hash != multi_request.request_hash:
+            raise ValueError("multi-joint promotion evaluation request binding mismatch")
+        if selection.evaluation_hash != evaluation.evaluation_hash:
+            raise ValueError("multi-joint promotion selection evaluation binding mismatch")
+        if selection.candidate_request_hash != multi_request.request_hash:
+            raise ValueError("multi-joint promotion selection request binding mismatch")
+        if selection.m10_v2_result_hash != evaluation.m10_v2_result_hash:
+            raise ValueError("multi-joint promotion selection M10 result binding mismatch")
+        if (
+            multi_request.scope.volume_tolerance_mm3 < 0
+            or multi_request.scope.distance_tolerance_mm < 0
+        ):
+            raise ValueError("multi-joint promotion discrete tolerances must be non-negative")
+
+    def map_multi_joint_instances(
+        self, request: CandidateMultiJointPromotionRequest
+    ) -> tuple[CandidateCanonicalInstanceMapping, ...]:
+        expected = self._expected_multi_joint_classifications(request)
+        classifications = self._classifications_by_identity(request, expected)
+        mappings = []
+        for component in request.candidate.realization.components:
+            identity = f"candidate:physical-instance:{component.instance_id}"
+            classification = classifications[identity]
+            if classification.classification in (
+                PromotionValueClassification.DO_NOT_PROMOTE,
+                PromotionValueClassification.PROVENANCE_ONLY,
+            ):
+                raise ValueError("physical instance classification is not promotable")
+            canonical_id = f"{request.canonical_target_mechanism_id}:{component.instance_id}"
+            mappings.append(
+                CandidateCanonicalInstanceMapping(
+                    candidate_instance_id=component.instance_id,
+                    canonical_instance_id=canonical_id,
+                    canonical_path=(
+                        f"/physical_mechanisms/{request.canonical_target_mechanism_id}"
+                        f"/components/{canonical_id}"
+                    ),
+                    classification=classification.classification,
+                    source_identity=classification.source_identity,
+                    source_provenance=classification.source_provenance,
+                    source_value=classification.source_value,
+                )
+            )
+        return tuple(sorted(mappings, key=lambda item: item.candidate_instance_id))
+
+    @classmethod
+    def _expected_multi_joint_classifications(cls, request):
+        expected = cls._expected_classifications(request)
+        realization = request.candidate.realization
+
+        def add(identity, value):
+            if identity in expected and expected[identity] != value:
+                raise ValueError(f"promotion classification identity collision: {identity}")
+            expected[identity] = value
+
+        for body in realization.physical_rigid_body_bindings:
+            add(
+                f"candidate:physical-rigid-body:{body.physical_body_id}:{body.binding_hash}",
+                _ExpectedClassification(
+                    False, required_classification=PromotionValueClassification.ACCEPTED_PHYSICAL_FACT
+                ),
+            )
+        for joint in realization.physical_revolute_joint_bindings:
+            add(
+                f"candidate:physical-revolute-joint:{joint.physical_joint_id}:{joint.binding_hash}",
+                _ExpectedClassification(
+                    False, required_classification=PromotionValueClassification.ACCEPTED_PHYSICAL_FACT
+                ),
+            )
+        add(
+            f"candidate:physical-kinematic-root:{realization.kinematic_root_physical_body_id}",
+            _ExpectedClassification(
+                True,
+                realization.kinematic_root_binding_hash,
+                PromotionValueClassification.ACCEPTED_PHYSICAL_FACT,
+            ),
+        )
+        for pair in realization.physical_pair_classification_bindings:
+            add(
+                "candidate:physical-pair-classification:"
+                f"{pair.first_physical_instance_id}:{pair.second_physical_instance_id}:{pair.binding_hash}",
+                _ExpectedClassification(
+                    True,
+                    pair.binding_hash,
+                    PromotionValueClassification.CANONICAL_REDERIVATION_INPUT,
+                ),
+            )
+        for derivation in request.generated_placement_derivations:
+            add(
+                f"candidate:generated-placement:{derivation.derivation_id}",
+                _ExpectedClassification(
+                    True,
+                    derivation.derivation_hash,
+                    PromotionValueClassification.CANONICAL_REDERIVATION_INPUT,
+                ),
+            )
+        scope_hash = request.multi_joint_request.scope_hash
+        add(
+            f"candidate:multi-joint-verification-obligation:{scope_hash}",
+            _ExpectedClassification(
+                True, scope_hash, PromotionValueClassification.CANONICAL_REDERIVATION_INPUT
+            ),
+        )
+        return expected
 
     def map_instances(
         self, request: CandidatePromotionRequest
@@ -385,8 +904,196 @@ class CandidatePromotionCompiler:
             joint_bindings=mechanism.joint_bindings,
             m10_obligations=mechanism.m10_obligations,
             generated_placement_derivations=mechanism.generated_placement_derivations,
+            physical_rigid_body_bindings=mechanism.physical_rigid_body_bindings,
+            physical_revolute_joint_bindings=mechanism.physical_revolute_joint_bindings,
+            kinematic_root_physical_body_id=mechanism.kinematic_root_physical_body_id,
+            kinematic_root_binding_hash=mechanism.kinematic_root_binding_hash,
+            physical_pair_classification_bindings=mechanism.physical_pair_classification_bindings,
+            multi_joint_verification_obligations=mechanism.multi_joint_verification_obligations,
             mapping_identities=tuple(component.instance_id for component in mechanism.components),
         )
+
+    def _compile_multi_joint_mechanism(
+        self,
+        request: CandidateMultiJointPromotionRequest,
+        mapping: tuple[CandidateCanonicalInstanceMapping, ...],
+    ) -> CanonicalPhysicalMechanism:
+        candidate = request.candidate
+        canonical_by_candidate = {
+            item.candidate_instance_id: item.canonical_instance_id for item in mapping
+        }
+        classifications = {
+            item.source_identity: item for item in request.classifications
+        }
+        canonical_specs_by_candidate_hash = {
+            specification.specification_hash: self._canonical_specification(specification)
+            for specification in candidate.component_specifications
+        }
+        specifications = tuple(canonical_specs_by_candidate_hash.values())
+        choices = tuple(
+            self._canonical_choice(variable, classifications, canonical_by_candidate)
+            for variable in candidate.design_variables
+        )
+        placements = self._canonical_placements(
+            candidate,
+            classifications,
+            canonical_by_candidate,
+            request=None,
+            generated_derivations=request.generated_placement_derivations,
+        )
+        placement_ids = {placement.instance_id: placement.placement_id for placement in placements}
+        components = tuple(
+            CanonicalPhysicalComponent(
+                instance_id=canonical_by_candidate[component.instance_id],
+                specification_hash=canonical_specs_by_candidate_hash[
+                    component.specification_hash
+                ].specification_hash,
+                role=CanonicalPhysicalComponentRole(component.role.value),
+                interfaces=component.interfaces,
+                placement_id=placement_ids.get(canonical_by_candidate[component.instance_id]),
+            )
+            for component in candidate.realization.components
+        )
+        connections = tuple(
+            CanonicalMechanicalConnection(
+                connection_id=connection.connection_id,
+                kind=CanonicalMechanicalConnectionKind(connection.kind.value),
+                from_instance_id=canonical_by_candidate[connection.from_instance_id],
+                from_interface_id=connection.from_interface_id,
+                to_instance_id=canonical_by_candidate[connection.to_instance_id],
+                to_interface_id=connection.to_interface_id,
+                meanings=tuple(
+                    CanonicalConnectionMeaning(meaning.value)
+                    for meaning in connection.meanings
+                ),
+            )
+            for connection in candidate.realization.connections
+        )
+        canonical_bodies = tuple(
+            CanonicalPhysicalRigidBodyBinding(
+                physical_body_id=body.physical_body_id,
+                member_physical_instance_ids=tuple(
+                    canonical_by_candidate[item]
+                    for item in body.member_physical_instance_ids
+                ),
+                reference_physical_instance_id=canonical_by_candidate[
+                    body.reference_physical_instance_id
+                ],
+            )
+            for body in candidate.realization.physical_rigid_body_bindings
+        )
+        canonical_joints = tuple(
+            CanonicalPhysicalRevoluteJointBinding(
+                physical_joint_id=joint.physical_joint_id,
+                parent_physical_body_id=joint.parent_physical_body_id,
+                child_physical_body_id=joint.child_physical_body_id,
+                connection_id=joint.connection_id,
+                parent_physical_instance_id=canonical_by_candidate[
+                    joint.parent_physical_instance_id
+                ],
+                parent_interface_id=joint.parent_interface_id,
+                child_physical_instance_id=canonical_by_candidate[
+                    joint.child_physical_instance_id
+                ],
+                child_interface_id=joint.child_interface_id,
+                axis_source=self._canonical_axis_source(
+                    joint.axis_source,
+                    canonical_by_candidate,
+                    canonical_specs_by_candidate_hash,
+                ),
+                axis_owner_endpoint=joint.axis_owner_endpoint.value,
+                axis_sign=joint.axis_sign,
+                motion_mode=joint.motion_mode.value,
+                min_angle_deg=joint.min_angle_deg,
+                max_angle_deg=joint.max_angle_deg,
+                zero_reference_semantics=joint.zero_reference_semantics,
+            )
+            for joint in candidate.realization.physical_revolute_joint_bindings
+        )
+        canonical_pairs = tuple(
+            CanonicalPhysicalPairClassificationBinding(
+                first_physical_instance_id=canonical_by_candidate[
+                    pair.first_physical_instance_id
+                ],
+                second_physical_instance_id=canonical_by_candidate[
+                    pair.second_physical_instance_id
+                ],
+                classification=pair.classification,
+                exclusion_reason=pair.exclusion_reason,
+            )
+            for pair in candidate.realization.physical_pair_classification_bindings
+        )
+        scope = request.multi_joint_request.scope
+        obligation = CanonicalMultiJointVerificationObligation(
+            configuration_set=scope.configuration_set,
+            volume_tolerance_mm3=scope.volume_tolerance_mm3,
+            distance_tolerance_mm=scope.distance_tolerance_mm,
+            configuration_set_hash=scope.configuration_set.configuration_set_hash,
+        )
+        return CanonicalPhysicalMechanism(
+            schema_version="canonical-physical-mechanism@3",
+            id=request.canonical_target_mechanism_id,
+            name=f"Promoted mechanism {request.canonical_target_mechanism_id}",
+            component_specifications=specifications,
+            components=components,
+            accepted_design_choices=choices,
+            placements=placements,
+            connections=connections,
+            joint_bindings=(),
+            m10_obligations=(),
+            promotion_provenance=(),
+            physical_rigid_body_bindings=canonical_bodies,
+            physical_revolute_joint_bindings=canonical_joints,
+            kinematic_root_physical_body_id=candidate.realization.kinematic_root_physical_body_id,
+            kinematic_root_binding_hash=physical_kinematic_root_hash(
+                candidate.realization.kinematic_root_physical_body_id
+            ),
+            generated_placement_derivations=self._canonical_generated_placement_derivations(
+                request,
+                canonical_by_candidate,
+                request.generated_placement_derivations,
+            ),
+            physical_pair_classification_bindings=canonical_pairs,
+            multi_joint_verification_obligations=(obligation,),
+        )
+
+    @staticmethod
+    def _canonical_axis_source(source, canonical_by_candidate, specifications):
+        values = source.model_dump(mode="python")
+        values["source_physical_instance_id"] = canonical_by_candidate[
+            source.source_physical_instance_id
+        ]
+        if "specification_hash" in values:
+            values["specification_hash"] = specifications[
+                source.specification_hash
+            ].specification_hash
+        if "generated_specification_hash" in values:
+            values["generated_specification_hash"] = specifications[
+                source.generated_specification_hash
+            ].specification_hash
+        values["source_hash"] = "pending"
+        source_type = {
+            SuppliedRotationalInterfaceAxisSource: (
+                CanonicalSuppliedRotationalInterfaceAxisSource,
+                "canonical-supplied-rotational-interface-axis-source@1",
+            ),
+            SuppliedReferenceFrameAxisSource: (
+                CanonicalSuppliedReferenceFrameAxisSource,
+                "canonical-supplied-reference-frame-axis-source@1",
+            ),
+            GeneratedRotationalInterfaceAxisSource: (
+                CanonicalGeneratedRotationalInterfaceAxisSource,
+                "canonical-generated-rotational-interface-axis-source@1",
+            ),
+            GeneratedReferenceFrameAxisSource: (
+                CanonicalGeneratedReferenceFrameAxisSource,
+                "canonical-generated-reference-frame-axis-source@1",
+            ),
+        }.get(type(source))
+        if source_type is None:
+            raise ValueError("unsupported physical axis source")
+        values["schema_version"] = source_type[1]
+        return source_type[0].model_validate(values)
 
     def _compile_mechanism(
         self,
@@ -557,12 +1264,53 @@ class CandidatePromotionCompiler:
         derivations_by_target = {
             derivation.target_canonical_instance_id: derivation
             for derivation in generated_derivations
+            if not isinstance(derivation, GeneratedPlacementDerivation)
+        }
+        candidate_derivations_by_target = {
+            derivation.target_physical_instance_id: derivation
+            for derivation in generated_derivations
+            if isinstance(derivation, GeneratedPlacementDerivation)
         }
         placements = []
         for component in candidate.realization.components:
             generated_derivation = derivations_by_target.get(
                 canonical_by_candidate[component.instance_id]
             )
+            candidate_generated_derivation = candidate_derivations_by_target.get(
+                component.instance_id
+            )
+            if candidate_generated_derivation is not None:
+                transform = resolve_candidate_placement(
+                    candidate,
+                    component.instance_id,
+                    generated_derivations,
+                )
+                target_hash = (
+                    candidate_generated_derivation.target_generated_interface_ref.interface_hash
+                    if candidate_generated_derivation.target_generated_interface_ref is not None
+                    else candidate_generated_derivation.target_generated_frame_ref.frame_hash
+                )
+                placements.append(
+                    CanonicalPlacement(
+                        placement_id=f"{canonical_by_candidate[component.instance_id]}:placement",
+                        instance_id=canonical_by_candidate[component.instance_id],
+                        origin=CanonicalPlacementOrigin.DETERMINISTIC_RELATION,
+                        input_identities=(
+                            candidate_generated_derivation.source_interface_ref.interface_hash,
+                            target_hash,
+                            *sorted(item.input_hash for item in candidate_generated_derivation.inputs),
+                            *(() if candidate_generated_derivation.rotation is None else (
+                                candidate_generated_derivation.rotation.input_hash,
+                            )),
+                        ),
+                        relation=candidate_generated_derivation.rule_id,
+                        x_mm=transform.x_mm,
+                        y_mm=transform.y_mm,
+                        z_mm=transform.z_mm,
+                        rotation_quaternion=transform.rotation_quaternion,
+                    )
+                )
+                continue
             if generated_derivation is not None:
                 target_mapping = next(
                     (
@@ -642,12 +1390,14 @@ class CandidatePromotionCompiler:
         return tuple(placements)
 
     @staticmethod
-    def _canonical_generated_placement_derivations(request, canonical_by_candidate):
-        cad_request = getattr(getattr(request, "evaluation", None), "cad_request", None)
-        if cad_request is None:
-            return ()
+    def _canonical_generated_placement_derivations(
+        request, canonical_by_candidate, derivations=None
+    ):
+        if derivations is None:
+            cad_request = getattr(getattr(request, "evaluation", None), "cad_request", None)
+            derivations = getattr(cad_request, "placement_derivations", ())
         result = []
-        for derivation in getattr(cad_request, "placement_derivations", ()):
+        for derivation in derivations:
             try:
                 source_id = canonical_by_candidate[derivation.source_physical_instance_id]
                 target_id = canonical_by_candidate[derivation.target_physical_instance_id]

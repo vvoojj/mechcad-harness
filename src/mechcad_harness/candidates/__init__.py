@@ -4,7 +4,11 @@ from .models import (
     ComponentPropertyAuthority, ComponentPropertySnapshot, ComponentSpecificationSnapshot,
     ConnectionMeaning, MechanicalConnection, MechanicalConnectionKind, MechanicalDesignCandidate,
     JointPhysicalRealizationBinding, PhysicalComponentInstance, PhysicalComponentRole, PhysicalMechanismRealization,
-    UnresolvedCandidateItem, UnresolvedCandidateReason, candidate_hash,
+    GeneratedReferenceFrameAxisSource, GeneratedRotationalInterfaceAxisSource,
+    PhysicalAxisOwnerEndpoint, PhysicalAxisSource, PhysicalJointMotionMode,
+    PhysicalRevoluteJointBinding, PhysicalRigidBodyBinding, UnresolvedCandidateItem,
+    UnresolvedCandidateReason, SuppliedReferenceFrameAxisSource,
+    SuppliedRotationalInterfaceAxisSource, candidate_hash, physical_kinematic_root_hash,
 )
 from .services import (
     CandidateCurrentness, CandidateCurrentnessService, CandidateIntegrityError,
@@ -67,6 +71,7 @@ from .promotion_models import (
     CandidatePromotionCompilation,
     CandidatePromotionPolicy,
     CandidatePromotionRequest,
+    CandidateMultiJointPromotionRequest,
     PostPromotionM11TargetIntent,
     PrePromotionM10ScopeProjection,
     PromotionApplicationStatus,
@@ -83,6 +88,7 @@ from .promotion_models import (
 from .promotion import (
     CandidatePromotionApplicationService,
     CandidatePromotionCompiler,
+    MultiJointPromotionReadiness,
     PromotionReadiness,
     verify_promoted_mechanism,
 )
@@ -126,6 +132,38 @@ from .canonical_m10 import (
     CanonicalM10VerificationService,
     CanonicalM10VerificationStatus,
     DerivedCanonicalM10Scope,
+)
+from .multi_joint_m10_bridge import (
+    CandidateCanonicalMultiJointEquivalence,
+    CanonicalMultiJointM10Verification,
+    CanonicalMultiJointM10VerificationService,
+    PhysicalToM10V2Bridge,
+    PhysicalToM10V2BridgeCompiler,
+    compile_candidate,
+    compile_canonical,
+    physical_to_m10_bridge_hash,
+    physical_to_m10_v2_model_id,
+    compare_candidate_canonical_multi_joint_semantics,
+    validate_physical_to_m10_v2_bridge,
+    validate_complete_physical_pair_policy,
+    validate_physical_body_pair_consistency,
+    validate_physical_cad_universe,
+)
+from .multi_joint_m10_evaluation import (
+    CandidateMultiJointM10Evaluation,
+    CandidateMultiJointM10EvaluationRequest,
+    CandidateMultiJointM10EvaluationScope,
+    CandidateMultiJointM10EvaluationService,
+    candidate_multi_joint_m10_evaluation_hash,
+    candidate_multi_joint_m10_request_hash,
+    candidate_multi_joint_m10_scope_hash,
+    validate_multi_joint_verification_configurations,
+)
+from .multi_joint_selection import (
+    CandidateMultiJointM10Replay,
+    CandidateMultiJointSelection,
+    CandidateMultiJointSelectionService,
+    candidate_multi_joint_selection_hash,
 )
 from .m11_handoff import (
     CanonicalM11Handoff,

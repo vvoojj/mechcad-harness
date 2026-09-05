@@ -60,6 +60,8 @@ _PHYSICAL_MECHANISM_EXPORTS = {
     "CanonicalDesignChoiceOrigin",
     "CanonicalGeometryFidelity",
     "CanonicalGeometrySourceReference",
+    "CanonicalGeneratedReferenceFrameAxisSource",
+    "CanonicalGeneratedRotationalInterfaceAxisSource",
     "CanonicalJointPhysicalBinding",
     "CanonicalM10VerificationObligation",
     "CanonicalMechanicalConnection",
@@ -67,9 +69,29 @@ _PHYSICAL_MECHANISM_EXPORTS = {
     "CanonicalPhysicalComponent",
     "CanonicalPhysicalComponentRole",
     "CanonicalPhysicalMechanism",
+    "CanonicalPhysicalPairClassificationBinding",
     "CanonicalPhysicalPairRequirement",
+    "CanonicalPhysicalRigidBodyBinding",
+    "CanonicalPhysicalRevoluteJointBinding",
     "CanonicalPlacement",
     "CanonicalPlacementOrigin",
+    "CanonicalSuppliedReferenceFrameAxisSource",
+    "CanonicalSuppliedRotationalInterfaceAxisSource",
+    "CanonicalMultiJointVerificationObligation",
+    "CanonicalPhysicalAxisSource",
+    "physical_kinematic_root_hash",
+}
+
+_MULTI_JOINT_VERIFICATION_EXPORTS = {
+    "MultiJointVerificationConfigurationSet",
+    "configuration_set_hash",
+}
+
+_PHYSICAL_PAIR_POLICY_EXPORTS = {
+    "PhysicalPairClassification",
+    "PhysicalPairClassificationBinding",
+    "canonical_physical_pair_classification_bindings",
+    "physical_pair_classification_set_hash",
 }
 
 _M13_INTERFACE_EXPORTS = {
@@ -180,6 +202,14 @@ def __getattr__(name: str):
         from . import physical_mechanism
 
         value = getattr(physical_mechanism, name)
+    elif name in _PHYSICAL_PAIR_POLICY_EXPORTS:
+        from . import physical_pair_policy
+
+        value = getattr(physical_pair_policy, name)
+    elif name in _MULTI_JOINT_VERIFICATION_EXPORTS:
+        from . import multi_joint_verification
+
+        value = getattr(multi_joint_verification, name)
     elif name == "GeometryArtifactIdentity":
         from .geometry_identity import GeometryArtifactIdentity
 
@@ -214,6 +244,8 @@ __all__ = [
     "CanonicalDesignChoiceOrigin",
     "CanonicalGeometryFidelity",
     "CanonicalGeometrySourceReference",
+    "CanonicalGeneratedReferenceFrameAxisSource",
+    "CanonicalGeneratedRotationalInterfaceAxisSource",
     "CanonicalJointPhysicalBinding",
     "CanonicalM10VerificationObligation",
     "CanonicalMechanicalConnection",
@@ -221,9 +253,23 @@ __all__ = [
     "CanonicalPhysicalComponent",
     "CanonicalPhysicalComponentRole",
     "CanonicalPhysicalMechanism",
+    "CanonicalPhysicalPairClassificationBinding",
     "CanonicalPhysicalPairRequirement",
+    "CanonicalPhysicalRigidBodyBinding",
+    "CanonicalPhysicalRevoluteJointBinding",
     "CanonicalPlacement",
     "CanonicalPlacementOrigin",
+    "CanonicalSuppliedReferenceFrameAxisSource",
+    "CanonicalSuppliedRotationalInterfaceAxisSource",
+    "CanonicalMultiJointVerificationObligation",
+    "CanonicalPhysicalAxisSource",
+    "physical_kinematic_root_hash",
+    "PhysicalPairClassification",
+    "PhysicalPairClassificationBinding",
+    "canonical_physical_pair_classification_bindings",
+    "physical_pair_classification_set_hash",
+    "MultiJointVerificationConfigurationSet",
+    "configuration_set_hash",
     "GeometryArtifactIdentity",
     "SuppliedInterfaceEvidence",
     "SuppliedInterfaceFact",

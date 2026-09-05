@@ -21,6 +21,10 @@ from pydantic import (
 from mechcad_harness.changes.operations import ChangeOperation
 from mechcad_harness.models import ChangeProposal
 from mechcad_harness.models.common import Model
+from mechcad_harness.models.generated_placement import (
+    GeneratedPlacementDerivation,
+    placement_derivations_hash,
+)
 from mechcad_harness.models.physical_mechanism import (
     CanonicalAcceptedDesignChoice,
     CanonicalComponentPropertyAuthority,
@@ -30,6 +34,10 @@ from mechcad_harness.models.physical_mechanism import (
     CanonicalM10VerificationObligation,
     CanonicalMechanicalConnection,
     CanonicalPhysicalComponent,
+    CanonicalPhysicalPairClassificationBinding,
+    CanonicalPhysicalRigidBodyBinding,
+    CanonicalPhysicalRevoluteJointBinding,
+    CanonicalMultiJointVerificationObligation,
     CanonicalPhysicalMechanism,
     CanonicalPlacement,
 )
@@ -563,11 +571,20 @@ class PromotableMechanismProjection(PromotionModel):
     joint_bindings: tuple[CanonicalJointPhysicalBinding, ...] = ()
     m10_obligations: tuple[CanonicalM10VerificationObligation, ...] = ()
     generated_placement_derivations: tuple[CanonicalGeneratedPlacementDerivation, ...] = ()
+    physical_rigid_body_bindings: tuple[CanonicalPhysicalRigidBodyBinding, ...] = ()
+    physical_revolute_joint_bindings: tuple[CanonicalPhysicalRevoluteJointBinding, ...] = ()
+    kinematic_root_physical_body_id: StrictStr | None = None
+    kinematic_root_binding_hash: StrictStr | None = None
+    physical_pair_classification_bindings: tuple[CanonicalPhysicalPairClassificationBinding, ...] = ()
+    multi_joint_verification_obligations: tuple[CanonicalMultiJointVerificationObligation, ...] = ()
     mapping_identities: tuple[StrictStr, ...] = ()
     projection_hash: StrictStr = "pending"
 
     _validate_text = field_validator("canonical_target_mechanism_id")(_nonblank)
     _validate_hash = field_validator("projection_hash")(_hash_or_pending)
+    _validate_root_hash = field_validator("kinematic_root_binding_hash")(
+        lambda value: None if value is None else _require_hash(value)
+    )
     _validate_ids = field_validator("canonical_instance_ids", "mapping_identities")(_nonblank_tuple)
 
     @model_serializer(mode="wrap")
@@ -575,6 +592,18 @@ class PromotableMechanismProjection(PromotionModel):
         payload = handler(self)
         if not self.generated_placement_derivations:
             payload.pop("generated_placement_derivations", None)
+        if not self.physical_rigid_body_bindings:
+            payload.pop("physical_rigid_body_bindings", None)
+        if not self.physical_revolute_joint_bindings:
+            payload.pop("physical_revolute_joint_bindings", None)
+        if self.kinematic_root_physical_body_id is None:
+            payload.pop("kinematic_root_physical_body_id", None)
+        if self.kinematic_root_binding_hash is None:
+            payload.pop("kinematic_root_binding_hash", None)
+        if not self.physical_pair_classification_bindings:
+            payload.pop("physical_pair_classification_bindings", None)
+        if not self.multi_joint_verification_obligations:
+            payload.pop("multi_joint_verification_obligations", None)
         return payload
 
     @model_validator(mode="after")
@@ -586,6 +615,150 @@ class PromotableMechanismProjection(PromotionModel):
             object.__setattr__(self, "projection_hash", expected)
         elif self.projection_hash != expected:
             raise ValueError("promotable mechanism projection hash mismatch")
+        return self
+
+
+from .multi_joint_m10_evaluation import (
+    CandidateMultiJointM10Evaluation,
+    CandidateMultiJointM10EvaluationRequest,
+)
+from .multi_joint_selection import CandidateMultiJointSelection
+
+
+class CandidateMultiJointPromotionRequest(PromotionModel):
+    """Transient multi-joint promotion input; it is never canonical authority."""
+
+    schema_version: Literal[
+        "candidate-multi-joint-promotion-request@1"
+    ] = "candidate-multi-joint-promotion-request@1"
+    project_id: StrictStr = Field(min_length=1)
+    source_revision: StrictInt = Field(gt=0)
+    source_state_hash: StrictStr
+    candidate: MechanicalDesignCandidate
+    synthesis_request: CandidateSynthesisRequest
+    synthesis_policy: CandidateSynthesisPolicy
+    m12_3_result: RevoluteDriveAdmissibilityResult
+    multi_joint_request: CandidateMultiJointM10EvaluationRequest
+    multi_joint_evaluation: CandidateMultiJointM10Evaluation
+    multi_joint_selection: CandidateMultiJointSelection
+    generated_placement_derivations: tuple[GeneratedPlacementDerivation, ...] = ()
+    placement_derivations_hash: str | None = None
+    promotion_policy: CandidatePromotionPolicy
+    canonical_target_mechanism_id: StrictStr = Field(min_length=1)
+    classifications: tuple[PromotionClassification, ...] = ()
+    m11_target_intent: PostPromotionM11TargetIntent | None = None
+    request_hash: StrictStr = "pending"
+
+    _validate_source_hash = field_validator("source_state_hash")(_require_hash)
+    _validate_request_hash = field_validator("request_hash")(_hash_or_pending)
+    _validate_placement_derivations_hash = field_validator(
+        "placement_derivations_hash"
+    )(lambda value: None if value is None else _require_hash(value))
+    _validate_text = field_validator("project_id", "canonical_target_mechanism_id")(_nonblank)
+
+    @field_validator("classifications")
+    @classmethod
+    def validate_classification_order(cls, values):
+        identities = tuple(item.source_identity for item in values)
+        if len(set(identities)) != len(identities):
+            raise ValueError("multi-joint promotion classifications must be unique")
+        if identities != tuple(sorted(identities)):
+            raise ValueError("multi-joint promotion classifications must be lexically sorted")
+        return values
+
+    @model_serializer(mode="wrap")
+    def serialize_request(self, handler):
+        payload = handler(self)
+        if not self.generated_placement_derivations:
+            payload.pop("generated_placement_derivations", None)
+            payload.pop("placement_derivations_hash", None)
+        return payload
+
+    @model_validator(mode="after")
+    def validate_request(self) -> "CandidateMultiJointPromotionRequest":
+        candidate_source_binding_hash = _hash(self.candidate.source_binding)
+        if self.candidate.source_binding.project_id != self.project_id:
+            raise ValueError("multi-joint promotion project binding mismatch")
+        if (
+            self.candidate.source_binding.source_revision != self.source_revision
+            or self.candidate.source_binding.source_state_hash != self.source_state_hash
+        ):
+            raise ValueError("multi-joint promotion source binding mismatch")
+        if self.synthesis_request.request_hash != self.candidate.synthesis_request_hash:
+            raise ValueError("multi-joint promotion synthesis request binding mismatch")
+        if self.synthesis_policy.policy_hash != self.candidate.synthesis_policy_hash:
+            raise ValueError("multi-joint promotion synthesis policy binding mismatch")
+        if (
+            self.m12_3_result.candidate_hash != self.candidate.candidate_hash
+            or self.m12_3_result.source_binding_hash != candidate_source_binding_hash
+            or self.m12_3_result.synthesis_request_hash != self.synthesis_request.request_hash
+            or self.m12_3_result.synthesis_policy_hash != self.synthesis_policy.policy_hash
+        ):
+            raise ValueError("multi-joint promotion M12-3 binding mismatch")
+        request = self.multi_joint_request
+        evaluation = self.multi_joint_evaluation
+        selection = self.multi_joint_selection
+        derivations = tuple(
+            sorted(self.generated_placement_derivations, key=lambda item: item.derivation_id)
+        )
+        if derivations != self.generated_placement_derivations:
+            object.__setattr__(self, "generated_placement_derivations", derivations)
+        expected_derivations_hash = (
+            None if not derivations else placement_derivations_hash(derivations)
+        )
+        if self.placement_derivations_hash != expected_derivations_hash:
+            raise ValueError("multi-joint promotion placement derivation hash mismatch")
+        if (
+            self.generated_placement_derivations != request.placement_derivations
+            or self.placement_derivations_hash != request.placement_derivations_hash
+        ):
+            raise ValueError("multi-joint promotion placement derivation binding mismatch")
+        component_ids = {
+            component.instance_id for component in self.candidate.realization.components
+        }
+        specifications = {
+            specification.specification_hash: specification
+            for specification in self.candidate.component_specifications
+        }
+        generated_ids = {
+            component.instance_id
+            for component in self.candidate.realization.components
+            if specifications[component.specification_hash].generated_part is not None
+        }
+        if any(
+            derivation.source_physical_instance_id not in component_ids
+            or derivation.target_physical_instance_id not in component_ids
+            for derivation in derivations
+        ):
+            raise ValueError("multi-joint promotion placement derivation instance mismatch")
+        if {
+            derivation.target_physical_instance_id for derivation in derivations
+        } != generated_ids:
+            raise ValueError("multi-joint promotion placement derivation target mismatch")
+        if (
+            request.project_id != self.project_id
+            or request.source_revision != self.source_revision
+            or request.source_state_hash != self.source_state_hash
+            or request.source_binding_hash != candidate_source_binding_hash
+            or request.candidate_hash != self.candidate.candidate_hash
+        ):
+            raise ValueError("multi-joint promotion request source binding mismatch")
+        if evaluation.candidate_request_hash != request.request_hash:
+            raise ValueError("multi-joint promotion evaluation request binding mismatch")
+        if selection.candidate_request_hash != request.request_hash:
+            raise ValueError("multi-joint promotion selection request binding mismatch")
+        if selection.evaluation_hash != evaluation.evaluation_hash:
+            raise ValueError("multi-joint promotion selection evaluation binding mismatch")
+        if (
+            selection.configuration_set_hash != request.configuration_set_hash
+            or evaluation.configuration_set_hash != request.configuration_set_hash
+        ):
+            raise ValueError("multi-joint promotion configuration-set binding mismatch")
+        expected = _hash(self, "request_hash")
+        if self.request_hash == "pending":
+            object.__setattr__(self, "request_hash", expected)
+        elif self.request_hash != expected:
+            raise ValueError("multi-joint promotion request hash mismatch")
         return self
 
 
@@ -779,6 +952,7 @@ __all__ = [
     "CandidatePromotionCompilation",
     "CandidatePromotionPolicy",
     "CandidatePromotionRequest",
+    "CandidateMultiJointPromotionRequest",
     "PostPromotionM11TargetIntent",
     "PrePromotionM10ScopeProjection",
     "PromotionApplicationStatus",

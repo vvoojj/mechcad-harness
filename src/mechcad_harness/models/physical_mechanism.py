@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import ConfigDict, Field, field_validator, model_serializer, model_validator
 
@@ -28,6 +28,24 @@ from .supplied_component_interface import (
 )
 from .generated_part import GeneratedPartSpecification, validate_generated_interface_registry
 from .generated_placement import CanonicalGeneratedPlacementDerivation
+from .multi_joint_verification import MultiJointVerificationConfigurationSet
+from .physical_pair_policy import PhysicalPairClassification
+
+
+def physical_kinematic_root_hash(kinematic_root_physical_body_id: str) -> str:
+    if not isinstance(kinematic_root_physical_body_id, str) or not kinematic_root_physical_body_id.strip():
+        raise ValueError("kinematic root physical body ID must not be empty or whitespace")
+    return "sha256:" + hashlib.sha256(
+        json.dumps(
+            {
+                "schema_version": "physical-kinematic-root@1",
+                "kinematic_root_physical_body_id": kinematic_root_physical_body_id,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _canonical_hash(value: Model, identity_field: str) -> str:
@@ -600,6 +618,261 @@ class CanonicalMechanicalConnection(CanonicalModel):
         return self
 
 
+class CanonicalPhysicalRigidBodyBinding(CanonicalModel):
+    schema_version: Literal["canonical-physical-rigid-body-binding@1"] = (
+        "canonical-physical-rigid-body-binding@1"
+    )
+    physical_body_id: str = Field(min_length=1)
+    member_physical_instance_ids: tuple[str, ...] = Field(min_length=1)
+    reference_physical_instance_id: str = Field(min_length=1)
+    binding_hash: str = "pending"
+
+    _validate_text = field_validator(
+        "physical_body_id", "reference_physical_instance_id"
+    )(_nonblank)
+    _validate_members = field_validator("member_physical_instance_ids")(_nonblank_tuple)
+    _validate_hash = field_validator("binding_hash")(_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_body(self) -> "CanonicalPhysicalRigidBodyBinding":
+        if len(set(self.member_physical_instance_ids)) != len(self.member_physical_instance_ids):
+            raise ValueError("canonical physical body member IDs must be unique")
+        members = tuple(sorted(self.member_physical_instance_ids))
+        if self.member_physical_instance_ids != members:
+            object.__setattr__(self, "member_physical_instance_ids", members)
+        if self.reference_physical_instance_id not in members:
+            raise ValueError("canonical physical body reference must be a member")
+        expected = _canonical_hash(self, "binding_hash")
+        if self.binding_hash == "pending":
+            object.__setattr__(self, "binding_hash", expected)
+        elif self.binding_hash != expected:
+            raise ValueError("canonical physical rigid body binding hash mismatch")
+        return self
+
+
+class CanonicalSuppliedRotationalInterfaceAxisSource(CanonicalModel):
+    schema_version: Literal["canonical-supplied-rotational-interface-axis-source@1"] = (
+        "canonical-supplied-rotational-interface-axis-source@1"
+    )
+    source_kind: Literal["supplied_rotational_interface"] = "supplied_rotational_interface"
+    source_physical_instance_id: str = Field(min_length=1)
+    interface_id: str = Field(min_length=1)
+    interface_hash: str
+    geometry_reference_hash: str
+    specification_hash: str
+    source_hash: str = "pending"
+
+    _validate_text = field_validator("source_physical_instance_id", "interface_id")(_nonblank)
+    _validate_source_hashes = field_validator(
+        "interface_hash", "geometry_reference_hash", "specification_hash"
+    )(_require_hash)
+    _validate_hash = field_validator("source_hash")(_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "CanonicalSuppliedRotationalInterfaceAxisSource":
+        expected = _canonical_hash(self, "source_hash")
+        if self.source_hash == "pending":
+            object.__setattr__(self, "source_hash", expected)
+        elif self.source_hash != expected:
+            raise ValueError("canonical supplied rotational interface axis source hash mismatch")
+        return self
+
+
+class CanonicalSuppliedReferenceFrameAxisSource(CanonicalModel):
+    schema_version: Literal["canonical-supplied-reference-frame-axis-source@1"] = (
+        "canonical-supplied-reference-frame-axis-source@1"
+    )
+    source_kind: Literal["supplied_reference_frame"] = "supplied_reference_frame"
+    source_physical_instance_id: str = Field(min_length=1)
+    frame_id: str = Field(min_length=1)
+    frame_hash: str
+    geometry_reference_hash: str
+    specification_hash: str
+    source_hash: str = "pending"
+
+    _validate_text = field_validator("source_physical_instance_id", "frame_id")(_nonblank)
+    _validate_source_hashes = field_validator(
+        "frame_hash", "geometry_reference_hash", "specification_hash"
+    )(_require_hash)
+    _validate_hash = field_validator("source_hash")(_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "CanonicalSuppliedReferenceFrameAxisSource":
+        expected = _canonical_hash(self, "source_hash")
+        if self.source_hash == "pending":
+            object.__setattr__(self, "source_hash", expected)
+        elif self.source_hash != expected:
+            raise ValueError("canonical supplied reference frame axis source hash mismatch")
+        return self
+
+
+class CanonicalGeneratedRotationalInterfaceAxisSource(CanonicalModel):
+    schema_version: Literal["canonical-generated-rotational-interface-axis-source@1"] = (
+        "canonical-generated-rotational-interface-axis-source@1"
+    )
+    source_kind: Literal["generated_rotational_interface"] = "generated_rotational_interface"
+    source_physical_instance_id: str = Field(min_length=1)
+    interface_id: str = Field(min_length=1)
+    interface_hash: str
+    generated_specification_hash: str
+    source_hash: str = "pending"
+
+    _validate_text = field_validator("source_physical_instance_id", "interface_id")(_nonblank)
+    _validate_source_hashes = field_validator(
+        "interface_hash", "generated_specification_hash"
+    )(_require_hash)
+    _validate_hash = field_validator("source_hash")(_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "CanonicalGeneratedRotationalInterfaceAxisSource":
+        expected = _canonical_hash(self, "source_hash")
+        if self.source_hash == "pending":
+            object.__setattr__(self, "source_hash", expected)
+        elif self.source_hash != expected:
+            raise ValueError("canonical generated rotational interface axis source hash mismatch")
+        return self
+
+
+class CanonicalGeneratedReferenceFrameAxisSource(CanonicalModel):
+    schema_version: Literal["canonical-generated-reference-frame-axis-source@1"] = (
+        "canonical-generated-reference-frame-axis-source@1"
+    )
+    source_kind: Literal["generated_reference_frame"] = "generated_reference_frame"
+    source_physical_instance_id: str = Field(min_length=1)
+    frame_id: str = Field(min_length=1)
+    frame_hash: str
+    generated_specification_hash: str
+    source_hash: str = "pending"
+
+    _validate_text = field_validator("source_physical_instance_id", "frame_id")(_nonblank)
+    _validate_source_hashes = field_validator(
+        "frame_hash", "generated_specification_hash"
+    )(_require_hash)
+    _validate_hash = field_validator("source_hash")(_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "CanonicalGeneratedReferenceFrameAxisSource":
+        expected = _canonical_hash(self, "source_hash")
+        if self.source_hash == "pending":
+            object.__setattr__(self, "source_hash", expected)
+        elif self.source_hash != expected:
+            raise ValueError("canonical generated reference frame axis source hash mismatch")
+        return self
+
+
+CanonicalPhysicalAxisSource: TypeAlias = Annotated[
+    CanonicalSuppliedRotationalInterfaceAxisSource
+    | CanonicalSuppliedReferenceFrameAxisSource
+    | CanonicalGeneratedRotationalInterfaceAxisSource
+    | CanonicalGeneratedReferenceFrameAxisSource,
+    Field(discriminator="source_kind"),
+]
+
+
+class CanonicalPhysicalRevoluteJointBinding(CanonicalModel):
+    schema_version: Literal["canonical-physical-revolute-joint-binding@1"] = (
+        "canonical-physical-revolute-joint-binding@1"
+    )
+    physical_joint_id: str = Field(min_length=1)
+    parent_physical_body_id: str = Field(min_length=1)
+    child_physical_body_id: str = Field(min_length=1)
+    connection_id: str = Field(min_length=1)
+    parent_physical_instance_id: str = Field(min_length=1)
+    parent_interface_id: str = Field(min_length=1)
+    child_physical_instance_id: str = Field(min_length=1)
+    child_interface_id: str = Field(min_length=1)
+    axis_source: CanonicalPhysicalAxisSource
+    axis_owner_endpoint: Literal["parent", "child"]
+    axis_sign: Literal[1, -1]
+    motion_mode: Literal["bounded", "continuous"]
+    min_angle_deg: float | None
+    max_angle_deg: float | None
+    zero_reference_semantics: Literal["accepted-semantic-home@1"]
+    binding_hash: str = "pending"
+
+    _validate_identity = field_validator(
+        "physical_joint_id",
+        "parent_physical_body_id",
+        "child_physical_body_id",
+        "connection_id",
+        "parent_physical_instance_id",
+        "parent_interface_id",
+        "child_physical_instance_id",
+        "child_interface_id",
+    )(_nonblank)
+    @field_validator("axis_sign", mode="before")
+    @classmethod
+    def validate_axis_sign(cls, value):
+        if type(value) is not int or value not in (1, -1):
+            raise ValueError("canonical physical joint axis sign must be exactly 1 or -1")
+        return value
+
+    @field_validator("min_angle_deg", "max_angle_deg", mode="before")
+    @classmethod
+    def validate_angle_limit_input(cls, value):
+        if value is None:
+            return value
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError("canonical physical joint angle limits must be finite numbers")
+        return value
+    _validate_hash = field_validator("binding_hash")(_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_joint(self) -> "CanonicalPhysicalRevoluteJointBinding":
+        if self.parent_physical_body_id == self.child_physical_body_id:
+            raise ValueError("canonical physical revolute joint endpoints must use different bodies")
+        if self.motion_mode == "bounded":
+            if self.min_angle_deg is None or self.max_angle_deg is None:
+                raise ValueError("bounded canonical physical joint requires both angle limits")
+            if self.min_angle_deg >= self.max_angle_deg:
+                raise ValueError("bounded canonical physical joint limits must be finite and ordered")
+        elif self.min_angle_deg is not None or self.max_angle_deg is not None:
+            raise ValueError("continuous canonical physical joint must have no angle limits")
+        expected = _canonical_hash(self, "binding_hash")
+        if self.binding_hash == "pending":
+            object.__setattr__(self, "binding_hash", expected)
+        elif self.binding_hash != expected:
+            raise ValueError("canonical physical revolute joint binding hash mismatch")
+        return self
+
+
+class CanonicalPhysicalPairClassificationBinding(CanonicalModel):
+    schema_version: Literal["canonical-physical-pair-classification-binding@1"] = (
+        "canonical-physical-pair-classification-binding@1"
+    )
+    first_physical_instance_id: str = Field(min_length=1)
+    second_physical_instance_id: str = Field(min_length=1)
+    classification: PhysicalPairClassification
+    exclusion_reason: str | None
+    binding_hash: str = "pending"
+
+    _validate_text = field_validator(
+        "first_physical_instance_id", "second_physical_instance_id", "exclusion_reason"
+    )(_nonblank)
+    _validate_hash = field_validator("binding_hash")(_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_pair(self) -> "CanonicalPhysicalPairClassificationBinding":
+        if self.first_physical_instance_id == self.second_physical_instance_id:
+            raise ValueError("canonical physical pair must contain two distinct instances")
+        if self.first_physical_instance_id > self.second_physical_instance_id:
+            first = self.first_physical_instance_id
+            second = self.second_physical_instance_id
+            object.__setattr__(self, "first_physical_instance_id", second)
+            object.__setattr__(self, "second_physical_instance_id", first)
+        if self.classification is PhysicalPairClassification.CHECK_CLEARANCE:
+            if self.exclusion_reason is not None:
+                raise ValueError("canonical checked physical pairs cannot carry an exclusion reason")
+        elif self.exclusion_reason is None:
+            raise ValueError("canonical excluded physical pairs require an explicit reason")
+        expected = _canonical_hash(self, "binding_hash")
+        if self.binding_hash == "pending":
+            object.__setattr__(self, "binding_hash", expected)
+        elif self.binding_hash != expected:
+            raise ValueError("canonical physical pair classification binding hash mismatch")
+        return self
+
+
 class CanonicalJointPhysicalBinding(CanonicalModel):
     joint_id: str = Field(min_length=1)
     expected_parent_instance_id: str = Field(min_length=1)
@@ -731,9 +1004,53 @@ class CanonicalM10VerificationObligation(CanonicalModel):
         return self
 
 
+class CanonicalMultiJointVerificationObligation(CanonicalModel):
+    schema_version: Literal["canonical-multi-joint-verification-obligation@1"] = (
+        "canonical-multi-joint-verification-obligation@1"
+    )
+    configuration_set: MultiJointVerificationConfigurationSet
+    volume_tolerance_mm3: float = Field(ge=0)
+    distance_tolerance_mm: float = Field(ge=0)
+    configuration_set_hash: str = "pending"
+    obligation_hash: str = "pending"
+
+    _validate_hashes = field_validator("configuration_set_hash", "obligation_hash")(
+        _hash_or_pending
+    )
+
+    @field_validator("volume_tolerance_mm3", "distance_tolerance_mm", mode="before")
+    @classmethod
+    def validate_tolerance_input(cls, value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError("canonical multi-joint tolerances must be finite numbers")
+        return value
+
+    @model_validator(mode="after")
+    def validate_obligation(self) -> "CanonicalMultiJointVerificationObligation":
+        if not all(
+            math.isfinite(value)
+            for value in (self.volume_tolerance_mm3, self.distance_tolerance_mm)
+        ):
+            raise ValueError("canonical multi-joint tolerances must be finite")
+        if self.configuration_set_hash == "pending":
+            object.__setattr__(
+                self, "configuration_set_hash", self.configuration_set.configuration_set_hash
+            )
+        elif self.configuration_set_hash != self.configuration_set.configuration_set_hash:
+            raise ValueError("canonical configuration set hash mismatch")
+        expected = _canonical_hash(self, "obligation_hash")
+        if self.obligation_hash == "pending":
+            object.__setattr__(self, "obligation_hash", expected)
+        elif self.obligation_hash != expected:
+            raise ValueError("canonical multi-joint verification obligation hash mismatch")
+        return self
+
+
 class CanonicalPhysicalMechanism(CanonicalModel):
     schema_version: Literal[
-        "canonical-physical-mechanism@1", "canonical-physical-mechanism@2"
+        "canonical-physical-mechanism@1",
+        "canonical-physical-mechanism@2",
+        "canonical-physical-mechanism@3",
     ] = (
         "canonical-physical-mechanism@1"
     )
@@ -750,11 +1067,21 @@ class CanonicalPhysicalMechanism(CanonicalModel):
     m10_obligations: tuple[CanonicalM10VerificationObligation, ...] = ()
     generated_placement_derivations: tuple[CanonicalGeneratedPlacementDerivation, ...] = ()
     promotion_provenance: tuple[str, ...] = ()
+    physical_rigid_body_bindings: tuple[CanonicalPhysicalRigidBodyBinding, ...] = ()
+    physical_revolute_joint_bindings: tuple[CanonicalPhysicalRevoluteJointBinding, ...] = ()
+    kinematic_root_physical_body_id: str | None = None
+    kinematic_root_binding_hash: str | None = None
+    physical_pair_classification_bindings: tuple[CanonicalPhysicalPairClassificationBinding, ...] = ()
+    multi_joint_verification_obligations: tuple[CanonicalMultiJointVerificationObligation, ...] = ()
     mechanism_hash: str = "pending"
 
     _validate_text = field_validator("id", "name")(_nonblank)
     _validate_hash = field_validator("mechanism_hash")(_hash_or_pending)
     _validate_provenance = field_validator("promotion_provenance")(_nonblank_tuple)
+    _validate_root_id = field_validator("kinematic_root_physical_body_id")(_nonblank)
+    _validate_root_hash = field_validator("kinematic_root_binding_hash")(
+        lambda value: None if value is None else _require_hash(value)
+    )
 
     def _mechanism_payload_for_schema(self) -> dict[str, Any]:
         payload = {
@@ -776,11 +1103,37 @@ class CanonicalPhysicalMechanism(CanonicalModel):
                 obligation.model_dump(mode="json") for obligation in self.m10_obligations
             ],
         }
-        if self.schema_version.endswith("@2"):
+        if self.schema_version in (
+            "canonical-physical-mechanism@2",
+            "canonical-physical-mechanism@3",
+        ):
             payload["generated_placement_derivations"] = [
                 derivation.model_dump(mode="json")
                 for derivation in self.generated_placement_derivations
             ]
+        if self.schema_version.endswith("@3"):
+            payload.update(
+                {
+                    "physical_rigid_body_bindings": [
+                        binding.model_dump(mode="json")
+                        for binding in self.physical_rigid_body_bindings
+                    ],
+                    "physical_revolute_joint_bindings": [
+                        binding.model_dump(mode="json")
+                        for binding in self.physical_revolute_joint_bindings
+                    ],
+                    "kinematic_root_physical_body_id": self.kinematic_root_physical_body_id,
+                    "kinematic_root_binding_hash": self.kinematic_root_binding_hash,
+                    "physical_pair_classification_bindings": [
+                        binding.model_dump(mode="json")
+                        for binding in self.physical_pair_classification_bindings
+                    ],
+                    "multi_joint_verification_obligations": [
+                        obligation.model_dump(mode="json")
+                        for obligation in self.multi_joint_verification_obligations
+                    ],
+                }
+            )
         payload.update(
             promotion_provenance=list(self.promotion_provenance),
             mechanism_hash=self.mechanism_hash,
@@ -799,6 +1152,26 @@ class CanonicalPhysicalMechanism(CanonicalModel):
 
     @model_validator(mode="after")
     def validate_mechanism(self) -> "CanonicalPhysicalMechanism":
+        m13_3_fields = {
+            "physical_rigid_body_bindings",
+            "physical_revolute_joint_bindings",
+            "kinematic_root_physical_body_id",
+            "kinematic_root_binding_hash",
+            "physical_pair_classification_bindings",
+            "multi_joint_verification_obligations",
+        }
+        supplied_m13_3_fields = self.model_fields_set & m13_3_fields
+        if self.schema_version in (
+            "canonical-physical-mechanism@1",
+            "canonical-physical-mechanism@2",
+        ):
+            if supplied_m13_3_fields:
+                raise ValueError(
+                    f"{self.schema_version} must not contain M13-3 fields"
+                )
+        elif supplied_m13_3_fields != m13_3_fields:
+            raise ValueError("canonical-physical-mechanism@3 requires all M13-3 fields")
+
         component_ids = tuple(component.instance_id for component in self.components)
         if len(set(component_ids)) != len(component_ids):
             raise ValueError("component IDs must be unique")
@@ -892,6 +1265,101 @@ class CanonicalPhysicalMechanism(CanonicalModel):
         )
         if len(set(derivation_ids)) != len(derivation_ids):
             raise ValueError("generated placement derivation IDs must be unique")
+        if self.schema_version.endswith("@3"):
+            body_ids = tuple(
+                binding.physical_body_id for binding in self.physical_rigid_body_bindings
+            )
+            if len(set(body_ids)) != len(body_ids):
+                raise ValueError("canonical physical rigid body IDs must be unique")
+            ordered_bodies = tuple(
+                sorted(
+                    self.physical_rigid_body_bindings,
+                    key=lambda binding: binding.physical_body_id,
+                )
+            )
+            object.__setattr__(self, "physical_rigid_body_bindings", ordered_bodies)
+            member_owner: dict[str, str] = {}
+            for binding in ordered_bodies:
+                for instance_id in binding.member_physical_instance_ids:
+                    if instance_id not in component_ids:
+                        raise ValueError("canonical physical rigid body member is missing")
+                    previous_owner = member_owner.setdefault(instance_id, binding.physical_body_id)
+                    if previous_owner != binding.physical_body_id:
+                        raise ValueError("canonical physical component belongs to multiple physical bodies")
+            body_id_set = set(body_ids)
+            if self.kinematic_root_physical_body_id not in body_id_set:
+                raise ValueError("canonical kinematic root physical body is missing")
+            if self.kinematic_root_binding_hash != physical_kinematic_root_hash(
+                self.kinematic_root_physical_body_id
+            ):
+                raise ValueError("canonical kinematic root binding hash mismatch")
+
+            joint_ids = tuple(
+                binding.physical_joint_id
+                for binding in self.physical_revolute_joint_bindings
+            )
+            if len(set(joint_ids)) != len(joint_ids):
+                raise ValueError("canonical physical revolute joint IDs must be unique")
+            ordered_joints = tuple(
+                sorted(
+                    self.physical_revolute_joint_bindings,
+                    key=lambda binding: binding.physical_joint_id,
+                )
+            )
+            object.__setattr__(self, "physical_revolute_joint_bindings", ordered_joints)
+            for binding in ordered_joints:
+                if not {
+                    binding.parent_physical_body_id,
+                    binding.child_physical_body_id,
+                } <= body_id_set:
+                    raise ValueError("canonical physical revolute joint body is missing")
+                for instance_id, interface_id in (
+                    (binding.parent_physical_instance_id, binding.parent_interface_id),
+                    (binding.child_physical_instance_id, binding.child_interface_id),
+                ):
+                    component = next(
+                        (component for component in self.components if component.instance_id == instance_id),
+                        None,
+                    )
+                    if component is None or interface_id not in component.interfaces:
+                        raise ValueError("canonical physical revolute joint endpoint is missing")
+                if binding.axis_source.source_physical_instance_id not in component_ids:
+                    raise ValueError("canonical physical revolute joint axis source is missing")
+                if binding.connection_id not in connection_ids:
+                    raise ValueError("canonical physical revolute joint connection is missing")
+
+            pair_keys = tuple(
+                (
+                    binding.first_physical_instance_id,
+                    binding.second_physical_instance_id,
+                )
+                for binding in self.physical_pair_classification_bindings
+            )
+            if len(set(pair_keys)) != len(pair_keys):
+                raise ValueError("canonical physical pair classification bindings must be unique")
+            ordered_pairs = tuple(
+                sorted(
+                    self.physical_pair_classification_bindings,
+                    key=lambda binding: (
+                        binding.first_physical_instance_id,
+                        binding.second_physical_instance_id,
+                    ),
+                )
+            )
+            object.__setattr__(self, "physical_pair_classification_bindings", ordered_pairs)
+            if any(
+                instance_id not in component_ids
+                for binding in ordered_pairs
+                for instance_id in (
+                    binding.first_physical_instance_id,
+                    binding.second_physical_instance_id,
+                )
+            ):
+                raise ValueError("canonical physical pair classification instance is missing")
+            if len(self.multi_joint_verification_obligations) != 1:
+                raise ValueError(
+                    "canonical multi-joint verification requires exactly one obligation"
+                )
         encoded = json.dumps(
             self._mechanism_hash_payload(),
             ensure_ascii=False,

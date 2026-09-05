@@ -1,6 +1,7 @@
 import hashlib
 import json
 from dataclasses import dataclass
+from contextvars import ContextVar
 from pathlib import Path
 from collections.abc import Callable
 from typing import Iterable
@@ -163,6 +164,8 @@ from mechcad_harness.candidates import (
     CandidateComparisonPolicy,
     CandidateComparisonService,
     CandidateM10EvaluationService,
+    CandidateMultiJointM10EvaluationService,
+    CanonicalMultiJointM10VerificationService,
     CandidateM10EvaluationRequest,
     CandidateM10EvaluationScope,
     CandidateM10Binding,
@@ -190,6 +193,11 @@ from mechcad_harness.revolute_drive import (
     RevoluteDriveRealizationService,
     RevoluteDriveTemplateInput,
     admissibility_result_hash,
+)
+
+
+_CANDIDATE_V2_TOLERANCES: ContextVar[tuple[float, float] | None] = ContextVar(
+    "candidate_v2_tolerances", default=None
 )
 
 
@@ -421,6 +429,7 @@ class ProductionApplication:
         "revolute_drive_service",
         "candidate_cad_realization_service",
         "candidate_m10_evaluation_service",
+        "candidate_multi_joint_m10_evaluation_service",
         "candidate_evaluation_service",
         "candidate_evaluation_currentness_service",
         "candidate_comparison_service",
@@ -485,6 +494,12 @@ class ProductionApplication:
         self.candidate_m10_evaluation_service = CandidateM10EvaluationService(
             self.prove_continuous_single_axis_clearance,
             self.analyze_assembly_kinematics,
+        )
+        self.candidate_multi_joint_m10_evaluation_service = (
+            CandidateMultiJointM10EvaluationService(
+                currentness_verifier=self.candidate_currentness_service,
+                analyze_multi_joint_collision_sweep_v2=self._execute_candidate_v2_sweep,
+            )
         )
         self.candidate_evaluation_service = CandidateEvaluationService(
             state_manager,
@@ -608,6 +623,9 @@ class ProductionApplication:
             artifact_resolver_factory
         )
         self.canonical_m10_service = CanonicalM10VerificationService(self)
+        self.canonical_multi_joint_m10_verification_service = (
+            CanonicalMultiJointM10VerificationService(self)
+        )
         self.m11_handoff_service = CanonicalM11HandoffService(
             state_manager,
             structural_service=self.structural_service,
@@ -1154,6 +1172,43 @@ class ProductionApplication:
         configurations: tuple[JointConfiguration, ...],
         exact_pair_scope: tuple[ExactConstituentPair, ...],
     ) -> MultiJointCollisionSweepResultV2:
+        tolerances = _CANDIDATE_V2_TOLERANCES.get()
+        if tolerances is None:
+            tolerances = (1e-9, 1e-7)
+        return self._analyze_multi_joint_collision_sweep_v2(
+            source_revision=source_revision,
+            source_state_hash=source_state_hash,
+            assembly=assembly,
+            model=model,
+            configurations=configurations,
+            exact_pair_scope=exact_pair_scope,
+            volume_tolerance_mm3=tolerances[0],
+            distance_tolerance_mm=tolerances[1],
+        )
+
+    def _execute_candidate_v2_sweep(self, **kwargs):
+        volume_tolerance_mm3 = kwargs.pop("volume_tolerance_mm3")
+        distance_tolerance_mm = kwargs.pop("distance_tolerance_mm")
+        token = _CANDIDATE_V2_TOLERANCES.set(
+            (volume_tolerance_mm3, distance_tolerance_mm)
+        )
+        try:
+            return self.analyze_multi_joint_collision_sweep_v2(**kwargs)
+        finally:
+            _CANDIDATE_V2_TOLERANCES.reset(token)
+
+    def _analyze_multi_joint_collision_sweep_v2(
+        self,
+        *,
+        source_revision: int,
+        source_state_hash: str,
+        assembly: CadAssemblyProgram,
+        model: KinematicModelV2,
+        configurations: tuple[JointConfiguration, ...],
+        exact_pair_scope: tuple[ExactConstituentPair, ...],
+        volume_tolerance_mm3: float,
+        distance_tolerance_mm: float,
+    ) -> MultiJointCollisionSweepResultV2:
         model = self._require_v2_kinematic_model(model, "v2 collision sweep")
         self.assembly_service.validate_source(
             self.project_id, source_revision, source_state_hash
@@ -1165,6 +1220,8 @@ class ProductionApplication:
             model=model,
             configurations=configurations,
             exact_pair_scope=exact_pair_scope,
+            volume_tolerance_mm3=volume_tolerance_mm3,
+            distance_tolerance_mm=distance_tolerance_mm,
             evaluator_version=MULTI_JOINT_EXACT_COLLISION_SWEEP_V2_VERSION,
         )
         provider_snapshot = self._v2_kinematic_provider_snapshot()
@@ -2070,6 +2127,18 @@ class ProductionApplication:
             synthesis_request,
             synthesis_policy,
             request,
+        )
+
+    def evaluate_candidate_multi_joint_m10(
+        self,
+        candidate,
+        cad_realization,
+        bridge,
+        request,
+    ):
+        self._require_candidate_project(candidate)
+        return self.candidate_multi_joint_m10_evaluation_service.execute(
+            candidate, cad_realization, bridge, request
         )
 
     def compile_candidate_promotion(self, request):

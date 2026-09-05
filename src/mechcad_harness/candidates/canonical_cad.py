@@ -318,6 +318,25 @@ class CanonicalCadRealization(CanonicalCadModel):
         return self.validated_canonical_copy().assembly
 
 
+def _validate_m13_3_body_universe(mechanism, mappings) -> None:
+    if mechanism.schema_version != "canonical-physical-mechanism@3":
+        return
+
+    mapped_ids = {mapping.physical_instance_id for mapping in mappings}
+    owner_by_member: dict[str, str] = {}
+    for body in mechanism.physical_rigid_body_bindings:
+        for member_id in body.member_physical_instance_ids:
+            if member_id in owner_by_member:
+                raise CanonicalCadIntegrityError(
+                    "canonical physical body member has multiple CAD owners"
+                )
+            owner_by_member[member_id] = body.physical_body_id
+    if set(owner_by_member) != mapped_ids:
+        raise CanonicalCadIntegrityError(
+            "canonical physical body and fresh CAD mapping universes do not match"
+        )
+
+
 class CanonicalPhysicalCadCompiler:
     """Compile canonical physical semantics without candidate CAD inputs."""
 
@@ -473,6 +492,7 @@ class CanonicalPhysicalCadCompiler:
                         )
                     )
 
+            _validate_m13_3_body_universe(mechanism, mappings)
             request_hash = self._request_hash(reconstruction, tuple(mappings))
             instances = tuple(
                 CadComponentInstance(

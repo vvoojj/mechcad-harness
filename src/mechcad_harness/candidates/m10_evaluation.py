@@ -32,6 +32,7 @@ from mechcad_harness.kinematic_sweep import (
     SweepAggregateClassification,
 )
 from mechcad_harness.models.common import Model
+from mechcad_harness.models.physical_pair_policy import PhysicalPairClassification
 from mechcad_harness.multi_joint_kinematics import (
     KinematicModel,
     kinematic_model_hash,
@@ -100,12 +101,7 @@ class CandidateM10BodyDisposition(StrEnum):
     INTERNAL_MOTION_UNMODELED = "internal_motion_unmodeled"
 
 
-class CandidateM10PairClassification(StrEnum):
-    CHECK_CLEARANCE = "check_clearance"
-    INTENDED_CONTACT_EXCLUDED = "intended_contact_excluded"
-    SAME_RIGID_GROUP_EXCLUDED = "same_rigid_group_excluded"
-    UNMODELED_MOTION_OUT_OF_SCOPE = "unmodeled_motion_out_of_scope"
-    OTHER_EXPLICIT_OUT_OF_SCOPE = "other_explicit_out_of_scope"
+CandidateM10PairClassification = PhysicalPairClassification
 
 
 class CandidateM10ConstituentDisposition(CandidateM10Model):
