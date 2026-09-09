@@ -420,6 +420,81 @@ class PromotionDecisionInputReference(PromotionModel):
         return self
 
 
+class MultiJointPromotionDecisionInputReference(PromotionModel):
+    schema_version: Literal[
+        "multi-joint-promotion-decision-input-reference@1"
+    ] = "multi-joint-promotion-decision-input-reference@1"
+    promotion_request_hash: StrictStr
+    readiness_hash: StrictStr
+    project_id: StrictStr = Field(min_length=1)
+    source_revision: StrictInt = Field(gt=0)
+    source_state_hash: StrictStr
+    source_binding_hash: StrictStr
+    candidate_hash: StrictStr
+    synthesis_request_hash: StrictStr
+    synthesis_policy_hash: StrictStr
+    m12_3_result_hash: StrictStr
+    multi_joint_evaluation_request_hash: StrictStr
+    multi_joint_evaluation_hash: StrictStr
+    multi_joint_selection_hash: StrictStr
+    scope_hash: StrictStr
+    configuration_set_hash: StrictStr
+    placement_derivations_hash: StrictStr | None = None
+    physical_pair_classification_set_hash: StrictStr
+    m10_v2_request_hash: StrictStr
+    m10_v2_result_hash: StrictStr
+    promotion_policy_hash: StrictStr
+    canonical_target_mechanism_id: StrictStr = Field(min_length=1)
+    mapping_identities: tuple[StrictStr, ...] = Field(min_length=1)
+    classification_identities: tuple[StrictStr, ...] = Field(min_length=1)
+    reference_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "promotion_request_hash",
+        "readiness_hash",
+        "source_state_hash",
+        "source_binding_hash",
+        "candidate_hash",
+        "synthesis_request_hash",
+        "synthesis_policy_hash",
+        "m12_3_result_hash",
+        "multi_joint_evaluation_request_hash",
+        "multi_joint_evaluation_hash",
+        "multi_joint_selection_hash",
+        "scope_hash",
+        "configuration_set_hash",
+        "physical_pair_classification_set_hash",
+        "m10_v2_request_hash",
+        "m10_v2_result_hash",
+        "promotion_policy_hash",
+    )(_require_hash)
+    _validate_optional_hash = field_validator("placement_derivations_hash")(
+        lambda value: None if value is None else _require_hash(value)
+    )
+    _validate_reference_hash = field_validator("reference_hash")(_hash_or_pending)
+    _validate_text = field_validator(
+        "project_id", "canonical_target_mechanism_id"
+    )(_nonblank)
+    _validate_identities = field_validator(
+        "mapping_identities", "classification_identities"
+    )(lambda values: tuple(_require_hash(value) for value in values))
+
+    @model_validator(mode="after")
+    def validate_reference(self) -> "MultiJointPromotionDecisionInputReference":
+        if len(set(self.mapping_identities)) != len(self.mapping_identities):
+            raise ValueError("multi-joint mapping identities must be unique")
+        if len(set(self.classification_identities)) != len(self.classification_identities):
+            raise ValueError("multi-joint classification identities must be unique")
+        if self.classification_identities != tuple(sorted(self.classification_identities)):
+            raise ValueError("multi-joint classification identities must be lexically sorted")
+        expected = _hash(self, "reference_hash")
+        if self.reference_hash == "pending":
+            object.__setattr__(self, "reference_hash", expected)
+        elif self.reference_hash != expected:
+            raise ValueError("multi-joint decision input reference hash mismatch")
+        return self
+
+
 class CandidatePromotionRequest(PromotionModel):
     """Transient readiness input; it is never canonical authority."""
 
@@ -833,6 +908,125 @@ class CandidatePromotionApplicationResult(PromotionModel):
     _validate_error = field_validator("error")(_optional_nonblank)
 
 
+class CandidateMultiJointPromotionApplicationResult(PromotionModel):
+    schema_version: Literal[
+        "candidate-multi-joint-promotion-application-result@1"
+    ] = "candidate-multi-joint-promotion-application-result@1"
+    request: CandidateMultiJointPromotionRequest | None = None
+    readiness: Any | None = None
+    compilation: CandidatePromotionCompilation | None = None
+    decision_artifact_id: StrictStr | None = None
+    result_artifact_id: StrictStr | None = None
+    applied_revision: StrictInt | None = Field(default=None, gt=0)
+    applied_state_hash: StrictStr | None = None
+    status: PromotionApplicationStatus
+    error: StrictStr | None = None
+
+    @field_validator("request", "compilation", mode="before")
+    @classmethod
+    def validate_exact_typed_records(cls, value, info):
+        if value is None:
+            return None
+        expected = {
+            "request": CandidateMultiJointPromotionRequest,
+            "compilation": CandidatePromotionCompilation,
+        }[info.field_name]
+        if type(value) is not expected:
+            raise ValueError(f"multi-joint receipt {info.field_name} must be the exact typed record")
+        return value
+
+    @field_validator("readiness", mode="before")
+    @classmethod
+    def validate_exact_readiness(cls, value):
+        if value is None:
+            return None
+        from .promotion import MultiJointPromotionReadiness
+
+        if type(value) is not MultiJointPromotionReadiness:
+            raise ValueError("multi-joint receipt readiness must be the exact typed record")
+        return value
+
+    _validate_ids = field_validator("decision_artifact_id", "result_artifact_id")(
+        _optional_nonblank
+    )
+    _validate_hash = field_validator("applied_state_hash")(
+        lambda value: None if value is None else _require_hash(value)
+    )
+    _validate_error = field_validator("error")(_optional_nonblank)
+
+    @model_validator(mode="after")
+    def validate_application_result(self) -> "CandidateMultiJointPromotionApplicationResult":
+        from .promotion import MultiJointPromotionReadiness
+
+        if self.readiness is not None and type(self.readiness) is not MultiJointPromotionReadiness:
+            raise ValueError("multi-joint receipt readiness must be typed")
+        if self.request is not None:
+            CandidateMultiJointPromotionRequest.model_validate(
+                self.request.model_dump(mode="json")
+            )
+        if self.readiness is not None:
+            MultiJointPromotionReadiness.model_validate(
+                self.readiness.model_dump(mode="json")
+            )
+        if self.compilation is not None:
+            CandidatePromotionCompilation.model_validate(
+                self.compilation.model_dump(mode="json")
+            )
+        if self.request is not None and self.readiness is not None:
+            if self.readiness.request_hash != self.request.request_hash:
+                raise ValueError("multi-joint receipt request/readiness binding mismatch")
+        if self.compilation is not None:
+            self.compilation.validated_proposal()
+            if self.request is not None and (
+                self.compilation.projection.canonical_target_mechanism_id
+                != self.request.canonical_target_mechanism_id
+            ):
+                raise ValueError("multi-joint receipt compilation target binding mismatch")
+            if self.readiness is not None and self.compilation.mapping != self.readiness.mapping:
+                raise ValueError("multi-joint receipt compilation mapping binding mismatch")
+
+        applied_pair = (self.applied_revision, self.applied_state_hash)
+        if (applied_pair[0] is None) != (applied_pair[1] is None):
+            raise ValueError("multi-joint receipt applied identity is incomplete")
+
+        if self.status is PromotionApplicationStatus.PROMOTION_APPLIED:
+            if any(
+                value is None
+                for value in (
+                    self.request,
+                    self.readiness,
+                    self.compilation,
+                    self.decision_artifact_id,
+                    self.result_artifact_id,
+                    self.applied_revision,
+                    self.applied_state_hash,
+                )
+            ) or self.error is not None:
+                raise ValueError("multi-joint applied receipt is incomplete")
+        elif self.status in (
+            PromotionApplicationStatus.PRE_APPLY_FAILURE,
+            PromotionApplicationStatus.CHANGEENGINE_REJECTED,
+        ):
+            if any(value is not None for value in (self.result_artifact_id, *applied_pair)):
+                raise ValueError("multi-joint pre-apply receipt claims applied evidence")
+            if self.error is None:
+                raise ValueError("multi-joint pre-apply receipt requires an error")
+        else:
+            if any(
+                value is None
+                for value in (
+                    self.request,
+                    self.readiness,
+                    self.compilation,
+                    self.decision_artifact_id,
+                    self.applied_revision,
+                    self.applied_state_hash,
+                )
+            ) or self.result_artifact_id is not None or self.error is None:
+                raise ValueError("multi-joint post-apply receipt is incomplete")
+        return self
+
+
 class PromotedMechanismVerificationStatus(StrEnum):
     VERIFIED = "verified"
     ENGINEERING_VIOLATION = "engineering_violation"
@@ -949,6 +1143,7 @@ def promotion_proposal_hash(
 __all__ = [
     "CandidateCanonicalInstanceMapping",
     "CandidatePromotionApplicationResult",
+    "CandidateMultiJointPromotionApplicationResult",
     "CandidatePromotionCompilation",
     "CandidatePromotionPolicy",
     "CandidatePromotionRequest",
@@ -958,6 +1153,7 @@ __all__ = [
     "PromotionApplicationStatus",
     "PromotionClassification",
     "PromotionDecisionInputReference",
+    "MultiJointPromotionDecisionInputReference",
     "PromotionPhysicalPairRequirement",
     "PromotionValueClassification",
     "PromotionSourceValue",

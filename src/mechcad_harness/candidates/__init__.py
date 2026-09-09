@@ -67,6 +67,7 @@ from .comparison import (
 from .selection import CandidateSelection, CandidateSelectionService, candidate_selection_hash
 from .promotion_models import (
     CandidateCanonicalInstanceMapping,
+    CandidateMultiJointPromotionApplicationResult,
     CandidatePromotionApplicationResult,
     CandidatePromotionCompilation,
     CandidatePromotionPolicy,
@@ -77,6 +78,7 @@ from .promotion_models import (
     PromotionApplicationStatus,
     PromotionClassification,
     PromotionDecisionInputReference,
+    MultiJointPromotionDecisionInputReference,
     PromotionPhysicalPairRequirement,
     PromotionSourceValue,
     PromotionValueClassification,
@@ -95,12 +97,20 @@ from .promotion import (
 from .promotion_artifacts import (
     CandidatePromotionResultManifest,
     decision_manifest_hash,
+    multi_joint_decision_manifest_hash,
+    multi_joint_result_manifest_hash,
+    MultiJointPromotionResultManifest,
     PromotionManifestIntegrityError,
     PromotionManifestService,
     SelectedCandidateDecisionManifest,
+    SelectedMultiJointCandidateDecisionManifest,
     result_manifest_hash,
     resolve_decision,
+    resolve_multi_joint_decision,
+    resolve_multi_joint_result,
     resolve_result,
+    verify_multi_joint_promotion_decision,
+    verify_multi_joint_promotion_application_result,
 )
 from .canonical_mechanism import (
     CanonicalMechanismReconstruction,

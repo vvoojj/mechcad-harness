@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
 
-from mechcad_harness.artifacts import ArtifactStore, ArtifactType
+from mechcad_harness.artifacts import ArtifactStore, ArtifactType, EngineeringArtifact
 from mechcad_harness.models.common import Model
 from mechcad_harness.state.hashing import state_hash
 
@@ -42,6 +42,7 @@ from .models import (
 )
 from .promotion_models import (
     CandidateCanonicalInstanceMapping,
+    CandidateMultiJointPromotionApplicationResult,
     CandidatePromotionApplicationResult,
     CandidatePromotionCompilation,
     CandidatePromotionPolicy,
@@ -72,10 +73,17 @@ from mechcad_harness.revolute_drive import (
     InputProvenanceKind,
     admissibility_result_hash,
 )
+from mechcad_harness.changes.engine import AppliedChangeResult
 from mechcad_harness.changes.operations import ChangeOperation
 from mechcad_harness.changes.errors import ChangeError
 from mechcad_harness.models import ChangeProposal, ProposalStatus
-from mechcad_harness.runs import PostApplyInvalidationError, PostApplyRunTransitionError, SourceBinding
+from mechcad_harness.runs import (
+    PostApplyInvalidationError,
+    PostApplyRunTransitionError,
+    Run,
+    RunStatus,
+    SourceBinding,
+)
 from mechcad_harness.models.physical_mechanism import (
     CanonicalAcceptedDesignChoice,
     CanonicalComponentProperty,
@@ -2354,6 +2362,58 @@ class CandidatePromotionCompiler:
             raise ValueError(f"{label} is not a valid delimiter-free identifier")
 
 
+@dataclass(frozen=True)
+class _MultiJointPromotionRouteContext:
+    request: CandidateMultiJointPromotionRequest
+    readiness: MultiJointPromotionReadiness
+    compilation: CandidatePromotionCompilation
+    run: Run
+    store: ArtifactStore
+    decision_artifact: EngineeringArtifact
+
+    def __post_init__(self) -> None:
+        if type(self.request) is not CandidateMultiJointPromotionRequest:
+            raise ValueError("multi-joint route context requires a typed request")
+        if type(self.readiness) is not MultiJointPromotionReadiness:
+            raise ValueError("multi-joint route context requires typed readiness")
+        if type(self.compilation) is not CandidatePromotionCompilation:
+            raise ValueError("multi-joint route context requires a typed compilation")
+        if type(self.run) is not Run:
+            raise ValueError("multi-joint route context requires a typed run")
+        if type(self.store) is not ArtifactStore:
+            raise ValueError("multi-joint route context requires an ArtifactStore")
+        if type(self.decision_artifact) is not EngineeringArtifact:
+            raise ValueError("multi-joint route context requires a typed decision artifact")
+        self.compilation.validated_proposal()
+        if self.readiness.request_hash != self.request.request_hash:
+            raise ValueError("multi-joint route request/readiness binding mismatch")
+        if self.compilation.mapping != self.readiness.mapping:
+            raise ValueError("multi-joint route mapping is not readiness mapping")
+        if self.compilation.projection.canonical_target_mechanism_id != self.request.canonical_target_mechanism_id:
+            raise ValueError("multi-joint route target is not request-bound")
+        if (
+            self.compilation.proposal.base_revision != self.request.source_revision
+            or self.compilation.proposal.base_state_hash != self.request.source_state_hash
+            or self.run.project_id != self.request.project_id
+            or self.store.project_id != self.run.project_id
+            or self.run.initial_revision != self.request.source_revision
+            or self.run.active_revision != self.request.source_revision
+            or self.run.initial_state_hash != self.request.source_state_hash
+            or self.run.active_state_hash != self.request.source_state_hash
+        ):
+            raise ValueError("multi-joint route project binding mismatch")
+        if self.store.run_id != self.run.run_id:
+            raise ValueError("multi-joint route run binding mismatch")
+        if (
+            not _nonblank(self.decision_artifact.artifact_id)
+            or self.decision_artifact.project_id != self.request.project_id
+            or self.decision_artifact.run_id != self.run.run_id
+            or self.decision_artifact.bound_revision != self.request.source_revision
+            or self.decision_artifact.bound_state_hash != self.request.source_state_hash
+        ):
+            raise ValueError("multi-joint route decision artifact binding mismatch")
+
+
 class CandidatePromotionApplicationService:
     """Apply one compiled promotion through the normal run lifecycle."""
 
@@ -2543,6 +2603,274 @@ class CandidatePromotionApplicationService:
             applied_state_hash=applied_state_hash,
             status=PromotionApplicationStatus.PROMOTION_APPLIED,
         )
+
+    def promote_selected_multi_joint_candidate(
+        self, request: CandidateMultiJointPromotionRequest
+    ) -> CandidateMultiJointPromotionApplicationResult:
+        if type(request) is not CandidateMultiJointPromotionRequest:
+            raise ValueError("multi-joint promotion request must be a typed request")
+        return self._promote_multi_joint_route(request)
+
+    def _promote_multi_joint_route(
+        self, request: CandidateMultiJointPromotionRequest
+    ) -> CandidateMultiJointPromotionApplicationResult:
+        if type(request) is not CandidateMultiJointPromotionRequest:
+            return self._multi_joint_receipt(
+                request=None,
+                readiness=None,
+                compilation=None,
+                status=PromotionApplicationStatus.PRE_APPLY_FAILURE,
+                error=ValueError("multi-joint promotion request must be a typed request"),
+            )
+
+        readiness = None
+        compilation = None
+        run = None
+        decision_artifact = None
+        try:
+            request = CandidateMultiJointPromotionRequest.model_validate(
+                request.model_dump(mode="json")
+            )
+            state = self.compiler.state_manager.load_current_state(request.project_id)
+            readiness = self.compiler.validate_multi_joint_readiness(request)
+            compilation = self.compiler.compile_multi_joint(state, request)
+            compilation.validated_proposal()
+        except Exception as exc:
+            return self._multi_joint_receipt(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                status=PromotionApplicationStatus.PRE_APPLY_FAILURE,
+                error=exc,
+            )
+
+        store = None
+        try:
+            run = self.run_controller.create_run(
+                request.project_id,
+                expected_source=SourceBinding(
+                    project_id=request.project_id,
+                    revision=request.source_revision,
+                    state_hash=request.source_state_hash,
+                ),
+            )
+            store = ArtifactStore(
+                self.run_controller.workspace,
+                project_id=request.project_id,
+                run_id=run.run_id,
+            )
+            decision_artifact = self.manifest_service.publish_multi_joint_decision(
+                store,
+                run=run,
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+            )
+            self.manifest_service.resolve_multi_joint_decision(
+                store, decision_artifact.artifact_id
+            )
+            context = _MultiJointPromotionRouteContext(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                run=run,
+                store=store,
+                decision_artifact=decision_artifact,
+            )
+            proposal = context.compilation.proposal
+        except Exception as exc:
+            self._fail_created_run(run, exc)
+            return self._multi_joint_receipt(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                status=PromotionApplicationStatus.PRE_APPLY_FAILURE,
+                error=exc,
+            )
+
+        try:
+            applied_run = self._validate_applied_multi_joint_run(
+                self.run_controller.apply_approved_proposal(run.run_id, proposal)
+            )
+        except PostApplyInvalidationError as exc:
+            applied = exc.applied
+            return self._multi_joint_receipt(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                applied_revision=applied.snapshot.revision,
+                applied_state_hash=applied.snapshot.state_hash,
+                status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_INVALIDATION_PERSISTENCE_FAILED,
+                error=exc,
+            )
+        except PostApplyRunTransitionError as exc:
+            applied = exc.applied
+            return self._multi_joint_receipt(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                applied_revision=applied.snapshot.revision,
+                applied_state_hash=applied.snapshot.state_hash,
+                status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_RUN_TRANSITION_FAILED,
+                error=exc,
+            )
+        except ChangeError as exc:
+            self._fail_created_run(run, exc)
+            return self._multi_joint_receipt(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                status=PromotionApplicationStatus.CHANGEENGINE_REJECTED,
+                error=exc,
+            )
+        except Exception as exc:
+            current = None
+            try:
+                current = self.run_controller.get_run(run.run_id)
+            except Exception:
+                pass
+            if current is not None and current.active_revision > run.initial_revision:
+                try:
+                    persisted_state = self.compiler.state_manager.load_revision(
+                        request.project_id, current.active_revision
+                    )
+                    if (
+                        persisted_state.revision != current.active_revision
+                        or state_hash(persisted_state) != current.active_state_hash
+                    ):
+                        raise ValueError("post-apply run and durable state binding mismatch")
+                except Exception:
+                    pass
+                else:
+                    return self._multi_joint_receipt(
+                        request=request,
+                        readiness=readiness,
+                        compilation=compilation,
+                        decision_artifact_id=decision_artifact.artifact_id,
+                        applied_revision=current.active_revision,
+                        applied_state_hash=current.active_state_hash,
+                        status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_RUN_TRANSITION_FAILED,
+                        error=exc,
+                    )
+            self._fail_created_run(run, exc)
+            return self._multi_joint_receipt(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                status=PromotionApplicationStatus.PRE_APPLY_FAILURE,
+                error=exc,
+            )
+
+        applied_revision = applied_run.active_revision
+        applied_state_hash = applied_run.active_state_hash
+        try:
+            invalidation = self.run_controller.evidence.load_invalidation(
+                request.project_id, applied_revision
+            )
+            self._verify_invalidation(invalidation, run, applied_run, proposal)
+        except Exception as exc:
+            return self._multi_joint_receipt(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                applied_revision=applied_revision,
+                applied_state_hash=applied_state_hash,
+                status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_INVALIDATION_VERIFICATION_FAILED,
+                error=exc,
+            )
+
+        applied = AppliedChangeResult(
+            snapshot=self.compiler.state_manager._read_snapshot(
+                request.project_id, applied_revision
+            ),
+            changeset_id=invalidation.changeset_id,
+            changed_paths=tuple(invalidation.changed_paths),
+        )
+        try:
+            result_artifact = self.manifest_service.publish_multi_joint_result(
+                store,
+                decision_artifact=decision_artifact,
+                compilation=compilation,
+                proposal=proposal,
+                applied=applied,
+                invalidation=invalidation,
+                final_run=applied_run,
+            )
+            self.manifest_service.resolve_multi_joint_result(
+                store, result_artifact.artifact_id
+            )
+        except Exception as exc:
+            return self._multi_joint_receipt(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                applied_revision=applied_revision,
+                applied_state_hash=applied_state_hash,
+                status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_RESULT_PROVENANCE_FAILED,
+                error=exc,
+            )
+
+        return self._multi_joint_receipt(
+            request=request,
+            readiness=readiness,
+            compilation=compilation,
+            decision_artifact_id=decision_artifact.artifact_id,
+            result_artifact_id=result_artifact.artifact_id,
+            applied_revision=applied_revision,
+            applied_state_hash=applied_state_hash,
+            status=PromotionApplicationStatus.PROMOTION_APPLIED,
+        )
+
+    @staticmethod
+    def _validate_applied_multi_joint_run(applied_run: Run) -> Run:
+        if type(applied_run) is not Run:
+            raise ValueError("multi-joint application did not return a typed Run")
+        return applied_run
+
+    @staticmethod
+    def _multi_joint_receipt(
+        *,
+        request,
+        readiness,
+        compilation,
+        status,
+        error=None,
+        decision_artifact_id=None,
+        result_artifact_id=None,
+        applied_revision=None,
+        applied_state_hash=None,
+    ) -> CandidateMultiJointPromotionApplicationResult:
+        values = dict(
+            request=request,
+            readiness=readiness,
+            compilation=compilation,
+            decision_artifact_id=decision_artifact_id,
+            result_artifact_id=result_artifact_id,
+            applied_revision=applied_revision,
+            applied_state_hash=applied_state_hash,
+            status=status,
+            error=None if error is None else str(error) or type(error).__name__,
+        )
+        try:
+            return CandidateMultiJointPromotionApplicationResult(**values)
+        except Exception:
+            values["readiness"] = None
+            values["compilation"] = None
+            if status not in (
+                PromotionApplicationStatus.PROMOTION_APPLIED,
+                PromotionApplicationStatus.PROMOTION_APPLIED_BUT_RUN_TRANSITION_FAILED,
+                PromotionApplicationStatus.PROMOTION_APPLIED_BUT_INVALIDATION_PERSISTENCE_FAILED,
+                PromotionApplicationStatus.PROMOTION_APPLIED_BUT_INVALIDATION_VERIFICATION_FAILED,
+                PromotionApplicationStatus.PROMOTION_APPLIED_BUT_RESULT_PROVENANCE_FAILED,
+            ):
+                values["request"] = None
+            return CandidateMultiJointPromotionApplicationResult(**values)
 
     def _fail_created_run(self, run, error: Exception) -> None:
         if run is None:

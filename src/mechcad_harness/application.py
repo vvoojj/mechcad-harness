@@ -164,7 +164,15 @@ from mechcad_harness.candidates import (
     CandidateComparisonPolicy,
     CandidateComparisonService,
     CandidateM10EvaluationService,
+    CandidateCadRealization,
+    CandidateMultiJointM10Evaluation,
+    CandidateMultiJointM10EvaluationRequest,
     CandidateMultiJointM10EvaluationService,
+    CandidateMultiJointM10Replay,
+    CandidateMultiJointPromotionApplicationResult,
+    CandidateMultiJointPromotionRequest,
+    CandidateMultiJointSelection,
+    CandidateMultiJointSelectionService,
     CanonicalMultiJointM10VerificationService,
     CandidateM10EvaluationRequest,
     CandidateM10EvaluationScope,
@@ -180,10 +188,13 @@ from mechcad_harness.candidates import (
     CanonicalPhysicalCadCompiler,
     CanonicalPhysicalMechanismCompiler,
     CanonicalM11HandoffService,
+    MechanicalDesignCandidate,
     PromotionManifestService,
+    PhysicalToM10V2Bridge,
     ProjectArtifactResolver,
     build_handoff_request,
     verify_promoted_mechanism,
+    verify_multi_joint_promotion_application_result,
 )
 from mechcad_harness.revolute_drive import (
     DriveAdmissibility,
@@ -2141,6 +2152,46 @@ class ProductionApplication:
             candidate, cad_realization, bridge, request
         )
 
+    def select_candidate_multi_joint(
+        self,
+        candidate: MechanicalDesignCandidate,
+        cad_realization: CandidateCadRealization,
+        bridge: PhysicalToM10V2Bridge,
+        request: CandidateMultiJointM10EvaluationRequest,
+        evaluation: CandidateMultiJointM10Evaluation,
+        selector_identity: str,
+        rationale: str,
+    ) -> CandidateMultiJointSelection:
+        self._require_candidate_project(candidate)
+
+        def result_replayer(replay_candidate, replay_request, replay_evaluation):
+            reconstructed = (
+                self.candidate_multi_joint_m10_evaluation_service.reconstruct_m10_request(
+                    replay_candidate, cad_realization, bridge, replay_request
+                )
+            )
+            if reconstructed.request_hash != replay_request.m10_v2_request_hash:
+                raise ValueError("candidate multi-joint selection replay request identity mismatch")
+            result = self._execute_candidate_v2_sweep(
+                source_revision=replay_request.source_revision,
+                source_state_hash=replay_request.source_state_hash,
+                assembly=cad_realization.assembly,
+                model=reconstructed.model,
+                configurations=reconstructed.configurations,
+                exact_pair_scope=reconstructed.exact_pair_scope,
+                volume_tolerance_mm3=reconstructed.volume_tolerance_mm3,
+                distance_tolerance_mm=reconstructed.distance_tolerance_mm,
+            )
+            if result.result_hash != replay_evaluation.m10_v2_result_hash:
+                raise ValueError("candidate multi-joint selection replay result identity mismatch")
+            return CandidateMultiJointM10Replay(reconstructed, result)
+
+        return CandidateMultiJointSelectionService(
+            project_id=self.project_id,
+            currentness_verifier=self.candidate_currentness_service,
+            result_replayer=result_replayer,
+        ).select(candidate, request, evaluation, selector_identity, rationale)
+
     def compile_candidate_promotion(self, request):
         self._require_promotion_project(request)
         source = self.load_state()
@@ -2149,6 +2200,52 @@ class ProductionApplication:
     def promote_selected_candidate(self, request):
         self._require_promotion_project(request)
         return self.promotion_application_service.promote_selected_candidate(request)
+
+    def promote_selected_multi_joint_candidate(
+        self, request: CandidateMultiJointPromotionRequest
+    ) -> CandidateMultiJointPromotionApplicationResult:
+        if type(request) is not CandidateMultiJointPromotionRequest:
+            raise CandidateIntegrityError("multi-joint promotion request must be typed")
+        self._require_promotion_project(request)
+        return self.promotion_application_service.promote_selected_multi_joint_candidate(request)
+
+    def verify_multi_joint_promotion_application(
+        self, receipt: CandidateMultiJointPromotionApplicationResult
+    ) -> None:
+        if type(receipt) is not CandidateMultiJointPromotionApplicationResult:
+            raise CandidateIntegrityError("multi-joint promotion receipt must be typed")
+        if receipt.decision_artifact_id is None:
+            raise CandidateIntegrityError("multi-joint promotion receipt has no decision artifact")
+        locator = ArtifactStore(
+            self.state_manager.workspace,
+            project_id=self.project_id,
+            run_id="m13-4p-decision-lookup",
+        )
+        resolved = locator.read_verified_in_project(
+            receipt.decision_artifact_id, expected_type=ArtifactType.JSON
+        )
+        if resolved is None:
+            raise CandidateIntegrityError("multi-joint decision artifact is missing or ambiguous")
+        decision_artifact, _ = resolved
+        if (
+            decision_artifact.project_id != self.project_id
+            or not decision_artifact.run_id.strip()
+            or not decision_artifact.artifact_id.startswith("MULTI-JOINT-PROMOTION-DECISION-")
+        ):
+            raise CandidateIntegrityError("multi-joint decision artifact locator binding mismatch")
+        manifest_store = ArtifactStore(
+            self.state_manager.workspace,
+            project_id=self.project_id,
+            run_id=decision_artifact.run_id,
+        )
+        verify_multi_joint_promotion_application_result(
+            receipt,
+            manifest_service=self.promotion_manifest_service,
+            manifest_store=manifest_store,
+            state_manager=self.state_manager,
+            evidence_store=self.evidence_store,
+            run_controller=self.run_controller,
+        )
 
     def reconstruct_promoted_mechanism(
         self,
