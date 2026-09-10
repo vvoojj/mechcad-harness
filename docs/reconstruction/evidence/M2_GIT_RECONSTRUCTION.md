@@ -442,6 +442,10 @@ files and seventeen untracked paths. It made no repository changes, created no
 commit, and left the staged diff empty. Those pre-existing changes are distinct
 from this documentation persistence task.
 
+The accepted M0-M4 reconstruction records were later published together in
+`8fda5aa580993b5256bfbf1267216ce0f066d0cd`; that checkpoint is separate from
+the original forensic observation and is not historical execution evidence.
+
 ## 25. Final Reconstructed Classification
 
 ```text

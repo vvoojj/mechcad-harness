@@ -3,7 +3,7 @@
 ## 1. Verdict
 
 ```text
-M0_RECONSTRUCTION_STATUS: M0_HISTORICALLY_COMPLETE_WITH_DEVIATIONS
+M0_RECONSTRUCTION_STATUS: M0_IMPLEMENTATION_BASELINE_RECONSTRUCTED_WITH_DEVIATIONS
 M0_COMPLETION_STATUS: IMPLEMENTED
 HISTORICAL_EXECUTION_VERIFICATION: UNVERIFIED
 CONFIDENCE: MEDIUM_HIGH
@@ -254,6 +254,11 @@ without explicit empty collections.
 At the time of the read-only forensic investigation, the worktree was already
 dirty with unrelated modified and untracked files; the staged diff was empty.
 The investigation made no changes.
+
+This observation predates publication of the reconstruction. The M0-M4 ledger
+and records were later committed together in
+`8fda5aa580993b5256bfbf1267216ce0f066d0cd`; that publication commit is not
+historical execution evidence for M0.
 
 ```text
 WORKTREE_CHANGED: YES

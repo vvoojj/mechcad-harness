@@ -10,6 +10,7 @@ statement of the current production capability baseline.
 | M2 | `37f3ff3` *(shared with M1)* | `IMPLEMENTED_WITH_DEVIATIONS` | `HISTORICALLY_UNVERIFIED` | `HIGH` | [`milestones/M2.md`](milestones/M2.md) |
 | M3 | `df584f0` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M3.md`](milestones/M3.md) |
 | M4 | `a958c397` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M4.md`](milestones/M4.md) |
+| M5 | `6cbade0` *(shared with M5.5A)* | `PARTIAL` | `NOT_RETAINED` | `HIGH` | [`milestones/M5.md`](milestones/M5.md) |
 
 ## Boundary Note
 
@@ -27,6 +28,6 @@ separately retained Git commit.
 ## Next Reconstruction Target
 
 ```text
-M5 begins at 6cbade0ea53f1652d44bb92f92831a0c8daf62c5 and has not yet
-undergone its own forensic reconstruction.
+M5 begins at 6cbade0ea53f1652d44bb92f92831a0c8daf62c5. It is reconstructed
+as a shared M5/M5.5A commit with M5-specific import-blocking deviations.
 ```

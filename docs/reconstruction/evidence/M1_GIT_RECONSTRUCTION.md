@@ -280,3 +280,6 @@ provenance, not the retained executable M1 implementation.
 
 The original forensic investigation was read-only. It observed a pre-existing
 dirty worktree with an empty staged diff and made no repository changes.
+The resulting M0-M4 reconstruction records were later published together in
+`8fda5aa580993b5256bfbf1267216ce0f066d0cd`; this does not alter M1's
+historical boundary or execution-evidence classification.

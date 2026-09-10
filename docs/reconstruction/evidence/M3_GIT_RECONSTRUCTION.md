@@ -66,10 +66,13 @@ plan, and README section without modifying M3 implementation or configuration.
 - `src/mechcad_harness/dependency/graph.py`
 - `src/mechcad_harness/dependency/storage.py`
 - `src/mechcad_harness/dependency/__init__.py`
-- `src/mechcad_harness/changes/engine.py`
-- `src/mechcad_harness/changes/__init__.py`
 
-All M3-owned files first appear in `df584f0`.
+`dependency/models.py`, `errors.py`, `graph.py`, and `storage.py` first appear
+in `df584f0`. `config/dependencies.yaml` and `dependency/__init__.py` were
+introduced by M0 (`7185351`) and modified for M3. `changes/engine.py` and
+`changes/__init__.py` were introduced at the shared M1/M2 boundary `37f3ff3`
+and modified by M3 to expose applied-change data; neither group is
+M3-introduced implementation.
 
 ### Committed Tests
 
@@ -437,13 +440,20 @@ Freshness evaluation verifies:
 5. Every later required invalidation record exists and is readable.
 6. Later invalidation impact is evaluated.
 
+The retained implementation does not additionally compare embedded snapshot
+or invalidation `project_id`/`revision` fields with the file path requested by
+the caller. Consequently, the following "exact" and "complete" statements
+describe readable path coverage and state-hash matching, not full record
+identity binding.
+
 ## 18. Freshness State Machine
 
 ### CURRENT
 
-`CURRENT` requires valid exact-revision provenance, a known dependency node,
-complete later invalidation coverage, and no later invalidation affecting the
-node.
+`CURRENT` requires readable path-level revision provenance with matching state
+hash, a known dependency node, complete later invalidation path coverage, and
+no later invalidation affecting the node. It is not a proof of full embedded
+record identity binding.
 
 ### STALE
 
@@ -487,7 +497,7 @@ N+1 ... M
 
 A missing or corrupt record immediately yields `UNKNOWN`. The test
 `test_freshness_requires_complete_history_and_valid_provenance` covers missing
-history.
+history. Embedded invalidation identity is not independently checked.
 
 ## 20. Same-Revision Invalidation Exclusion
 
@@ -630,7 +640,7 @@ AppliedChangeResult
 | YAML parser | YAML configuration | PyYAML named in plan | Restricted local YAML/JSON parser | Indirect | IMPLEMENTED_DIFFERENTLY |
 | Immutable invalidations | Required | Required | Exclusive external JSON files | Yes | IMPLEMENTED_AS_DESIGNED |
 | Immutable Evidence | Required | Required | Exclusive external JSON files | Yes | IMPLEMENTED_AS_DESIGNED |
-| Exact provenance | Required | Required | Revision and state hash checked | Yes | IMPLEMENTED_AS_DESIGNED |
+| Exact provenance | Required | Required | Revision path and state hash checked; embedded record identity unchecked | Partial | IMPLEMENTED_WITH_DEVIATIONS |
 | `CURRENT` / `STALE` / `UNKNOWN` | Required | Required | Present | Yes | IMPLEMENTED_AS_DESIGNED |
 | Complete later-history coverage | Required | Required | Requires every `N+1 ... M` record | Yes | IMPLEMENTED_AS_DESIGNED |
 | Same-revision exclusion | Required | Required | Present | Yes | IMPLEMENTED_AS_DESIGNED |
@@ -702,19 +712,18 @@ HISTORICAL_EXECUTION_EVIDENCE: NOT_RETAINED
 CURRENT_HISTORICAL_STATUS: PRESERVED_AND_EXTENDED
 ```
 
-## 32. Repository Safety Findings
+## 32. Reconstruction Publication Provenance
 
-The worktree was already dirty before this documentation task. Existing
-modified and untracked files were not cleaned or altered. This task changes
-only:
-
-- `docs/reconstruction/MILESTONE_LEDGER.md`
-- `docs/reconstruction/milestones/M3.md`
-- `docs/reconstruction/evidence/M3_GIT_RECONSTRUCTION.md`
+Git proves that the M0-M4 reconstruction records were published in:
 
 ```text
-INVESTIGATION_MADE_CHANGES: YES
-CHANGES_LIMITED_TO_ALLOWED_DOCUMENTATION: YES
-COMMIT_CREATED: NO
-STAGED_CHANGES: NO
+RECONSTRUCTION_PUBLICATION_COMMIT: 8fda5aa580993b5256bfbf1267216ce0f066d0cd
 ```
+
+That checkpoint added the ledger and all M0-M4 canonical/evidence records.
+The historical milestone conclusions remain based on their original boundary
+commits, not on the reconstruction-publication commit.
+
+The earlier record's self-description of a worktree observation is not
+independently verifiable as a separate forensic phase. It is therefore not
+used as evidence for the publication process.

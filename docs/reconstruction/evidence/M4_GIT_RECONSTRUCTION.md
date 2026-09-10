@@ -521,3 +521,8 @@ The forensic investigation began with an already dirty worktree containing
 unrelated modified and untracked artifacts. It made no changes, staged no
 files, and created no commit. This documentation-persistence pass is limited to
 the M4 reconstruction ledger and records.
+
+The M0-M4 reconstruction records were subsequently published in
+`8fda5aa580993b5256bfbf1267216ce0f066d0cd`. That reconstruction checkpoint
+does not change the M4 historical boundary or supply historical execution
+evidence.
