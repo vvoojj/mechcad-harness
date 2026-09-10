@@ -62,6 +62,12 @@ M7B-2C live test uncollectable; the missing field and ownership rule cause the
 unit/application failures. `8079c57` adds all three repairs while carrying M7C-1
 implementation forward unchanged.
 
+The successor repair supplies `DesignState.yagi_collision_layouts`, ownership
+for `/yagi_collision_layouts/*`, and
+`collision_resolved_yagi_carrier_assembly(...)`. It makes the predecessor's
+collision-layout integration resolvable, but it is not evidence that the
+candidate boundary itself was runnable or accepted.
+
 ## Review Conclusion
 
 Skeptical review confirms the bundled labels, exact 14-file delta, focused test

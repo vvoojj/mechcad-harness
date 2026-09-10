@@ -25,6 +25,11 @@ statement of the current production capability baseline.
 | M7B-2A | `30b99eb` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M7B-2A.md`](milestones/M7B-2A.md) |
 | M7B-2B/R2-R4 | `3f7bbc7` | `PRELIMINARY_IMPLEMENTATION` | `NOT_RETAINED` | `HIGH` | [`milestones/M7B-2B-R2-R4.md`](milestones/M7B-2B-R2-R4.md) |
 | M7B-2C/M7C-1 | `9ab9e48` | `PARTIAL_UNRUNNABLE` | `NOT_RETAINED` | `HIGH` | [`milestones/M7B-2C-M7C-1.md`](milestones/M7B-2C-M7C-1.md) |
+| M7D-1 | `8079c57` *(shared bundle)* | `IMPLEMENTED_BUT_UNUSED` | `NOT_RETAINED` | `HIGH` | [`milestones/M7D-1.md`](milestones/M7D-1.md) |
+| M7D-2 | `8079c57` *(shared bundle)* | `IMPLEMENTED_BUT_UNUSED` | `NOT_RETAINED` | `HIGH` | [`milestones/M7D-2.md`](milestones/M7D-2.md) |
+| M7E-2 | `8079c57` *(shared bundle)* | `PRELIMINARY_DOCUMENTARY` | `ARTIFACT_INSPECTION_ONLY` | `HIGH` | [`milestones/M7E-2.md`](milestones/M7E-2.md) |
+| M8B-1 | `8079c57` *(shared with M8B-2)* | `IMPLEMENTED_WITH_DEVIATIONS` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M8B-1.md`](milestones/M8B-1.md) |
+| M8B-2 | `8079c57` *(shared with M8B-1)* | `IMPLEMENTED_WITH_DEVIATIONS` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M8B-2.md`](milestones/M8B-2.md) |
 
 ## Boundary Note
 
