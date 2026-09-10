@@ -11,6 +11,7 @@ statement of the current production capability baseline.
 | M3 | `df584f0` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M3.md`](milestones/M3.md) |
 | M4 | `a958c397` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M4.md`](milestones/M4.md) |
 | M5 | `6cbade0` *(shared with M5.5A)* | `PARTIAL` | `NOT_RETAINED` | `HIGH` | [`milestones/M5.md`](milestones/M5.md) |
+| M5.5A | `6cbade0` *(shared with M5)* | `NOT_IMPLEMENTED` | `NOT_RETAINED` | `HIGH` | [`milestones/M5.5A.md`](milestones/M5.5A.md) |
 
 ## Boundary Note
 
