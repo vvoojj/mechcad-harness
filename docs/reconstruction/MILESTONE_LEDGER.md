@@ -18,6 +18,7 @@ statement of the current production capability baseline.
 | M6A-2B | `60ccc2d` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M6A-2B.md`](milestones/M6A-2B.md) |
 | M6B | `928be44` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M6B.md`](milestones/M6B.md) |
 | M6B-3 | `53fa6c4` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M6B-3.md`](milestones/M6B-3.md) |
+| M6B-4A | `3c7c708` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M6B-4A.md`](milestones/M6B-4A.md) |
 
 ## Boundary Note
 
