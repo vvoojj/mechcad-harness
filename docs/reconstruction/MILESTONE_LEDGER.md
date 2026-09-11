@@ -33,6 +33,10 @@ statement of the current production capability baseline.
 | M8C | `6c6f46c` | `ARCHITECTURALLY_CLOSED_RUNTIME_GATED` | `RETAINED_AUDIT_SUMMARY` | `HIGH` | [`milestones/M8C.md`](milestones/M8C.md) |
 | M9 | `a67cee3` | `M9_FULLY_CLOSED_LIVE_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M9.md`](milestones/M9.md) |
 | M10 | `89b1d75` | `M10_FULLY_CLOSED_LIVE_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M10.md`](milestones/M10.md) |
+| M11-1 | `682300b` *(design content)* | `DESIGN_ONLY` | `NOT_APPLICABLE` | `HIGH` | [`milestones/M11-1.md`](milestones/M11-1.md) |
+| M11-2 | `682300b` *(shared bundle)* | `M11_2_STRUCTURAL_AUTHORITY_MODEL_VERIFIED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M11-2.md`](milestones/M11-2.md) |
+| M11-3 | `682300b` *(shared bundle)* | `M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M11-3.md`](milestones/M11-3.md) |
+| M11-4 | `682300b` *(shared bundle)* | `M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M11-4.md`](milestones/M11-4.md) |
 
 ## Boundary Note
 
