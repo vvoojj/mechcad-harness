@@ -43,6 +43,7 @@ statement of the current production capability baseline.
 | M12-1 | `28ac193` *(shared bundle)* | `M12_1_GENERIC_DESIGN_CANDIDATE_PHYSICAL_MECHANISM_ARCHITECTURE_READY` | `NOT_APPLICABLE` | `HIGH` | [`milestones/M12-1.md`](milestones/M12-1.md) |
 | M12-2 | `28ac193` *(shared bundle)* | `M12_2_TYPED_CANDIDATE_COMPONENT_AUTHORITY_FOUNDATION_VERIFIED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M12-2.md`](milestones/M12-2.md) |
 | M12-3 | `28ac193` *(shared bundle)* | `M12_3_BOUNDED_PHYSICAL_REVOLUTE_DRIVE_REALIZATION_SIZING_VERIFIED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M12-3.md`](milestones/M12-3.md) |
+| M12-4 | `bae65cc` | `M12_4_CANDIDATE_CAD_M10_EVALUATION_COMPARISON_SELECTION_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M12-4.md`](milestones/M12-4.md) |
 
 ## Boundary Note
 
@@ -60,7 +61,6 @@ separately retained Git commit.
 ## Next Reconstruction Target
 
 ```text
-M12-4 begins at bae65cc. It is the next evidence-supported candidate-CAD,
-M10-evaluation, comparison, and selection boundary after the reconstructed
-M12-1/M12-3 bundle.
+M12-5 begins at 161986b9d4a4d6b19e8afa9e2ee8e58f8f06eb2b. It is the next
+unreconstructed promotion and canonical-rebinding boundary after M12-4.
 ```
