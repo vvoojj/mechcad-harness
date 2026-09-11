@@ -23,9 +23,9 @@ Companion artifact: [`MECHCAD_CAPABILITY_OWNERSHIP_MAP.md`](MECHCAD_CAPABILITY_O
 | --- | --- |
 | TOTAL_CAPABILITIES_REVIEWED | 60 |
 | DUPLICATION_CANDIDATES | 24 |
-| CONFIRMED_MATERIAL_DUPLICATIONS (P0–P2) | 9 (2×P1, 7×P2) |
-| AUTHORITY_CONFLICTS | 3 (all latent / bounded, none P0) |
-| LEGACY_RESIDUES | 7 (P3) |
+| CONFIRMED_MATERIAL_DUPLICATIONS (P0–P2) | 9 (1×P1, 8×P2) |
+| AUTHORITY_CONFLICTS | 2 (latent/bounded, none P0) |
+| LEGACY_RESIDUES (P3 findings) | 10 |
 | LEGITIMATE_LAYERING_CASES | 13 |
 | RECONSTRUCTION_DISCREPANCY_CANDIDATES | 0 |
 
@@ -48,7 +48,7 @@ The genuine duplication that accumulated is concentrated in three patterns:
 2. **Copy-forward verification between milestone stages** — M12-5 copied the
    M12-4 M10 result contracts into the canonical verifier and the copies have
    already diverged (F1, F7); M11-5 copied and re-derived M11-2 hashes and
-   artifact checks (F4, F12).
+   artifact checks (F4, F21).
 3. **Parallel "currentness/freshness" and identity constants** introduced by
    later milestones instead of composing the earlier M3/M7A authorities
    (F3, F5, F6, F11).
@@ -122,9 +122,9 @@ Confirmed invariants (negative findings, important):
 
 ## 4. Confirmed Material Findings
 
-### F1 — Candidate and canonical M10 continuous-proof result contracts duplicated and already diverged
+### F1 — Candidate vs canonical M10 result validators: intentionally different trust contracts, with a duplicated and already-drifted shared kernel
 
-- **SEVERITY:** P1
+- **SEVERITY:** P2 (downgraded from P1 — see resolution below)
 - **CAPABILITY:** multi-joint / single-axis M10 evaluation result validation
 - **ORIGINAL_MILESTONE:** M12-4 (`bae65cc`) — `candidates/m10_evaluation.py`
 - **SECONDARY_MILESTONE:** M12-5 (`161986b`) — `candidates/canonical_m10.py`
@@ -136,37 +136,64 @@ Confirmed invariants (negative findings, important):
 - **CURRENT_WIRING:** both WIRED. Candidate:
   `application.py:505`/`2423`. Canonical: `application.py:636` →
   `candidates/promotion.py:3337`.
-- **DUPLICATION_TYPE:** SEMANTIC_DUPLICATION (validation contract copied across
-  trust stages)
-- **WHY_THIS_IS_DUPLICATION:** the same M10 result contract is enforced by two
-  independently-maintained validators. Verified divergence:
-  - canonical requires `request.source_assembly_id == assembly.assembly_id`
-    (`canonical_m10.py:1140`); the candidate validator compares only the
-    assembly *hash* (`m10_evaluation.py:1095`).
-  - the candidate validator checks collision-witness classification
-    (`m10_evaluation.py:1139-1143`); the canonical validator does not.
-  - M10 collision-witness/v1 disposition models and pair-classification model
-    families are duplicated (`m10_evaluation.py:98-763` vs
-    `canonical_m10.py:103-576`).
-- **HISTORICAL_CAUSE:** M12-5 needed a *fresh post-promotion* canonical
-  verification. The M12-5 plan explicitly instructed not to extract candidate
-  helpers unless a focused test required it
-  (`docs/superpowers/plans/2026-08-29-m12-5-promotion-canonical-rebind-m11-handoff.md:305`),
-  so the candidate validators were copy-forwarded. The independent-verifier
-  role is legitimate, but the code was not kept contract-synchronized.
-- **BEHAVIORAL_DIFFERENCE:** the two can return different verdicts for the same
-  semantic result (canonical stricter on assembly identity; candidate stricter
-  on witness classification). Because they run at different stages this is
-  currently fail-closed, not inconsistent-canonical, which is why it is P1 not
-  P0.
-- **AUTHORITY_RISK:** a future change to one validator silently changes only one
-  stage's trust contract. Reviewers can reasonably disagree which is
-  authoritative.
-- **RECOMMENDED_DIRECTION:** CANONICALIZE_ON_EXISTING_AUTHORITY — introduce one
-  shared M10 result-contract validator parameterized by stage, or explicitly
-  document the canonical validator as the sole authority and have the candidate
-  path consume it.
-- **CONFIDENCE:** HIGH (code verified directly).
+- **DUPLICATION_TYPE:** SEMANTIC_DUPLICATION (shared M10 result-validation
+  kernel copied across two intentionally distinct trust stages)
+- **RESOLVED_INTENT:** **DIFFERENT_TRUST_CONTRACTS.** The M12-4 and M12-5
+  specs/plans explicitly intend two different trust boundaries: a
+  candidate-bound M12-4 stage (`M12-4 spec:243-249`, stage vocabulary
+  `SUCCESS/UNRESOLVED/NOT_REACHED`) versus an independent candidate-free M12-5
+  canonical execution (`M12-5 spec:468-473` "derives a new … disposition …
+  and M10 request from the canonical obligation"; `M12-5 spec:472` "Candidate
+  and canonical M10 request hashes must differ even when the physical
+  obligation is equivalent"; `M12-5 plan:318` "no candidate-bound M10 type or
+  frozen scope is an execution input"). The verdict is **not** a strict
+  superset: the candidate validator is *stricter* on witness classification and
+  sweep-version; the canonical validator is *stricter* on assembly identity and
+  model-level self-verification.
+- **VALIDATOR_DIFFERENCES (exhaustive):**
+
+  | # | Difference | Candidate | Canonical | Direction |
+  | --- | --- | --- | --- | --- |
+  | D1 | continuous `source_assembly_id` check | hash only, and skipped during evaluation revalidation (`evaluation.py:703` calls the validator without `assembly`) | checks id **and** hash, `assembly` mandatory (`canonical_m10.py:1140`) | canonical stricter; candidate coverage weak |
+  | D2 | collision-witness classification restriction | requires `INTERFERENCE`/`TOUCHING` (`m10_evaluation.py:1139-1143`) | no classification restriction (`canonical_m10.py:1170-1180`) | candidate stricter |
+  | D3 | home sweep-service version pin | pins `RIGID_BODY_COLLISION_SWEEP_VERSION` (`m10_evaluation.py:1151-1156`) | request/result mutual equality only | candidate stricter |
+  | D4 | recompute underlying `result_hash` at model level | service-level only | model-level (`canonical_m10.py:314`, `:362`) | canonical stricter |
+  | D5 | nested per-sample pair partition at model level | service-level | model-level (`canonical_m10.py:343-353`) | canonical stricter |
+  | D6 | stage status vocabulary | `SUCCESS/UNRESOLVED/NOT_REACHED` (`m10_evaluation.py:664`) | `VERIFIED_CLEAR/COLLISION_WITNESS/NOT_PROVEN` aggregate (`canonical_m10.py:100`, `:565-570`) | intentional vocabulary split (M12-4 spec:243-249; M12-5 spec:485-497) |
+  | D7 | outcome embedded-identity completeness | binds hashes only | embeds scope/inventory/request and cross-checks (`canonical_m10.py:469-576`) | different trust boundaries (M12-5 plan:316-319) |
+  | D8 | induced pair-assembly suffix | `-m10-pair-` | `-canonical-m10-pair-` | intentional (M12-5 spec:472 requires differing hashes) |
+  | D9 | scope carries `proof_service_version` | yes (`m10_evaluation.py:173`) | no | intentional (candidate-bound scope not used canonically) |
+  | D10 | `_result_hash`/`_require_hash`/`_canonical_pair` helpers | equivalent bodies | equivalent bodies | copy, no semantic difference |
+
+- **WHY_THIS_IS_DUPLICATION:** the *existence* of two validators is legitimate,
+  but the shared M10 result-validation kernel (`_validate_*_result`,
+  `_induced_pair_assembly`, the v1 disposition/pair-classification models at
+  `m10_evaluation.py:98-763` vs `canonical_m10.py:103-576`) was copy-forwarded
+  rather than parameterized by stage. D1 and D2 are genuine, **untested**
+  divergences; no M12-4/M12-5 spec or plan states an intended superset or a
+  shared kernel.
+- **HISTORICAL_CAUSE:** M12-5 required a fresh post-promotion, candidate-free
+  canonical execution. The M12-5 plan preferred independent derivation
+  (`2026-08-29-...plan.md:318`, `:442`) and the CAD tasks advised against
+  extracting candidate helpers unless a focused test required it
+  (`...plan.md:305`), so the candidate validators were copied. The independent
+  trust stage was intended; the un-synchronized duplication was not addressed.
+- **BEHAVIORAL_DIFFERENCE:** the two can return different verdicts on the same
+  *tampered/stored* result (canonical catches a forged `source_assembly_id`;
+  candidate catches an invalid witness classification). In live execution both
+  sides derive `assembly_id`+hash together, so the divergence is unreachable
+  without tampering.
+- **AUTHORITY_RISK:** bounded. M12-5 does **not** reuse candidate M10 results
+  (it executes fresh canonical M10), so no accepted-then-rejected canonical
+  inconsistency arises. Residual risk is candidate-side validation weakness on
+  tampered persisted artifacts plus future one-sided drift. This is why the
+  finding is P2, not P1/P0.
+- **RECOMMENDED_DIRECTION:** INTRODUCE_SHARED_CORE for the M10 result kernel,
+  parameterized by trust stage (keep D6-D9 structural differences); add explicit
+  tests for D1/D2 so the intended per-stage strictness is encoded rather than
+  accidental.
+- **TIMELINE / TEST_DIFFERENCE:** see §14 (F1 row) and §15 (F1 row).
+- **CONFIDENCE:** HIGH (both files, specs, plans, and tests read directly).
 
 ### F2 — Canonical JSON / content-identity serialization re-implemented ~20× with divergent variants
 
@@ -209,10 +236,36 @@ Confirmed invariants (negative findings, important):
 - **AUTHORITY_RISK:** cross-module hash comparisons rely on accidental
   byte-equality. A future payload containing non-ASCII text, or a change to one
   variant, breaks identity checks in a way that is hard to localize.
-- **RECOMMENDED_DIRECTION:** INTRODUCE_SHARED_CORE — route all content-identity
-  hashing through `state.hashing.canonical_json` (which already accepts plain
-  dicts) and delete the local variants.
-- **CONFIDENCE:** HIGH (variants verified directly).
+- **RESOLVED_ARCHITECTURAL_BOUNDARY:** `state/hashing.py:canonical_json` is
+  **not** the correct common dependency target. `state/hashing.py:5` imports
+  `models.DesignState`, so having leaf `models/**` (or `backends/**`,
+  `tools/**`, `yagi_*.py`, which today have **zero** state-layer imports) import
+  it inverts the `models → state → models` layering. The inversion is currently
+  masked by deferred imports (`models/generated_part.py:27-28` comment,
+  `models/geometry_identity.py:54,72`, `models/supplied_component_interface.py`,
+  `models/generated_placement.py`) and lazy `models/__init__.__getattr__`.
+  Corrected direction: **EXTRACT_NEUTRAL_CANONICAL_SERIALIZATION_CORE** — a leaf
+  module exporting the exact byte contract
+  (`ensure_ascii=False, sort_keys=True, separators=(",", ":")`) that both
+  `state/hashing.py` and the ~20 content-identity sites import, preserving all
+  existing hash bytes. Artifact byte hashing (`artifacts/storage.py`) remains a
+  separate authority and must **not** be routed through it.
+- **RESOLVED_CROSS_COMPARISON:** **no** `default=str` serializer output
+  (`changes/provenance.py:11` `_canonical`→`operations_hash`/`application_id`;
+  `agents/constraint_resolution.py:222` `_canonical_json`→`command_id`/
+  `resolution_id`) is directly cross-compared against a strict
+  `canonical_json`-produced value. `operations_hash` is only compared to
+  `operations_hash`; `application_id`/`command_id`/`resolution_id` are
+  UUID-derived identifiers, not digests. Therefore F2 does **not** escalate to
+  P0. The residual F2 risk is identity-byte instability among the duplicate
+  serializers (chiefly the `ensure_ascii` variants in `structural/**` and
+  `application.py:218`), which is why it remains P1.
+- **RECOMMENDED_DIRECTION:** EXTRACT_NEUTRAL_CANONICAL_SERIALIZATION_CORE;
+  migrate the content-identity serializers to it and delete the local variants
+  **without** changing emitted bytes. Do not merge artifact byte hashing or the
+  structural volatile-key filtering policy into the core.
+- **TIMELINE / TEST_DIFFERENCE:** see §14 (F2 row) and §15 (F2 row).
+- **CONFIDENCE:** HIGH (variants and dependency direction verified directly).
 
 ### F3 — Three currentness / freshness implementations; two enums byte-identical
 
@@ -347,14 +400,35 @@ Confirmed invariants (negative findings, important):
 - **HISTORICAL_CAUSE:** M12-5 copied the M12-4 resolution logic (documented
   decision not to extract helpers); M13-2 then extended both copies with the
   `generated_part` branch.
-- **BEHAVIORAL_DIFFERENCE:** verified different alias tuples; divergence only
-  for ambiguous inputs (multiple aliases with conflicting values). Roundtrip
-  tests mitigate today.
+- **BEHAVIORAL_DIFFERENCE:** verified different alias tuples **and** different
+  source priority (candidate resolves spec `properties` first then design
+  variables; canonical resolves `accepted_design_choices` first then
+  properties). Confirmed divergence for inputs carrying two aliases with
+  conflicting values.
+- **RESOLVED_REACHABILITY:** **REACHABLE — F7 remains P2.** No validator on the
+  supported path collapses aliases or requires them to agree. Candidate property
+  keys and design-variable names are only checked for exact-duplicate strings
+  (`candidates/models.py:334-336`, `:1097-1099`); promotion copies all
+  properties verbatim and remaps design variables into accepted choices without
+  alias collapse (`candidates/promotion.py:1189-1260`); and
+  `verify_promoted_mechanism` has **no** candidate-vs-canonical dimension
+  agreement gate (it compares M10 scope, not geometry,
+  `candidates/promotion.py:3272-3408`). Smallest example: a `mount`
+  specification carrying both `geometry.length_mm = 100.0` and
+  `length_mm = 30.0` (all `AVAILABLE`, `mm`, finite, positive) yields a
+  100 mm candidate plate and a 30 mm canonical plate. The prior audit's claim
+  that "roundtrip tests mitigate today" is **not supported**: the M12-6 fixtures
+  use a single alias spelling (`{instance}.length_mm`), so alias precedence is
+  never exercised and no test compares candidate vs canonical dimensions.
 - **AUTHORITY_RISK:** pre-promotion candidate CAD can differ from post-promotion
   canonical CAD for an ambiguous but otherwise accepted specification.
 - **RECOMMENDED_DIRECTION:** INTRODUCE_SHARED_CORE for input-neutral dimension
-  resolution; keep candidate/canonical stages separate.
-- **CONFIDENCE:** HIGH (alias tuples verified directly).
+  resolution; keep candidate/canonical stages separate; add an explicit
+  alias-collapse or alias-agreement validator at the candidate-specification
+  boundary.
+- **TIMELINE / TEST_DIFFERENCE:** see §14 (F7 row) and §15 (F7 row).
+- **CONFIDENCE:** HIGH (alias tuples, source priority, promotion copy, and
+  verifier gate verified directly).
 
 ### F8 — Duplicated proof status enums and motion-bound formula (M10, same commit)
 
@@ -399,14 +473,45 @@ Confirmed invariants (negative findings, important):
   records, and graph invalidation couples unrelated producers.
 - **HISTORICAL_CAUSE:** M11-5 reused the existing `analysis.structural` node
   string for a different Evidence kind instead of namespacing it.
-- **BEHAVIORAL_DIFFERENCE:** verification already fails closed for the wrong
-  schema; the practical effect is coupling and confusing provenance.
-- **AUTHORITY_RISK:** invalidation of section-tool Evidence may mark structural
-  Evidence stale and vice versa.
-- **RECOMMENDED_DIRECTION:** DOCUMENT_AUTHORITY_BOUNDARY /
-  REMOVE_DEAD_LEGACY_PATH for the older tool node, or namespace the structural
-  node.
-- **CONFIDENCE:** MEDIUM-HIGH.
+- **RESOLVED_AUTHORITY_SEMANTICS:** **CONFIRMED_AUTHORITY_DUPLICATION (node /
+  namespace overload); F11 remains P2.** Both producers use the **same**
+  `EvidenceStore` namespace `projects/<project_id>/evidence/*.json`
+  (`dependency/storage.py:68-86`), the **same** `kind` literal
+  `"analysis.structural"` (`tools/sections.py:39-44`,
+  `structural/evidence.py:53-55`), and the **same kind-based retrieval and
+  invalidation**: `get_evidence_freshness` keys off `evidence.kind`
+  (`dependency/storage.py:88-107`) and `fresh_evidence_status` matches
+  `evidence.kind == node` (`:118-130`), while `config/dependencies.yaml:41-56`
+  invalidates `analysis.structural` on `/materials/*` and
+  `/structural_analysis_definitions/*` — so one change stales **both** the
+  M5.5C section-tool records and the M11-5 FEA records. The payload schemas are
+  incompatible (`SectionGeometryResult`/`SectionWarpingResult` vs
+  `StructuralEvidencePayload`), and verification is asymmetric:
+  `StructuralEvidenceVerifier._require_payload` rejects tool records
+  (`structural/evidence_service.py:1031-1037`) while no semantic verifier
+  exists for tool records. This fails the `LEGITIMATE_SHARED_DOMAIN` test
+  (which requires distinct `kind` and no shared retrieval/verification).
+  `LEGACY_NODE_COLLISION` is a defensible alternative label, but the
+  cross-invalidation coupling is proven current behavior.
+- **INTENT:** literal reuse was intentional **per authoring site** (M5.5C plan
+  `2026-08-18-mechcad-m5-5c3a-...md:157` chose `analysis.structural`; M11-5 plan
+  `2026-08-25-...md:70` reused it and `:45` says "do not redefine historical
+  validity semantics"), but **no M11-5 spec/plan acknowledges the pre-existing
+  M5.5C tool producer or the incompatible schema**. The cross-producer collision
+  was not evaluated.
+- **BEHAVIORAL_DIFFERENCE:** schema verification fails closed, but a tool record
+  can still satisfy an `analysis.structural` freshness/fulfillment query, and
+  invalidation couples unrelated producers.
+- **AUTHORITY_RISK:** invalidation of section-tool Evidence marks structural
+  Evidence stale and vice versa; node-based readiness queries can be satisfied
+  by the wrong record family.
+- **RECOMMENDED_DIRECTION:** DOCUMENT_AUTHORITY_BOUNDARY and separate the
+  node identity (namespace the M11-5 typed node, e.g.
+  `analysis.structural.evidence`, or give the M5.5C tools a distinct
+  `analysis.section` node); do not remove either producer.
+- **TIMELINE / TEST_DIFFERENCE:** see §14 (F11 row) and §15 (F11 row).
+- **CONFIDENCE:** HIGH (store, kind, retrieval, invalidation, and verifier
+  paths verified directly).
 
 ---
 
@@ -419,13 +524,16 @@ They are bounded, currently-equivalent, or dead; none reach P0–P2.
 | --- | --- | --- | --- | --- | --- |
 | F9 | LEGACY_RESIDUE / INTENTIONAL_SUPERSESSION | `kinematic_sweep.py` v1 + `MultiJointCollisionSweep*` v1 bodies | M7C-1/M10 | WIRED but superseded by v2 for candidates; ~130 duplicated orchestration lines | P3 |
 | F10 | LEGACY_RESIDUE | M6B-4C `constraint_resolution_workflow.py` / `constraint_resolution_application.py`; duplicate constraint-anchor map (`constraint_requests.py` vs `constraint_resolution_application.py:_anchor_for`) | M6B-4C `4468a62` / M6B-3 `53fa6c4` | `IMPLEMENTED_BUT_UNUSED` (confirmed; no `ProductionApplication` caller) | P3 |
-| F12 | POSSIBLE_DUPLICATION / composed-but-unused | duplicate verification helpers: `CanonicalMultiJointM10VerificationService` (`application.py:637`, no `src/` caller); backend provenance direct construction vs `provenance_from_identity`; structural `_mesh_input_hash` / `_is_trusted_freecad_provenance` / artifact-read duplicates; duplicated `application.py` analytical-observation block (`:1693` vs `:1875`); M11 handoff partial re-validation | M11-5 / M12-5 / M13-3 | mixed WIRED + TESTS | P3 |
+| F12 | LEGACY_RESIDUE / composed-but-unused | `CanonicalMultiJointM10VerificationService` composed at `application.py:637` but no `src/` caller | M13-3 `ca294e0` | WIRED attribute, unreachable from production composition; tests only | P3 |
 | F13 | DEAD_DUPLICATE_ARTIFACT | stray untracked `src/mechcad-harness/src/mechcad_harness/structural/solver.py` | post-M13-4 untracked artifact | divergent older copy of `structural/solver.py`; not importable (hyphenated path) | P3 |
 | F14 | TEST_ONLY / LEGACY | test-only CAD compilers `azimuth_mount_plate.py`, `yagi_carrier_packaging.py`; raising stub `yagi_carrier.py:242`; `cad_analysis.py` clearance analyzer | M7B/M7C/M8B | TESTS / dead | P3 |
 | F15 | LEGITIMATE_ADAPTER_VARIANTS | FreeCAD shape-loading / STEP trust checks / exact-clearance primitive across `backends/freecad.py`, `backends/freecad_assembly.py`, `transient_freecad_measurement.py`, `structural/geometry.py`, `imported_component.py` | M7A/M8C/M9/M11 | distinct trust boundaries; only generic boilerplate repeats | INFO |
 | F16 | POSSIBLE_DUPLICATION | three path-segment/wildcard matchers: `changes/ownership.py:_segments`, `dependency/graph.py:path_matches`, `changes/engine.py:_segments` | M2/M3 | WIRED; different validation strictness, no proven divergence | P3 |
 | F17 | LEGACY_RESIDUE | legacy `models/task.py` `TaskStatus`/`AgentTask`/`AgentResult` | M0 `7185351` | DEAD, still exported from `models/__init__.py` | P3 |
 | F18 | INTENTIONAL_SUPERSESSION / LEGITIMATE_LAYERING | CAD/assembly manifest hashes (`cad_manifest.py`, `cad_assembly_manifest.py`) and legacy vs M13-4E promotion manifest families | M7A/M7B/M12-5/M13-4E | distinct scopes; M13-4E is spec-mandated additive | INFO |
+| F19 | POSSIBLE_DUPLICATION | duplicate physical pair-classification enums: `models/physical_pair_policy.py:PhysicalPairClassification` (M13-3) vs `candidates/canonical_m10.py:CanonicalM10PairClassification` (M12-5); values identical, but `is`-identity comparisons would silently fail if the enums are ever cross-passed | M12-5 (`161986b`) / M13-3 (`ca294e0`) | WIRED, but no live path cross-passes the two enums | P3 |
+| F20 | SEMANTIC_DUPLICATION (low risk) | quaternion / rigid-transform primitives: `kinematic_sweep.py` private quaternion helpers + `multi_joint_kinematics.transform_*` vs `models/quaternion.py` + `models/generated_placement.compose_poses` | M7C-1 (`9ab9e48`) / M10 (`89b1d75`) vs M13-1 (`f6d8124`) / M13-2 (`664ec3b`) | WIRED; equivalent today, but the normalization responsibility differs (validator vs helper) | P3 |
+| F21 | POSSIBLE_DUPLICATION | duplicated verification/identity helper bodies: backend provenance direct construction vs `provenance_from_identity`; structural `_mesh_input_hash` / `_is_trusted_freecad_provenance` / artifact-read duplicates; duplicated `application.py` analytical-observation block (`:1693` vs `:1875`); M11 handoff partial re-validation | M11-5 / M12-5 / M13-3 | mixed WIRED + TESTS | P3 |
 
 Note on F10: the reconstruction already records the M6B-4C module as
 `IMPLEMENTED_BUT_UNUSED` with a Python 3.11/3.12 annotation-import defect
@@ -467,7 +575,7 @@ These were investigated and **rejected as harmful duplication**.
 
 1. **Copy-forward between staged verifiers (M12→M12/M13; M11-2→M11-5).** When a
    later milestone needed a fresh "post" verifier, the "pre" implementation was
-   copied rather than shared, and the copies have drifted (F1, F4, F7, F12).
+   copied rather than shared, and the copies have drifted (F1, F4, F7, F21).
    This is the dominant duplication mechanism.
 2. **Local hash helpers instead of the M2 shared core (M2 onward).** Every major
    milestone added its own canonicalization snippet (F2). The M2 authority was
@@ -504,22 +612,35 @@ invariants hold.
 
 High-level direction only; no implementation is authorized by this audit.
 
-1. **CRM → `CANONICALIZE_ON_EXISTING_AUTHORITY`** for canonical serialization
-   (F2): route content-identity hashing through `state/hashing.canonical_json`.
-   Lowest risk, highest leverage; it de-risks F4/F5/F6/F11.
-2. **`INTRODUCE_SHARED_CORE`** for the M10 result-contract validators (F1) and
-   candidate/canonical dimension resolution (F7), without merging candidate and
-   canonical stages.
-3. **`CANONICALIZE_ON_EXISTING_AUTHORITY`** for identity constants and hash
-   helpers: FreeCAD identity (F5), `physical_kinematic_root_hash` (F6),
-   mesh-spec/input hashing (F4).
+1. **`EXTRACT_NEUTRAL_CANONICAL_SERIALIZATION_CORE`** for canonical
+   serialization (F2): a leaf module exporting the exact existing byte contract,
+   imported by `state/hashing.py` and the ~20 content-identity sites; preserve
+   emitted bytes; keep artifact byte hashing and the structural volatile-key
+   filter out of it. This is the lowest-risk, highest-leverage step **for the
+   serializer duplication only**. It does **not** by itself resolve F5
+   (FreeCAD identity constant), F6 (duplicate `physical_kinematic_root_hash`),
+   or F11 (`analysis.structural` node overload) — those are separate
+   authorities with different failure modes. It partially reduces F4's drift
+   surface insofar as the mesh-spec hashes are migrated to the shared
+   serializer, but the four-way mesh-spec **hash authority** still needs a
+   single owner.
+2. **  `INTRODUCE_SHARED_CORE`** for the M10 result-contract validators (F1,
+   parameterized by trust stage; keep D6-D9 structural differences), for
+   candidate/canonical dimension resolution (F7; add an alias-agreement gate),
+   and for the duplicated verification/identity helper bodies (F21), without
+   merging candidate and canonical stages.
+3. **`CANONICALIZE_ON_EXISTING_AUTHORITY`** for the remaining duplicated
+   identity and hash helpers, each independently: FreeCAD identity (F5),
+   `physical_kinematic_root_hash` (F6), mesh-spec/input hashing (F4).
 4. **`DOCUMENT_AUTHORITY_BOUNDARY`** for freshness vs currentness (F3) and the
-   `analysis.structural` node (F11); consider namespacing.
+   `analysis.structural` node (F11); separate the node identity rather than
+   removing either producer.
 5. **`REMOVE_DEAD_LEGACY_PATH`** (separate follow-up, not this audit): unused
    M6B-4C workflow / duplicate anchor map (F10) — after fixing the documented
    supported-Python import defect; test-only CAD compilers / dead `TaskStatus`
-   (F14, F17); determine fate of the composed-but-unused
-   `CanonicalMultiJointM10VerificationService` (F12).
+   (F14, F17); the duplicate pair-classification enum (F19) and transform
+   primitives (F20) can be consolidated with the shared core; determine the fate
+   of the composed-but-unused `CanonicalMultiJointM10VerificationService` (F12).
 6. **Housekeeping:** remove or relocate the untracked stray
    `src/mechcad-harness/**/solver.py` (F13) so future edits cannot target the
    wrong path.
@@ -539,61 +660,292 @@ they do not reinterpret history and required no reconstruction edits.
 
 ---
 
-## 11. Unresolved Questions
+## 11. Resolved Uncertainties and Remaining Questions
 
-1. **F7 reachability:** can an accepted candidate specification carry multiple
-   dimension aliases with conflicting values? If not, F7 is P3 rather than P2.
-   Requires reading the candidate-synthesis/acceptance validators and M12-6
-   roundtrip tests.
-2. **F11 intent:** was reusing `analysis.structural` for typed structural
-   Evidence intentional (single engineering domain) or accidental? Needs a
-   contemporary spec/plan that may be under `docs/superpowers/**`.
-3. **F1 canonical validator authority:** is `canonical_m10.py` intended to be
-   strictly stronger than `m10_evaluation.py`, or should they be identical? The
-   M12-5 plan notes a preference against extraction but not an intended
-   superset.
-4. **F12 capability boundary:** `CanonicalMultiJointM10VerificationService` is
-   composed but never called in `src/`; is fresh canonical multi-joint M10
-   verification part of the accepted M13-4E contract or intentionally omitted?
-5. **`default=str` serializer sites** (`changes/provenance.py`,
-   `agents/constraint_resolution.py`): do any persisted records hash through
-   these and also get compared against a `canonical_json`-produced value? If so,
-   F2 escalates to P0.
+All uncertainties that could change a P1/P2 classification are now resolved.
+
+**Resolved (this closure pass):**
+
+1. **F1 intent → DIFFERENT_TRUST_CONTRACTS; downgraded to P2.** Both files
+   implement two intentionally different trust stages; the duplication is the
+   copy-forwarded shared M10 result kernel, with D1/D2 untested drift. Safe
+   (fail-closed, candidate M10 results are not reused canonically).
+2. **F7 reachability → REACHABLE; remains P2.** No validator collapses aliases;
+   promotion preserves ambiguity; no candidate-vs-canonical dimension gate. The
+   smallest divergence example is recorded in the finding. The prior
+   "roundtrip tests mitigate" statement was removed as unsupported.
+3. **F11 intent → CONFIRMED_AUTHORITY_DUPLICATION (node/namespace overload);
+   remains P2.** Same store, same `kind`, shared kind-based retrieval and
+   invalidation, incompatible schemas, asymmetric verification. Literal reuse
+   was intentional per site, but the cross-producer collision was not
+   acknowledged and is proven current behavior.
+4. **F2 remediation boundary → `EXTRACT_NEUTRAL_CANONICAL_SERIALIZATION_CORE`.**
+   `state/hashing.canonical_json` is the wrong dependency target because it
+   imports `models.DesignState`; low-level `models/**`/`backends/**`/`tools/**`
+   importing it inverts layering. The `default=str` cross-comparison question is
+   resolved: **no** cross-comparison exists, so F2 does not escalate to P0.
+
+**Remaining, non-blocking (no P1/P2 impact):**
+
+- **F12:** whether fresh canonical multi-joint M10 verification is part of the
+  accepted M13-4E contract or intentionally omitted (P3; the composed service
+  has no `src/` caller). This does not affect any P1/P2 classification.
+- **F21:** whether the duplicated verification/identity helper bodies should be
+  consolidated (P3; behavior currently equivalent). No P1/P2 impact.
+- **F9/F18:** whether the M13-3P v1/v2 and M12-5/M13-4E additive families should
+  eventually be pruned (P3/INFO; documented as intentional).
 
 ---
 
 ## 12. Independent Review Record
 
-Every P1/P2 finding was re-verified against the cited source before inclusion.
+Every P1/P2 finding was re-verified against the cited source before inclusion
+and again during the acceptance-closure pass.
 
 | Finding | Original claim | Independent check | Verdict |
 | --- | --- | --- | --- |
-| F1 | candidate/canonical M10 validators diverge | read both `_validate_continuous_result` bodies; canonical adds `source_assembly_id` check, candidate does not | CONFIRMED |
-| F2 | canonical JSON variants diverge | read `state/hashing.py`, `models/physical_pair_policy.py`, `structural/models.py`, `structural/evidence_models.py`; confirmed `ensure_ascii` difference and one byte-identical copy | CONFIRMED |
+| F1 | candidate/canonical M10 validators diverge | read both files plus M12-4/M12-5 specs, plans, reconstruction, and tests; enumerated D1–D10 | **DOWNGRADED_P2** |
+| F2 | canonical JSON variants diverge | read serializers, dependency direction, and every consumer of the `default=str` hashes | CONFIRMED (P1) |
 | F3 | two currentness enums byte-identical | read `structural/evidence.py:58` and `candidates/services.py:19`; identical | CONFIRMED |
 | F4 | 4 mesh-spec + 2 mesh-input hashes | grep confirmed 6 definitions | CONFIRMED |
 | F5 | FreeCAD version literal duplicated | read `structural/runtime.py:21-23` and `backends/freecad.py:22`; both `mechcad-freecad@2.1` | CONFIRMED |
 | F6 | `physical_kinematic_root_hash` twice | read both definitions; same payload, different serializer | CONFIRMED |
-| F7 | alias precedence differs | read both `_DIMENSION_ALIASES` tuples; different order | CONFIRMED |
-| F8 | proof enums identical, same commit | read both enum bodies; byte-identical; git `-S` in subagent evidence | CONFIRMED |
-| F11 | `analysis.structural` dual-produced | grep confirmed tool registrations and structural `STRUCTURAL_ANALYSIS` | CONFIRMED |
+| F7 | alias precedence differs | read both alias maps **and** source priority; promotion preserves ambiguity; no candidate-vs-canonical dimension gate; constructed minimal example | CONFIRMED (P2) |
+| F8 | proof enums identical, same commit | read both enum bodies; byte-identical | CONFIRMED |
+| F11 | `analysis.structural` dual-produced | traced same store, same `kind`, kind-based retrieval, shared invalidation, asymmetric verifier | CONFIRMED (P2) |
+| F19 | duplicate pair-classification enums | read both `StrEnum` bodies; identical values; no live cross-pass | CONFIRMED (P3) |
+| F20 | duplicate transform/quaternion primitives | read both stacks; equivalent outputs, differing normalization responsibility | CONFIRMED (P3) |
 
-No finding was downgraded or rejected during review. Two subagent assertions were
-corrected/rejected:
-- "`physical_pair_policy._canonical_json` is divergent from shared" — **rejected**;
-  it is byte-identical (still counted under F2 as a duplicate copy).
-- "candidate-side M10 pair classification was aliased to the new authority" —
-  **downgraded** to POSSIBLE_DUPLICATION (F8) because no live path cross-passes
-  the two enums.
+**Skeptical-review dispositions (attempts to disprove each P1/P2):**
 
-False-positive candidates (M13-3P v1/v2, M13-2 CAD extension, FreeCAD
-shape-loading scripts, `state_hash` vs content hashes, M11 independent verifiers,
-M12-5/M13-4E manifest families) were each explicitly checked and **rejected** as
-harmful duplication (§6).
+- **F1 — DOWNGRADED_P2.** The intent question is resolved: the M12-4/M12-5
+  sources intentionally define two different trust stages, and canonical is not
+  a strict superset (candidate is stricter on D2/D3). The transferable defect is
+  the copy-forwarded shared kernel with untested D1/D2 drift, bounded and
+  fail-closed; not an authority conflict. It cannot remain P1.
+- **F2 — CONFIRMED P1.** The variant divergence is real and byte-level. The
+  attempt to disprove it failed; the attempt to escalate it to P0 via a
+  `default=str` cross-comparison **failed** (no cross-comparison exists), so P1
+  stands.
+- **F3, F4, F5, F6, F8, F11 — CONFIRMED.** No counter-evidence found; each is a
+  verified duplicate authority/enum/hash. F11 is confirmed as a genuine
+  node/namespace overload (not legitimate shared domain) because `kind`,
+  retrieval, and invalidation are shared.
+- **F7 — CONFIRMED P2.** The attempted disprove (that ambiguous aliases are
+  unreachable) **failed**: no validator collapses aliases, promotion preserves
+  them, and no geometry-agreement gate exists. The prior
+  "roundtrip tests mitigate" mitigation was rejected as unsupported.
+- **F19/F20 — CONFIRMED P3**, not elevated: no live path cross-passes the pair
+  enums and the transform primitives are equivalent today.
+
+One prior-review assertion was corrected during this pass: the pair
+classification duplication was previously mis-referenced as "F8"; it is now the
+distinct finding **F19**. No finding was rejected. False-positive candidates
+(M13-3P v1/v2, M13-2 CAD extension, FreeCAD shape-loading scripts, `state_hash`
+vs content hashes, M11 independent verifiers, M12-5/M13-4E manifest families)
+were each explicitly checked and **rejected** as harmful duplication (§6).
 
 ---
 
-## 13. Audit Metadata
+## 13. Acceptance Closure Summary
+
+| Closure item | Result |
+| --- | --- |
+| Finding IDs unique (F1–F21) | YES |
+| F1 intent | DIFFERENT_TRUST_CONTRACTS → DOWNGRADE_P2 |
+| F7 reachability | REACHABLE → P2 retained |
+| F11 authority | CONFIRMED_AUTHORITY_DUPLICATION (node overload) → P2 retained |
+| F2 architectural boundary | EXTRACT_NEUTRAL_CANONICAL_SERIALIZATION_CORE; no P0 escalation |
+| All P1/P2 independently challenged | YES (§12) |
+| Ownership map synchronized | YES (§16 summary) |
+| Unresolved questions affecting P1/P2 | NONE (§11) |
+
+---
+
+## 14. P1/P2 Timeline Register
+
+Compact timeline for every remaining P1/P2 finding. No distinct milestone is
+invented where both implementations share one commit; those rows state the
+shared boundary explicitly.
+
+**F1 — M10 result validators**
+- ORIGINAL: M12-4 `bae65cc` — candidate M10 result validators in
+  `candidates/m10_evaluation.py`.
+- SECOND IMPLEMENTATION: M12-5 `161986b` — copy-forwarded into
+  `candidates/canonical_m10.py` for candidate-free post-promotion execution.
+- PRODUCTION REACHABILITY: M12-5; candidate via `application.py:505`/`2423`,
+  canonical via `application.py:636` → `promotion.py:3337`.
+- CURRENT: both wired; D1/D2 drift untested.
+
+**F2 — canonical serialization**
+- ORIGINAL: M0/M2 `37f3ff3` — `state/hashing.py:canonical_json`/`state_hash`.
+- SECOND IMPLEMENTATIONS (incremental): M6B-4A/4C `3c7c708`/`4468a62`
+  (`default=str`), M7B/M7C `3f7bbc7`/`9ab9e48` (yagi trio), M10 `89b1d75`
+  (motion hashes), M11-2/11-5 `682300b`/`07950cd` (`ensure_ascii` variants),
+  M13-3 `ca294e0` (pair policy / verification).
+- PRODUCTION REACHABILITY: each copy wired within its own module from its
+  introduction commit.
+- CURRENT: ~20 copies wired; shared `canonical_json` still owns state hashing.
+
+**F3 — currentness / freshness**
+- ORIGINAL: M3 `df584f0` — `dependency/storage.py:get_evidence_freshness`.
+- SECOND IMPLEMENTATIONS: M11-5 `07950cd` `StructuralEvidenceCurrentness`;
+  M12 `28ac193` `CandidateCurrentness` (verbatim enum copy).
+- PRODUCTION REACHABILITY: M11-5 and M12 respectively, concurrent with M3
+  freshness.
+- CURRENT: all three wired.
+
+**F4 — mesh-spec / mesh-input hashing**
+- ORIGINAL: M11-2 `682300b` — `structural/service.py:42`,
+  `validation.py:663`, `results.py:1107`, `models.py:698`.
+- SECOND IMPLEMENTATION: M11-5 `07950cd` — `structural/evidence.py:464`
+  (volatile-key filter) and `evidence_service.py:1515`.
+- PRODUCTION REACHABILITY: M11-5 onward; values are cross-compared.
+- CURRENT: all wired.
+
+**F5 — FreeCAD runtime identity**
+- ORIGINAL: M7A `19f77a3` — `backends/freecad.py:FREECAD_BACKEND_VERSION`.
+- SECOND IMPLEMENTATION: M11-2 `682300b` — `structural/runtime.py:FREECAD_IDENTITY`.
+- PRODUCTION REACHABILITY: M11-2 onward (M11 provenance verification compares
+  STEP `backend_provenance` against `FREECAD_IDENTITY`).
+- CURRENT: both wired.
+
+**F6 — `physical_kinematic_root_hash`**
+- ORIGINAL: M13-3 `ca294e0` — `models/physical_mechanism.py:35` (canonical model
+  authority).
+- SECOND IMPLEMENTATION: M13-3 `ca294e0` — `candidates/models.py:58`, **same
+  commit** (candidate/canonical split).
+- PRODUCTION REACHABILITY: same commit; explicitly cross-compared at
+  `candidates/multi_joint_m10_bridge.py:2397`, `:2564`.
+- CURRENT: both wired.
+
+**F7 — CAD dimension alias resolution**
+- ORIGINAL: M12-4 `bae65cc` — `candidates/cad_realization.py:_DIMENSION_ALIASES`
+  (geometry-first, property-first).
+- SECOND IMPLEMENTATION: M12-5 `161986b` — `candidates/canonical_cad.py`
+  (bare-first, choice-first); extended by M13-2 `664ec3b` in both files.
+- PRODUCTION REACHABILITY: M12-5/M13-2 onward.
+- CURRENT: both wired; no geometry-agreement gate.
+
+**F8 — proof status / motion bound**
+- ORIGINAL: M10 `89b1d75` — `continuous_proof.py:32`, `:145-158`.
+- SECOND IMPLEMENTATION: M10 `89b1d75` —
+  `multi_joint_continuous_clearance.py:33`, `:466`, **same commit**.
+- PRODUCTION REACHABILITY: same commit; two separate proof engines.
+- CURRENT: both wired.
+
+**F11 — `analysis.structural` node**
+- ORIGINAL: M5.5C `4bc2310` — section tools register
+  `evidence_nodes=("analysis.structural",)`.
+- SECOND IMPLEMENTATION: M11-5 `07950cd` — `structural/evidence.py:53-55`
+  reuses the same node for typed `StructuralEvidencePayload`.
+- PRODUCTION REACHABILITY: M11-5 onward, sharing `EvidenceStore`, kind-based
+  retrieval, and `config/dependencies.yaml` invalidation.
+- CURRENT: both producers wired; structural verifier rejects tool records.
+
+---
+
+## 15. P1/P2 Test-Difference Register
+
+For each P1/P2 finding: whether the duplicated implementations are independently
+encoded by tests and whether the tests already describe semantic drift.
+
+**F1**
+- TESTS_FOR_ORIGINAL: `tests/unit/test_m12_candidate_m10_service.py`,
+  `test_m12_candidate_m10_replay.py`, `test_m12_candidate_evaluation.py`.
+- TESTS_FOR_SECONDARY: `tests/unit/test_m12_canonical_m10.py`,
+  `test_m12_canonical_reconstruction.py`.
+- SHARED_BEHAVIOR_TESTED: request/path/clearance/partition equality;
+  collision-witness pair membership; algorithm version; `NOT_PROVEN` retention.
+- DIFFERENT_ASSUMPTIONS: candidate pins the discrete sweep constant
+  (`test_home_result_requires_the_accepted_discrete_sweep_identity`) and keeps
+  the execution-completion status vocabulary; canonical recomputes nested
+  partitions/result hashes and checks request/result sweep-version equality
+  (`test_home_check_rejects_request_result_sweep_version_mismatch`).
+- KNOWN_UNTESTED_DRIFT_SURFACE: D1 (`source_assembly_id`) and D2 (witness
+  classification) have no test on either side.
+
+**F2**
+- TESTS_FOR_ORIGINAL: state/revision hash stability tests.
+- TESTS_FOR_SECONDARY: per-module content-hash tests exist, but none compare
+  outputs across serializer variants.
+- SHARED_BEHAVIOR_TESTED: none across variants.
+- DIFFERENT_ASSUMPTIONS: structural variants assume ASCII-only payloads
+  (`ensure_ascii` default); shared expects preserved UTF-8; `default=str`
+  accepts non-JSON-coercible values.
+- KNOWN_UNTESTED_DRIFT_SURFACE: no test hashes a non-ASCII payload through two
+  variants and compares bytes.
+
+**F3**
+- TESTS_FOR_ORIGINAL: M3 freshness/invalidation tests.
+- TESTS_FOR_SECONDARY: structural currentness tests; candidate currentness tests.
+- SHARED_BEHAVIOR_TESTED: "current / stale / unavailable" strings, independently.
+- DIFFERENT_ASSUMPTIONS: M3 uses transitive graph invalidation;
+  structural/candidate use current-pointer equality.
+- KNOWN_UNTESTED_DRIFT_SURFACE: no cross-consistency test; precedence
+  undocumented.
+
+**F4**
+- TESTS_FOR_ORIGINAL: structural service/validation mesh-spec hash tests.
+- TESTS_FOR_SECONDARY: M11-5 evidence verification tests.
+- SHARED_BEHAVIOR_TESTED: cross-verification on a `MeshSpecification` with no
+  volatile fields.
+- DIFFERENT_ASSUMPTIONS: the evidence variant strips volatile keys; the others
+  do not.
+- KNOWN_UNTESTED_DRIFT_SURFACE: no test adds a volatile field and checks
+  cross-verification.
+
+**F5**
+- TESTS_FOR_ORIGINAL: backend FreeCAD identity/provenance tests.
+- TESTS_FOR_SECONDARY: structural provenance-verification tests.
+- SHARED_BEHAVIOR_TESTED: literal equality only implicitly (M9/M11 suites pass).
+- DIFFERENT_ASSUMPTIONS: none documented.
+- KNOWN_UNTESTED_DRIFT_SURFACE: no test asserts the two constants are equal; a
+  unilateral bump is caught only by end-to-end fail-closed tests.
+
+**F6**
+- TESTS_FOR_ORIGINAL: `physical_mechanism` identity-hash tests.
+- TESTS_FOR_SECONDARY: candidate model hash tests; bridge equality tests.
+- SHARED_BEHAVIOR_TESTED: the bridge compares the candidate hash against the
+  model hash.
+- DIFFERENT_ASSUMPTIONS: none currently.
+- KNOWN_UNTESTED_DRIFT_SURFACE: no test asserts the two function bodies remain
+  byte-equal.
+
+**F7**
+- TESTS_FOR_ORIGINAL: `tests/unit/test_m12_candidate_cad_compiler.py`,
+  `test_m12_candidate_cad_replay.py` (single `geometry.*` alias).
+- TESTS_FOR_SECONDARY: `tests/unit/test_m12_canonical_cad.py`,
+  `test_m12_promoted_verification.py` (single choice alias).
+- SHARED_BEHAVIOR_TESTED: candidate/canonical identity separation (M12-6
+  asserts the hashes differ).
+- DIFFERENT_ASSUMPTIONS: candidate property-first/geometry-first; canonical
+  choice-first/bare-first.
+- KNOWN_UNTESTED_DRIFT_SURFACE: no test supplies two aliases for one dimension;
+  no test compares candidate vs canonical dimensions.
+
+**F8**
+- TESTS_FOR_ORIGINAL: `continuous_proof` tests.
+- TESTS_FOR_SECONDARY: `multi_joint_continuous_clearance` tests.
+- SHARED_BEHAVIOR_TESTED: proof-status semantics within each engine.
+- DIFFERENT_ASSUMPTIONS: padding constants chosen independently (both `1e-9`
+  today).
+- KNOWN_UNTESTED_DRIFT_SURFACE: no test asserts enum identity or bound-formula
+  equality across the two engines.
+
+**F11**
+- TESTS_FOR_ORIGINAL: section-tool Evidence materialization tests.
+- TESTS_FOR_SECONDARY: structural Evidence publish/verify tests.
+- SHARED_BEHAVIOR_TESTED: node registration by string; freshness/invalidation by
+  `kind`.
+- DIFFERENT_ASSUMPTIONS: the structural verifier expects
+  `StructuralEvidencePayload`; tool records have no equivalent semantic verifier.
+- KNOWN_UNTESTED_DRIFT_SURFACE: no test asserts a section-tool record cannot
+  satisfy an `analysis.structural` readiness/fulfillment query.
+
+---
+
+## 16. Audit Metadata
 
 - Historical baseline verified: M13-4 `185a304796c17793519fb5f01dbf80cca73ab51e`;
   synthesis `0cbb70e64c2efdc021f15d341bc043b574ff552b`.
