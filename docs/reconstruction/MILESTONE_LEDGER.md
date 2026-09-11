@@ -45,6 +45,7 @@ statement of the current production capability baseline.
 | M12-3 | `28ac193` *(shared bundle)* | `M12_3_BOUNDED_PHYSICAL_REVOLUTE_DRIVE_REALIZATION_SIZING_VERIFIED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M12-3.md`](milestones/M12-3.md) |
 | M12-4 | `bae65cc` | `M12_4_CANDIDATE_CAD_M10_EVALUATION_COMPARISON_SELECTION_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M12-4.md`](milestones/M12-4.md) |
 | M12-5 | `161986b` | `M12_5_PROMOTION_CANONICAL_REBIND_M11_HANDOFF_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M12-5.md`](milestones/M12-5.md) |
+| M12-6 | `de78b4e` | `M12_6_LIVE_END_TO_END_PHYSICAL_MECHANISM_ACCEPTANCE_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M12-6.md`](milestones/M12-6.md) |
 
 ## Boundary Note
 
@@ -62,6 +63,6 @@ separately retained Git commit.
 ## Next Reconstruction Target
 
 ```text
-M12-6 begins at `de78b4e13fe5b0b8a7eb6a89c8436e43f3886eba` as the next
-successor boundary. No M12-6 acceptance result is attributed to M12-5.
+M13-1 begins at `f6d812422794e034eaf91d94ea88412e504b1488` as the next
+successor boundary. No M13 capability is attributed to M12-6.
 ```
