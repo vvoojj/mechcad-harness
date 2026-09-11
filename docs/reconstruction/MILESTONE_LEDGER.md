@@ -20,6 +20,7 @@ statement of the current production capability baseline.
 | M6B-3 | `53fa6c4` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M6B-3.md`](milestones/M6B-3.md) |
 | M6B-4A | `3c7c708` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M6B-4A.md`](milestones/M6B-4A.md) |
 | M6B-4C | `4468a62` | `IMPLEMENTED_BUT_UNUSED` | `NOT_RETAINED` | `HIGH` | [`milestones/M6B-4C.md`](milestones/M6B-4C.md) |
+| M7A | `19f77a3` *(source, shared with M7B-1A-R2)* + `8079c57` *(acceptance artifacts)* | `IMPLEMENTED_WITH_DEVIATIONS` | `RETAINED_LIVE` | `HIGH` | [`milestones/M7A.md`](milestones/M7A.md) |
 | M7B-1A-R2 | `19f77a3` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M7B-1A-R2.md`](milestones/M7B-1A-R2.md) |
 | M7B-1B | `7c7352a` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M7B-1B.md`](milestones/M7B-1B.md) |
 | M7B-2A | `30b99eb` | `IMPLEMENTED_WITH_DEVIATIONS` | `NOT_RETAINED` | `HIGH` | [`milestones/M7B-2A.md`](milestones/M7B-2A.md) |
@@ -39,7 +40,7 @@ statement of the current production capability baseline.
 | M11-4 | `682300b` *(shared bundle)* | `M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M11-4.md`](milestones/M11-4.md) |
 | M11-5 | `07950cd` | `M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M11-5.md`](milestones/M11-5.md) |
 | M11-6 | `4d436cf` | `M11_FULLY_CLOSED_LIVE_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M11-6.md`](milestones/M11-6.md) |
-| M10-MULTI-SHAPE | `28ac193` | `M10_MULTI_SHAPE_TRANSIENT_GEOMETRY_CONSISTENCY_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M10-MULTI-SHAPE.md`](milestones/M10-MULTI-SHAPE.md) |
+| M10-MULTI-SHAPE | `28ac193` *(shared with M12-1/2/3)* | `M10_MULTI_SHAPE_TRANSIENT_GEOMETRY_CONSISTENCY_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M10-MULTI-SHAPE.md`](milestones/M10-MULTI-SHAPE.md) |
 | M12-1 | `28ac193` *(shared bundle)* | `M12_1_GENERIC_DESIGN_CANDIDATE_PHYSICAL_MECHANISM_ARCHITECTURE_READY` | `NOT_APPLICABLE` | `HIGH` | [`milestones/M12-1.md`](milestones/M12-1.md) |
 | M12-2 | `28ac193` *(shared bundle)* | `M12_2_TYPED_CANDIDATE_COMPONENT_AUTHORITY_FOUNDATION_VERIFIED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M12-2.md`](milestones/M12-2.md) |
 | M12-3 | `28ac193` *(shared bundle)* | `M12_3_BOUNDED_PHYSICAL_REVOLUTE_DRIVE_REALIZATION_SIZING_VERIFIED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M12-3.md`](milestones/M12-3.md) |
@@ -50,6 +51,8 @@ statement of the current production capability baseline.
 | M13-2 | `664ec3b` | `M13_2_GENERIC_GENERATED_MECHANICAL_PART_CAD_FOUNDATION_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M13-2.md`](milestones/M13-2.md) |
 | M13-3P | `f3ab0c7` | `M13_3P_GENERIC_M10_RIGID_BODY_CONSTITUENT_GROUP_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M13-3P.md`](milestones/M13-3P.md) |
 | M13-3 | `ca294e0` | `M13_3_GENERIC_MULTI_JOINT_CANDIDATE_CANONICAL_M10_BRIDGE_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M13-3.md`](milestones/M13-3.md) |
+| M13-4E | `185a304` *(bundled in M13-4)* | `M13_4E_INDEPENDENT_R12_ACCEPTED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M13-4.md`](milestones/M13-4.md) |
+| M13-4P | `185a304` *(bundled in M13-4)* | `M13_4P_INDEPENDENT_ACCEPTED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M13-4.md`](milestones/M13-4.md) |
 | M13-4 | `185a304` | `M13_4_INDEPENDENT_FINAL_ACCEPTED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M13-4.md`](milestones/M13-4.md) |
 
 ## Boundary Note
@@ -65,12 +68,15 @@ boundary. M1 is reconstructed as a distinct capability milestone without a
 separately retained Git commit.
 ```
 
-## Next Reconstruction Target
+## Reconstruction Status
 
 ```text
 All evidence-supported product milestones through M13-4
-(`185a304796c17793519fb5f01dbf80cca73ab51e`) have been reconstructed. Commits
-after M13-4 are this reconstruction's own documentation checkpoints. Untracked
+(`185a304796c17793519fb5f01dbf80cca73ab51e`) have been reconstructed, including
+the previously-unrepresented M7A generic CAD/assembly/exact-geometry foundation.
+The MILESTONE_CATALOG.json records the full logical-milestone graph, including
+bundled sub-layers (M5.5B/C, M6B, M7A, M8C, M9, M10, M13-4E/P). Commits after
+M13-4 are this reconstruction's own documentation checkpoints. Untracked
 Rotator V2 work is a separate, unaccepted activity and is not a reconstructed
 milestone.
 ```
