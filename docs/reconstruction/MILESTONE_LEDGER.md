@@ -39,6 +39,10 @@ statement of the current production capability baseline.
 | M11-4 | `682300b` *(shared bundle)* | `M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M11-4.md`](milestones/M11-4.md) |
 | M11-5 | `07950cd` | `M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M11-5.md`](milestones/M11-5.md) |
 | M11-6 | `4d436cf` | `M11_FULLY_CLOSED_LIVE_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M11-6.md`](milestones/M11-6.md) |
+| M10-MULTI-SHAPE | `28ac193` | `M10_MULTI_SHAPE_TRANSIENT_GEOMETRY_CONSISTENCY_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M10-MULTI-SHAPE.md`](milestones/M10-MULTI-SHAPE.md) |
+| M12-1 | `28ac193` *(shared bundle)* | `M12_1_GENERIC_DESIGN_CANDIDATE_PHYSICAL_MECHANISM_ARCHITECTURE_READY` | `NOT_APPLICABLE` | `HIGH` | [`milestones/M12-1.md`](milestones/M12-1.md) |
+| M12-2 | `28ac193` *(shared bundle)* | `M12_2_TYPED_CANDIDATE_COMPONENT_AUTHORITY_FOUNDATION_VERIFIED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M12-2.md`](milestones/M12-2.md) |
+| M12-3 | `28ac193` *(shared bundle)* | `M12_3_BOUNDED_PHYSICAL_REVOLUTE_DRIVE_REALIZATION_SIZING_VERIFIED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M12-3.md`](milestones/M12-3.md) |
 
 ## Boundary Note
 
@@ -56,6 +60,7 @@ separately retained Git commit.
 ## Next Reconstruction Target
 
 ```text
-M5 begins at 6cbade0ea53f1652d44bb92f92831a0c8daf62c5. It is reconstructed
-as a shared M5/M5.5A commit with M5-specific import-blocking deviations.
+M12-4 begins at bae65cc. It is the next evidence-supported candidate-CAD,
+M10-evaluation, comparison, and selection boundary after the reconstructed
+M12-1/M12-3 bundle.
 ```
