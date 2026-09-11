@@ -1,207 +1,254 @@
 # Agent Instructions
 
-## Current Accepted Baseline
+This file contains **operational rules for agents working in the MechCAD
+repository**. Keep broad product description in `README.md`, current normative
+architecture in `docs/architecture/**`, capability inventory in
+`docs/reference/**`, accepted verification in `docs/audit/**`, and historical
+truth in `docs/reconstruction/**`.
 
-This repository implements the MechCAD Harness production system through the
-accepted **M0 → M13-4** baseline. The terminal product milestone is M13-4 at
-commit `185a304796c17793519fb5f01dbf80cca73ab51e`, acceptance marker
-`M13_4_INDEPENDENT_FINAL_ACCEPTED`. Commits after it through the reconstruction
-synthesis `0cbb70e` are documentation only.
+## Baseline Anchor
 
-Current capability families:
+The accepted reconstructed product baseline reaches **M13-4** at commit
+`185a304796c17793519fb5f01dbf80cca73ab51e` with terminal marker
+`M13_4_INDEPENDENT_FINAL_ACCEPTED`. Commits after that product commit through the
+reconstruction synthesis `0cbb70e` are documentation-only.
 
-- **Deterministic substrate (M0–M4):** canonical `DesignState`, immutable hashed
-  revisions, `ChangeProposal` → `ChangeSet` → `ChangeEngine` mutation, dependency
-  invalidation and Evidence freshness, run/task control.
-- **Tool/provider/reasoning boundaries (M5–M6):** exact-version
-  `ToolRegistry`/`ToolBroker`, backend identity/health/provenance, narrow
-  gear/material/section providers, agent gateway, OpenCode transport, bounded
-  `mechcad-transmission` reasoning.
-- **Generic CAD/assembly and exact geometry (M7A):** `CadPartProgram` /
-  `CadAssemblyProgram`, FreeCAD backends, `common().Volume` / `distToShape()`.
-- **Production orchestration and live CAD (M8–M9):** `ProductionApplication`
-  composition root, source-bound CAD compilation, trusted imported STEP, mixed
-  assembly, production kinematic entrypoint, live FreeCAD 1.1.3 verification.
-- **Motion (M10):** continuous single-axis proof; multi-joint forward kinematics;
-  exact discrete multi-joint collision sweep; continuous proof along one explicit
-  path; multi-shape transient-STEP measurement closure.
-- **Structural (M11):** typed authority; FreeCAD → Gmsh C3D10 → CalculiX;
-  FRD/DAT interpretation; durable structural Evidence; bounded repeatability and
-  displacement-metric mesh convergence.
-- **Candidate realization and promotion (M12):** noncanonical candidate
-  authority; bounded revolute-drive realization/sizing; candidate CAD, M10
-  evaluation, comparison, selection; explicit promotion into canonical
-  `physical_mechanisms` with fresh canonical CAD/M10 verification and
-  eligibility-only M11 handoff.
-- **Candidate/canonical unification (M13):** supplied-component interface
-  authority; generic generated-part CAD; M10 v2 rigid-body constituent groups;
-  candidate/canonical multi-joint M10 bridge; multi-joint promotion Evidence
-  contract and production wiring.
+This is a baseline anchor, not permission to ignore later repository changes.
+When working on a newer tree, determine current behavior from the current
+implementation and applicable accepted records.
 
-Selected current acceptance markers (full per-milestone set in
-[`docs/reconstruction/MILESTONE_LEDGER.md`](docs/reconstruction/MILESTONE_LEDGER.md)):
+## Core Rule: Separate Current Truth from Historical Truth
 
-```text
-M9_FULLY_CLOSED_LIVE_VERIFIED
-M10_FULLY_CLOSED_LIVE_VERIFIED
-M10_MULTI_SHAPE_TRANSIENT_GEOMETRY_CONSISTENCY_VERIFIED
-M11_FULLY_CLOSED_LIVE_VERIFIED
-M12_6_LIVE_END_TO_END_PHYSICAL_MECHANISM_ACCEPTANCE_VERIFIED
-M13_3P_GENERIC_M10_RIGID_BODY_CONSTITUENT_GROUP_VERIFIED
-M13_3_GENERIC_MULTI_JOINT_CANDIDATE_CANONICAL_M10_BRIDGE_VERIFIED
-M13_4E_INDEPENDENT_R12_ACCEPTED
-M13_4P_INDEPENDENT_ACCEPTED
-M13_4_INDEPENDENT_FINAL_ACCEPTED
-```
+Never use a historical record to override current implemented behavior, and
+never use current code to rewrite what historically happened.
 
-`docs/architecture/*` still describe the M8–M11 baseline only, and
-`docs/reference/MECHCAD_IMPLEMENTED_CAPABILITIES.md` covers M12 but not M13;
-M12/M13 are established by committed production code/tests plus the accepted
-audit records (see `docs/reconstruction/UNRESOLVED_GAPS.md` G-12).
+Use each source for the role it can actually prove:
 
-## Document Authority
+| Question | Primary source | What it proves |
+| --- | --- | --- |
+| What is the intended current contract? | `docs/architecture/**` | Normative design intent within its documented coverage |
+| What is implemented now? | `src/mechcad_harness/**` | Current production behavior and wiring |
+| What behavior is guarded by tests? | `tests/**` | Current test contract; test presence is not execution evidence |
+| What was actually accepted/live-verified? | `docs/audit/**` plus retained run evidence | Bounded verification / acceptance |
+| What capabilities/wiring exist? | `docs/reference/MECHCAD_IMPLEMENTED_CAPABILITIES.md` | Inventory and composition status |
+| What happened historically? | `docs/reconstruction/**` | Accepted reconstructed milestone history |
 
-Keep **current** authority and **historical** authority separate. Do not use a
-historical record to decide current behavior, and do not use current code to
-rewrite what historically happened.
+If normative architecture and current production code disagree, do not silently
+choose one meaning for both roles:
 
-### For current behavior
+1. Treat architecture as the intended contract within its documented scope.
+2. Treat current production code as ground truth for what is actually
+   implemented.
+3. Check tests and accepted audits for the affected behavior.
+4. Record the documentation/implementation gap explicitly.
 
-1. Current accepted normative architecture (`docs/architecture/*`).
-2. Current production implementation and wiring (`src/mechcad_harness/**`) and
-   current tests (`tests/**`).
-3. Accepted current system/live audits (`docs/audit/**`) when the question is
-   what was verified.
-4. Current capability/wiring inventory
-   (`docs/reference/MECHCAD_IMPLEMENTED_CAPABILITIES.md`).
-5. Historical milestone documentation only for historical context.
+`docs/README.md` is a context-routing guide, not a stronger authority than the
+sources above.
 
-When normative architecture and current code disagree, current code is ground
-truth for what is implemented; record the documentation gap instead of assuming
-either is current. `docs/README.md` is a task-sized context guide; where its
-older "Source Precedence" ordering conflicts with this section, this section
-governs.
+## Historical Reconstruction Discipline
 
-### For historical questions
+For historical questions, use this evidence order:
 
-1. Accepted reconstruction canonical records (`docs/reconstruction/milestones/**`
-   plus `MILESTONE_LEDGER.md` / `MILESTONE_CATALOG.json`).
-2. Detailed reconstruction evidence (`docs/reconstruction/evidence/**`).
-3. Historical committed production code and tests at the relevant Git boundary.
-4. Contemporary specifications and plans (`docs/superpowers/specs/**`,
-   `docs/superpowers/plans/**`).
-5. Contemporary completion/review/acceptance artifacts according to their
-   evidence role (see below).
-6. Later retrospective narrative (for example, older project descriptions).
+1. accepted canonical reconstruction records under
+   `docs/reconstruction/milestones/**` plus `MILESTONE_LEDGER.md` /
+   `MILESTONE_CATALOG.json`;
+2. detailed reconstruction evidence under `docs/reconstruction/evidence/**`;
+3. historical committed production code and tests at the relevant Git boundary;
+4. contemporary specifications and plans under `docs/superpowers/**`;
+5. contemporary completion/review/acceptance artifacts according to their
+   evidence role;
+6. later retrospective narrative only as secondary context.
 
-Do not treat `docs/reconstruction/**` as normative for current behavior; it is
-authoritative only for the reconstructed history of milestone boundaries.
+Historical reconstruction must preserve inconvenient facts. In particular:
 
-### Evidence semantics (do not conflate)
+- do not convert a later fix into a historical pass;
+- do not infer a historical test run from committed test code;
+- do not infer acceptance from implementation alone;
+- do not erase rejected intermediate states after a later acceptance;
+- distinguish **known**, **inferred**, and **not proven** boundaries;
+- preserve shared-commit or missing-artifact ambiguity instead of inventing a
+  dedicated milestone boundary;
+- never fabricate completion markers, retained logs, CI results, or authority.
+
+`docs/reconstruction/**` is authoritative for reconstructed history, not for
+current runtime semantics.
+
+## Evidence Semantics — Do Not Conflate
 
 - **SPEC / DESIGN:** intended contract.
 - **PLAN:** intended implementation approach.
 - **COMMITTED CODE:** implementation evidence.
-- **COMMITTED TEST:** test existence, not historical execution.
-- **RETAINED TEST / CI / LIVE OUTPUT:** historical execution evidence.
-- **COMPLETION REPORT:** reported completion evidence.
+- **COMMITTED TEST:** test existence / expected behavior, not historical execution.
+- **RETAINED TEST / CI / LIVE OUTPUT:** execution evidence for the recorded run.
+- **COMPLETION REPORT:** completion claim/evidence; not automatically independent
+  acceptance.
 - **REVIEW / ACCEPTANCE:** evaluation and formal acceptance where present.
 - **RETROSPECTIVE:** later description of earlier history.
 
-A specification is not execution evidence; a committed test does not prove a
-historical run; "accepted" is not a synonym for "implemented." Prefer terms such
-as *implemented*, *production-wired*, *live-verified in a bounded scenario*, or
-*accepted as design only*.
+Prefer precise claims such as *implemented*, *production-wired*, *unit-verified*,
+*live-verified in a bounded scenario*, *accepted*, *rejected*, or *accepted as
+design only*. Avoid using *accepted* as a synonym for *implemented*.
 
-## Production Wiring and Capability Boundaries
+## Planning and Execution Model
 
-- `DesignState` is canonical. Proposals, results, artifacts, analysis results,
-  and Evidence are separate bindable records; only trusted change machinery
-  (`ChangeEngine` under ownership policy and project lock, via `RunController`
-  for promotion) creates canonical revisions.
-- **`proposal.status` is not an enforced approval gate** in the current code (nor
-  at the historical M2/M4 boundaries). Any proposal passing stale-base,
-  ownership, operation, and resulting-state validation can advance canonical
-  state. Do not claim an approval gate exists.
-- `ImportedCadComponent` is the complete byte-verified STEP artifact; arbitrary
-  filesystem STEP paths are not trusted imported components.
-- Backend/library objects never cross normalization boundaries into persisted
-  records; only normalized scalar provenance does.
-- `run_id` is correlation/storage scope only, not engineering identity.
-- `CadCompilationService` runs under `PREACCEPTED_CALLER_CONTRACT_ONLY`.
-- Do not overstate bounded scopes: M10 is discrete plus one explicit path; M11 is
-  single homogeneous solid linear-static; M12/M13 selection and promotion are
-  explicit and support one selected candidate and one canonical obligation;
-  promotion's M11 handoff is eligibility-only.
+Use the specification hierarchy:
 
-## Current Limitations (must not be contradicted)
+```text
+Project Spec → Epic Spec → Story Spec
+```
 
-- M10-3 keeps `continuous_path_verified = False`; M10-4 proves only the requested
-  path; no configuration-space certification or general trajectory planning.
-- M11 has no assembly FEA, nonlinear/fatigue/dynamics/thermal analysis, adaptive
-  refinement, global or stress convergence, global yield/safety, or
-  manufacturing approval; stress is CalculiX extrapolated nodal stress.
-- No generic candidate generation/search, catalog selection, bearing/fastener
-  sizing, gear strength/life, or optimization.
-- Generated-part CAD is only cylindrical stock/axial bore; exactness is relative
-  to the bound semantic spec, not manufacturing truth.
-- M13-1 interface authority is unit-verified only.
+Coding sessions are execution units, not an additional specification layer.
+Resolve important uncertainty as far **left** as practical. Use Human-in-the-Loop
+early for decisions that change requirements, authority, scope, or irreversible
+engineering choices; after those decisions are resolved, continue autonomously
+inside the authorized scope.
+
+Independent Epics may proceed in parallel when dependencies allow. Within one
+Epic, execute dependent Stories / implementation steps sequentially unless the
+accepted Epic contract explicitly defines safe parallelism.
+
+Before editing:
+
+1. identify whether the task concerns current behavior, historical truth, or
+   both;
+2. read only the smallest relevant context bundle;
+3. inspect the actual current implementation/API before relying on remembered
+   names or behavior;
+4. identify protected/accepted surfaces and downstream regression gates;
+5. resolve material uncertainty before broad implementation.
+
+Prefer minimal, reviewable changes. Do not redesign adjacent subsystems without
+an explicit requirement.
+
+## Production Authority and Wiring Invariants
+
+These rules must not be contradicted unless the task explicitly changes the
+contract and the applicable protected documentation/tests are updated:
+
+- `DesignState` is canonical. Proposals, tool results, artifacts, analysis
+  results, validation results, and Evidence remain separately bound records.
+- Only trusted change machinery (`ChangeEngine` under ownership policy and the
+  project lock, via `RunController` where applicable) creates canonical
+  revisions.
+- **`proposal.status` is not an enforced approval gate** in the accepted current
+  code. Do not claim an approval check exists where it is not implemented.
+- `ImportedCadComponent` is the complete byte-verified STEP artifact. An
+  arbitrary filesystem STEP path is not trusted supplied geometry.
+- Do not infer semantic engineering authority from CAD/STEP geometry, filenames,
+  labels, or test fixture names. Geometry may support geometry claims; semantic
+  authority must come from an accepted authority source.
+- Backend/library objects must not cross normalization boundaries into persisted
+  records; persist normalized scalar/typed provenance instead.
+- `run_id` is correlation/storage scope, not engineering identity.
+- `CadCompilationService` operates under
+  `PREACCEPTED_CALLER_CONTRACT_ONLY`.
+- Selection and promotion are explicit. Do not silently auto-select or
+  auto-promote a candidate.
+- Current bounded M12/M13 flows support one selected feasible candidate and one
+  canonical obligation in the relevant path; do not generalize this into a
+  multi-objective optimizer.
+- Promotion's M11 handoff is eligibility-only; it does not perform structural
+  analysis.
+
+## Capability Boundaries That Must Not Be Overstated
+
+- M10-3 is discrete and keeps `continuous_path_verified = False`; M10-4 proves
+  only the explicitly requested path. There is no general trajectory planner or
+  whole configuration-space certification.
+- M11 is a source-bound, single homogeneous solid, linear-static path. No
+  assembly FEA, nonlinear/fatigue/dynamics/thermal analysis, global/stress
+  convergence, or manufacturing/safety approval is implied.
+- There is no generic candidate generation/search, catalog selection,
+  bearing/fastener sizing, gear strength/life calculation, or optimization.
+- Generated-part CAD is currently cylindrical stock plus axial bore; exactness is
+  relative to the bound semantic specification, not manufacturing truth.
+- M13-1 interface authority is unit-verified at its own boundary.
 - Materials selection, tolerance verification, manufacturing output/approval,
-  optimization, and general automatic synthesis remain unimplemented.
+  whole configuration-space certification, and general automatic synthesis are
+  not implemented.
+
+When a capability status matters, verify the whole chain: model → service →
+provider/tool → registration → production composition → caller → end-to-end
+path → retained/live proof. Importability or a unit test alone does not make a
+capability production-wired or live-verified.
+
+## Verification Workflow
+
+For implementation changes:
+
+1. run the smallest focused test(s) that directly exercise the changed contract;
+2. run required predecessor/regression gates for affected accepted surfaces;
+3. run broader/full-suite verification only when required by the task,
+   acceptance contract, or risk of the change;
+4. run relevant static checks (`compileall`, `git diff --check`, lint/type checks)
+   when they are part of the affected gate;
+5. retain exact command/result evidence when making an acceptance or historical
+   execution claim.
+
+A passing test count is evidence only for the exact invocation that produced it.
+Do not copy stale counts forward. A timeout, skip, failure, environmental event,
+or aborted run must remain visible in the historical record even if a later run
+passes.
+
+For live CAD/solver validation, verify the real executable/provider identity and
+execution boundary. Do not credit fake adapters, mocks, or importability as live
+FreeCAD/Gmsh/CalculiX proof.
 
 ## Progressive-Disclosure Reading Order
 
-For general architecture work, read first:
+Do not load every milestone spec, audit, or reconstruction record by default.
 
-- [`docs/architecture/MECHCAD_PROJECT_OVERVIEW.md`](docs/architecture/MECHCAD_PROJECT_OVERVIEW.md)
-- [`docs/architecture/MECHCAD_SYSTEM_CONTRACT.md`](docs/architecture/MECHCAD_SYSTEM_CONTRACT.md)
-- [`docs/architecture/MECHCAD_CAPABILITY_MATRIX.md`](docs/architecture/MECHCAD_CAPABILITY_MATRIX.md)
+For a general current architecture task, start with:
 
-For runtime / CAD / analysis work:
+- `docs/README.md`
+- `docs/architecture/MECHCAD_PROJECT_OVERVIEW.md`
+- `docs/architecture/MECHCAD_SYSTEM_CONTRACT.md`
+- `docs/architecture/MECHCAD_CAPABILITY_MATRIX.md`
 
-- [`docs/architecture/MECHCAD_RUNTIME_FLOW.md`](docs/architecture/MECHCAD_RUNTIME_FLOW.md)
-- [`docs/architecture/MECHCAD_SUBSYSTEM_CONTRACTS.md`](docs/architecture/MECHCAD_SUBSYSTEM_CONTRACTS.md)
-- [`docs/audit/MECHCAD_M9_SYSTEM_ACCEPTANCE.md`](docs/audit/MECHCAD_M9_SYSTEM_ACCEPTANCE.md)
-- [`docs/audit/MECHCAD_M10_SYSTEM_ACCEPTANCE.md`](docs/audit/MECHCAD_M10_SYSTEM_ACCEPTANCE.md)
-- [`docs/audit/MECHCAD_M11_SYSTEM_ACCEPTANCE.md`](docs/audit/MECHCAD_M11_SYSTEM_ACCEPTANCE.md)
+Add, only when relevant:
 
-For candidate/promotion and M12/M13 work:
+- runtime/CAD/analysis: `MECHCAD_RUNTIME_FLOW.md`,
+  `MECHCAD_SUBSYSTEM_CONTRACTS.md`, and the applicable M9/M10/M11 audits;
+- candidate/promotion/M12/M13: M12-6 and M13-4 accepted audits plus the relevant
+  current code/tests;
+- capability discovery/integration: `docs/reference/MECHCAD_IMPLEMENTED_CAPABILITIES.md`;
+- historical questions: `docs/reconstruction/README.md`, the relevant canonical
+  milestone record, ledger/catalog, and only the evidence needed to resolve the
+  question.
 
-- [`docs/audit/MECHCAD_M12_6_SYSTEM_ACCEPTANCE.md`](docs/audit/MECHCAD_M12_6_SYSTEM_ACCEPTANCE.md)
-- [`docs/audit/MECHCAD_M13_4_INDEPENDENT_FINAL_ACCEPTANCE.md`](docs/audit/MECHCAD_M13_4_INDEPENDENT_FINAL_ACCEPTANCE.md)
-- [`docs/reconstruction/CAPABILITY_EVOLUTION.md`](docs/reconstruction/CAPABILITY_EVOLUTION.md)
+## Protected Operations and Approval
 
-For historical milestone questions (what happened, when, and with what evidence):
+Do not perform these without explicit authorization in the user's task or a
+separate user approval:
 
-- [`docs/reconstruction/README.md`](docs/reconstruction/README.md)
-- [`docs/reconstruction/PROJECT_HISTORY.md`](docs/reconstruction/PROJECT_HISTORY.md)
-- [`docs/reconstruction/MILESTONE_LEDGER.md`](docs/reconstruction/MILESTONE_LEDGER.md)
-- [`docs/reconstruction/CAPABILITY_EVOLUTION.md`](docs/reconstruction/CAPABILITY_EVOLUTION.md)
-- [`docs/reconstruction/UNRESOLVED_GAPS.md`](docs/reconstruction/UNRESOLVED_GAPS.md)
+- `git commit`, amend, push, tag, release, or history rewrite;
+- modification of accepted audit records, accepted tests, specs/plans, normative
+  architecture, or `docs/reconstruction/**` when the task did not explicitly ask
+  to change that protected surface;
+- package installation or network-dependent mutation;
+- destructive filesystem operations outside the repository workspace.
 
-For capability planning or integration work only:
+Live external execution (FreeCAD/CalculiX/Gmsh/OpenCode live validation) is
+allowed only when the task explicitly calls for live verification or the user
+has authorized it. Once live verification is authorized for the task, do not
+interrupt the user for approval before every individual bounded invocation;
+stay inside the authorized scope and report what was actually run.
 
-- [`docs/reference/MECHCAD_IMPLEMENTED_CAPABILITIES.md`](docs/reference/MECHCAD_IMPLEMENTED_CAPABILITIES.md) — implementation and wiring inventory; read when checking whether a capability already exists, avoiding duplicate work, or investigating production composition. Do not load it for routine local code changes.
-
-Do not load every milestone spec or reconstruction record by default.
-
-## Operations Requiring Explicit User Approval
-
-- Any `git commit`, amend, push, tag, or release.
-- Modifying accepted tests, audit records, specs/plans, normative architecture, or
-  `docs/reconstruction/**` (unless the task explicitly asks for it).
-- Running live external execution (FreeCAD/CalculiX/Gmsh subprocesses, OpenCode
-  live validation, network access, package installation).
-- Destructive filesystem operations outside the repository workspace.
+Read-only inspection and ordinary local focused/unit tests that do not invoke
+those external live runtimes do not require repeated approval.
 
 ## Engineering Constraints
 
-- Keep changes inside this repository.
+- Keep changes inside this repository unless the task explicitly says otherwise.
 - Preserve Python 3.11+, Pydantic v2, and UTC-aware datetime requirements.
-- Keep models minimal and reject empty required strings and non-positive
-  revisions.
-- Treat `DesignState` as canonical state; proposals, results, validation, and
-  evidence remain separate bindable records.
-- The historical M0 constraint (no agents, OpenCode, CAD, FreeCAD, FEA, databases,
-  or external services) describes the M0 boundary only; later milestones
-  deliberately added bounded versions of these capabilities.
+- Keep models minimal; reject empty required strings and non-positive revisions
+  where those invariants apply.
+- Fail closed on missing authority, stale identity, invalid provenance, or
+  unverifiable required bindings.
+- Never fabricate missing engineering values to make a test or acceptance flow
+  pass.
+- Preserve backward-compatible wire/hash semantics where an accepted contract
+  explicitly requires them.
+- The historical M0 restriction against agents/CAD/FEA/external services applies
+  only to the M0 boundary; later accepted milestones deliberately add bounded
+  versions of those capabilities.
