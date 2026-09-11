@@ -37,6 +37,8 @@ statement of the current production capability baseline.
 | M11-2 | `682300b` *(shared bundle)* | `M11_2_STRUCTURAL_AUTHORITY_MODEL_VERIFIED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M11-2.md`](milestones/M11-2.md) |
 | M11-3 | `682300b` *(shared bundle)* | `M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M11-3.md`](milestones/M11-3.md) |
 | M11-4 | `682300b` *(shared bundle)* | `M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M11-4.md`](milestones/M11-4.md) |
+| M11-5 | `07950cd` | `M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M11-5.md`](milestones/M11-5.md) |
+| M11-6 | `4d436cf` | `M11_FULLY_CLOSED_LIVE_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M11-6.md`](milestones/M11-6.md) |
 
 ## Boundary Note
 
