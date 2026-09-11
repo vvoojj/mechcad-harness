@@ -46,6 +46,11 @@ statement of the current production capability baseline.
 | M12-4 | `bae65cc` | `M12_4_CANDIDATE_CAD_M10_EVALUATION_COMPARISON_SELECTION_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M12-4.md`](milestones/M12-4.md) |
 | M12-5 | `161986b` | `M12_5_PROMOTION_CANONICAL_REBIND_M11_HANDOFF_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M12-5.md`](milestones/M12-5.md) |
 | M12-6 | `de78b4e` | `M12_6_LIVE_END_TO_END_PHYSICAL_MECHANISM_ACCEPTANCE_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M12-6.md`](milestones/M12-6.md) |
+| M13-1 | `f6d8124` | `M13_1_SUPPLIED_COMPONENT_NUMERIC_INTERFACE_AUTHORITY_IMPLEMENTED_AND_VERIFIED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M13-1.md`](milestones/M13-1.md) |
+| M13-2 | `664ec3b` | `M13_2_GENERIC_GENERATED_MECHANICAL_PART_CAD_FOUNDATION_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M13-2.md`](milestones/M13-2.md) |
+| M13-3P | `f3ab0c7` | `M13_3P_GENERIC_M10_RIGID_BODY_CONSTITUENT_GROUP_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M13-3P.md`](milestones/M13-3P.md) |
+| M13-3 | `ca294e0` | `M13_3_GENERIC_MULTI_JOINT_CANDIDATE_CANONICAL_M10_BRIDGE_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M13-3.md`](milestones/M13-3.md) |
+| M13-4 | `185a304` | `M13_4_INDEPENDENT_FINAL_ACCEPTED` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M13-4.md`](milestones/M13-4.md) |
 
 ## Boundary Note
 
@@ -63,6 +68,9 @@ separately retained Git commit.
 ## Next Reconstruction Target
 
 ```text
-M13-1 begins at `f6d812422794e034eaf91d94ea88412e504b1488` as the next
-successor boundary. No M13 capability is attributed to M12-6.
+All evidence-supported product milestones through M13-4
+(`185a304796c17793519fb5f01dbf80cca73ab51e`) have been reconstructed. Commits
+after M13-4 are this reconstruction's own documentation checkpoints. Untracked
+Rotator V2 work is a separate, unaccepted activity and is not a reconstructed
+milestone.
 ```
