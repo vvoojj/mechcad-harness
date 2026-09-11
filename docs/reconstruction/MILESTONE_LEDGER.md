@@ -31,6 +31,7 @@ statement of the current production capability baseline.
 | M8B-1 | `8079c57` *(shared with M8B-2)* | `IMPLEMENTED_WITH_DEVIATIONS` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M8B-1.md`](milestones/M8B-1.md) |
 | M8B-2 | `8079c57` *(shared with M8B-1)* | `IMPLEMENTED_WITH_DEVIATIONS` | `RETAINED_FOCUSED` | `HIGH` | [`milestones/M8B-2.md`](milestones/M8B-2.md) |
 | M8C | `6c6f46c` | `ARCHITECTURALLY_CLOSED_RUNTIME_GATED` | `RETAINED_AUDIT_SUMMARY` | `HIGH` | [`milestones/M8C.md`](milestones/M8C.md) |
+| M9 | `a67cee3` | `M9_FULLY_CLOSED_LIVE_VERIFIED` | `RETAINED_LIVE` | `HIGH` | [`milestones/M9.md`](milestones/M9.md) |
 
 ## Boundary Note
 
