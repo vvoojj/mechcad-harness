@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from enum import StrEnum
 from typing import Literal
@@ -9,6 +8,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from mechcad_harness.cad_program import BasePlateOperation, CadPartProgram, ThroughHoleOperation
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.common import Model
 
 
@@ -243,7 +243,7 @@ def hole_ligament_mm(first: XYPoint, first_diameter_mm: float, second: XYPoint, 
 
 
 def mount_plate_spec_hash(spec: AzimuthMotorMountPlateSpec) -> str:
-    encoded = json.dumps(spec.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = canonical_json_bytes(spec.model_dump(mode="json"))
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
@@ -301,7 +301,7 @@ def _synthesis_hash(result):
 
 
 def _hash_payload(value):
-    return f"sha256:{hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()}"
+    return f"sha256:{hashlib.sha256(canonical_json_bytes(value)).hexdigest()}"
 
 
 def build_azimuth_mount_plate_proposal(result: AzimuthMountPlateSynthesisResult, *, project_id: str, source_revision: int, source_state_hash: str):

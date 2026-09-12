@@ -67,11 +67,11 @@ def _hash_or_pending(value: str) -> str:
 
 
 def _self_hash(model: Model, hash_field: str) -> str:
-    from mechcad_harness.state.hashing import canonical_json
+    from mechcad_harness.core.canonical import canonical_json_bytes
 
     payload = model.model_dump(mode="json")
     payload.pop(hash_field, None)
-    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+    return "sha256:" + hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def _shape_value_is_valid(
@@ -1117,7 +1117,7 @@ def _optional_selected_authority_value(
 
 
 def _geometry_derivation_transform_hash(transform: GeometryDerivationTransform) -> str:
-    from mechcad_harness.state.hashing import canonical_json
+    from mechcad_harness.core.canonical import canonical_json_bytes
 
     payload = {
         "transform_id": transform.transform_id,
@@ -1134,7 +1134,7 @@ def _geometry_derivation_transform_hash(transform: GeometryDerivationTransform) 
         "unit_conversion": transform.unit_conversion.model_dump(mode="json"),
         "status": transform.status,
     }
-    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+    return "sha256:" + hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def require_authoritative_transform(

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from pathlib import Path
 from typing import Any, Callable
 
 from mechcad_harness.artifacts.models import ArtifactType
 from mechcad_harness.artifacts.storage import ArtifactStore, ArtifactVerificationError
+from mechcad_harness.core.canonical import canonical_json_bytes, canonical_json_text
 from mechcad_harness.dependency.storage import EvidenceStore
 from mechcad_harness.models.evidence import Evidence
 from mechcad_harness.models.structural import structural_definition_hash
@@ -371,7 +371,7 @@ class StructuralMeshConvergenceService:
         values.pop("request_hash", None)
         values.pop("mesh_specification", None)
         values.pop("analytical_policy_hash", None)
-        return json.dumps(values, sort_keys=True, separators=(",", ":"))
+        return canonical_json_text(values)
 
     @staticmethod
     def _runtime_semantics(payload: StructuralEvidencePayload) -> str:
@@ -411,7 +411,7 @@ class StructuralMeshConvergenceService:
                 ),
             },
         }
-        return json.dumps(values, sort_keys=True, separators=(",", ":"))
+        return canonical_json_text(values)
 
     @staticmethod
     def _level(
@@ -1521,7 +1521,7 @@ class StructuralEvidenceVerifier:
             "gmsh_version": manifest.gmsh_version,
         }
         return "sha256:" + hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            canonical_json_bytes(payload)
         ).hexdigest()
 
     @staticmethod

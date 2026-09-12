@@ -20,6 +20,7 @@ from mechcad_harness.runs import Run, RunController, SourceBinding, TaskDefiniti
 from mechcad_harness.runs.errors import RunIntegrityError
 from mechcad_harness.state import StateManager, state_hash
 from mechcad_harness.state.hashing import canonical_json
+from mechcad_harness.core.canonical import canonical_json_text
 from mechcad_harness.state.errors import StateIntegrityError
 from mechcad_harness.cad_compilation import CadCompilationResult, CadCompilationService, MountingPlateDesignSpec
 from mechcad_harness.cad_assembly import CadAssemblyProgram, assembly_hash
@@ -215,7 +216,7 @@ _CANDIDATE_V2_TOLERANCES: ContextVar[tuple[float, float] | None] = ContextVar(
 def _structural_model_snapshot(value):
     if value is None:
         return None
-    return json.dumps(value.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return canonical_json_text(value.model_dump(mode="json"))
 
 
 def _structural_discovery_snapshot(discovery):

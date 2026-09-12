@@ -6,6 +6,7 @@ from enum import StrEnum
 from pydantic import Field
 
 from mechcad_harness.artifacts import ArtifactStore, ArtifactType, EngineeringArtifact
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.common import Model
 from mechcad_harness.state import StateManager
 
@@ -99,7 +100,7 @@ class CandidatePublicationService:
             "request": request.model_dump(mode="json"),
             "policy": policy.model_dump(mode="json"),
         }
-        content = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        content = canonical_json_bytes(payload)
         artifact = self.store.publish(
             artifact_id="CAND-" + candidate.candidate_hash[7:31], artifact_type=ArtifactType.JSON,
             filename="candidate.json", content=content, producer_tool_name="mechcad-candidate-publication",

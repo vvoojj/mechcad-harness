@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-import json
 import math
 from enum import StrEnum
 from typing import Literal
@@ -26,6 +25,7 @@ from mechcad_harness.continuous_proof import (
     ContinuousSingleAxisProofResult,
     ContinuousSingleAxisProofStatus,
 )
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.kinematic_sweep import (
     CadKinematicSweepRequest,
     CadKinematicSweepResult,
@@ -82,7 +82,7 @@ def _hash_model(value: Model, identity_field: str) -> str:
 def _result_hash(value: Model) -> str:
     payload = value.model_dump(mode="json", exclude={"result_hash"})
     return "sha256:" + hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        canonical_json_bytes(payload)
     ).hexdigest()
 
 

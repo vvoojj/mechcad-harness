@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from enum import StrEnum
 from typing import Iterable, Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
+from mechcad_harness.core.canonical import canonical_json_bytes
+
 from .common import Model
 
 
 def _canonical_json(payload: object) -> bytes:
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    return canonical_json_bytes(payload)
 
 
 def _hash_payload(payload: dict[str, object]) -> str:

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from typing import Any
+
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.structural import (
     StructuralAnalysisDefinition,
     StructuralMaterialPropertyName,
@@ -98,7 +99,7 @@ def cantilever_material_observation(
 
 
 def _stable_hash(payload: Any) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = canonical_json_bytes(payload)
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import binascii
 import hashlib
-import json
 import math
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
 from mechcad_harness.cad_program import CadPartProgram, cad_program_hash
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.imported_component import ImportedCadComponent, imported_component_hash
 from mechcad_harness.models.common import Model
 
@@ -128,5 +128,5 @@ def assembly_hash(program: CadAssemblyProgram) -> str:
         ],
         "instances": [instance.model_dump(mode="json") | {"part_id": instance.part_id} for instance in program.canonical_instances],
     }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    canonical = canonical_json_bytes(payload)
     return f"sha256:{hashlib.sha256(canonical).hexdigest()}"

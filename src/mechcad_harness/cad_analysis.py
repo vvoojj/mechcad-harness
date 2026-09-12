@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.common import Model
 
 
@@ -174,5 +174,5 @@ def analysis_plan_hash(plan: CadAssemblyAnalysisPlan, assembly_hash_value: str) 
             for check in plan.canonical_checks
         ],
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = canonical_json_bytes(payload)
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"

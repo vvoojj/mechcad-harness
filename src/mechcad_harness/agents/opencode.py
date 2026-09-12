@@ -11,6 +11,8 @@ from urllib.request import Request, urlopen
 
 from pydantic import Field, field_validator
 
+from mechcad_harness.core.canonical import canonical_json_bytes, canonical_json_text
+
 from .models import AgentAdapterExecutionError, AgentAdapterExecutionOutcome, AgentAdapterIdentity, AgentAdapterProvenance, AgentAuthoredResponsePayload, AgentInvocationRequest, materialize_response_contract
 
 
@@ -180,7 +182,7 @@ class OpenCodeAgentAdapter:
             message_payload["format"] = {"type": "json_schema", "schema": schema, "retryCount": 0}
         if self.config.model_selection == OpenCodeModelSelection.EXPLICIT:
             message_payload["model"] = {"providerID": self.config.provider_id, "modelID": self.config.model_id}
-        request_hash = f"sha256:{hashlib.sha256(json.dumps({"response_mode": self.config.response_mode, "payload": message_payload}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()}"
+        request_hash = f"sha256:{hashlib.sha256(canonical_json_bytes({"response_mode": self.config.response_mode, "payload": message_payload})).hexdigest()}"
         response = self.transport.request("POST", f"/session/{session_id}/message", message_payload)
         info = response.get("info", {})
         message_id = info.get("id")
@@ -203,7 +205,7 @@ class OpenCodeAgentAdapter:
         except ValidationError as exc:
             diagnostics = self._validation_diagnostics(exc, response.get("info", {}).get("structured_output"))
             raise AgentAdapterExecutionError("OpenCode structured response failed AgentAuthoredResponsePayload validation", provenance=provenance.model_copy(update={"validation_diagnostics": diagnostics}), failure_kind="structured_validation") from exc
-        return AgentAdapterExecutionOutcome(authored_response=authored_response, provenance=provenance, execution_metadata={"authored_response_hash": f"sha256:{hashlib.sha256(json.dumps(authored_response.model_dump(mode='json'), sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"})
+        return AgentAdapterExecutionOutcome(authored_response=authored_response, provenance=provenance, execution_metadata={"authored_response_hash": f"sha256:{hashlib.sha256(canonical_json_bytes(authored_response.model_dump(mode='json'))).hexdigest()}"})
 
     def _provenance(self, *, server_version=None, session_id=None, message_id=None, request_hash=None, provider=None, model=None, response_mode=None, schema_hash=None, validation_diagnostics=None) -> AgentAdapterProvenance:
         return AgentAdapterProvenance(adapter_name=self.identity.adapter_name, adapter_version=self.identity.adapter_version, provider=provider or self.config.provider_id or "unknown", model=model or self.config.model_id, transport="opencode-desktop-http", server_version=server_version, configured_agent_name=self.config.agent_name, session_id=session_id, message_id=message_id, project_directory=self.config.project_directory, request_hash=request_hash, response_mode=response_mode, schema_hash=schema_hash, validation_diagnostics=validation_diagnostics)
@@ -343,7 +345,7 @@ class OpenCodeAgentAdapter:
             f"Agent: {request.agent.agent_name}@{request.agent.agent_version}",
             f"Binding: project={request.project_id} run={request.run_id} task={request.task_id} revision={request.bound_revision} state_hash={request.bound_state_hash}",
             "INPUT CONTEXT",
-            json.dumps(request.context.model_dump(mode="json"), sort_keys=True, separators=(",", ":")),
+            canonical_json_text(request.context.model_dump(mode="json")),
             "OUTPUT CONTRACT",
             "Return only a value conforming to the supplied native JSON Schema." if response_mode == OpenCodeResponseMode.NATIVE_JSON_SCHEMA else "Return exactly one JSON object and no other text.",
             *(() if response_mode == OpenCodeResponseMode.NATIVE_JSON_SCHEMA else ("The object must conform exactly to the following generated JSON Schema:", schema_json, "No Markdown. No code fences. No extra fields.")),

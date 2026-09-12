@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
-from .common import Model
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.multi_joint_kinematics import JointConfiguration, joint_configuration_hash
+
+from .common import Model
 
 
 def _hash_payload(payload: object) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    encoded = canonical_json_bytes(payload)
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 

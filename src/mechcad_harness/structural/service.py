@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from mechcad_harness.artifacts.storage import ArtifactStore, ArtifactType
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.structural import StructuralAnalysisDefinition
 from mechcad_harness.runs.controller import RunController
 from mechcad_harness.runs.models import SourceBinding
@@ -42,7 +43,7 @@ class StructuralPipelineError(Exception):
 def _mesh_specification_hash(request: StructuralAnalysisRequest) -> str:
     payload = request.mesh_specification.model_dump(mode="json")
     return "sha256:" + __import__("hashlib").sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        canonical_json_bytes(payload)).hexdigest()
 
 
 class StructuralAnalysisService:

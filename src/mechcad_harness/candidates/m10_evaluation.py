@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-import json
 import math
 from enum import StrEnum
 
@@ -24,6 +23,7 @@ from mechcad_harness.continuous_proof import (
     ContinuousSingleAxisProofResult,
     ContinuousSingleAxisProofStatus,
 )
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.kinematic_sweep import RevoluteAxis
 from mechcad_harness.kinematic_sweep import (
     CadKinematicSweepRequest,
@@ -678,7 +678,7 @@ def _result_hash(result: object) -> str:
     else:
         payload = dict(result)
     # Match the hash construction used by the accepted M10 result models.
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    encoded = canonical_json_bytes(payload)
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 

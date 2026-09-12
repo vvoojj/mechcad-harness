@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from enum import StrEnum
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import ConfigDict, Field, field_validator, model_serializer, model_validator
+
+from mechcad_harness.core.canonical import canonical_json_bytes
 
 from .common import Model
 from .component_property import (
@@ -36,24 +37,19 @@ def physical_kinematic_root_hash(kinematic_root_physical_body_id: str) -> str:
     if not isinstance(kinematic_root_physical_body_id, str) or not kinematic_root_physical_body_id.strip():
         raise ValueError("kinematic root physical body ID must not be empty or whitespace")
     return "sha256:" + hashlib.sha256(
-        json.dumps(
+        canonical_json_bytes(
             {
                 "schema_version": "physical-kinematic-root@1",
                 "kinematic_root_physical_body_id": kinematic_root_physical_body_id,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+            }
+        )
     ).hexdigest()
 
 
 def _canonical_hash(value: Model, identity_field: str) -> str:
     payload = value.model_dump(mode="json")
     payload.pop(identity_field, None)
-    encoded = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    encoded = canonical_json_bytes(payload)
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
@@ -228,9 +224,7 @@ class CanonicalGeometrySourceReference(CanonicalModel):
         from .geometry_identity import reference_hash_payload
 
         payload = reference_hash_payload(self.model_dump(mode="json"))
-        encoded = json.dumps(
-            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        encoded = canonical_json_bytes(payload)
         expected = f"sha256:{hashlib.sha256(encoded).hexdigest()}"
         if self.reference_hash == "pending":
             object.__setattr__(self, "reference_hash", expected)
@@ -455,12 +449,9 @@ class CanonicalComponentSpecification(CanonicalModel):
             if isinstance(definition.mounting_face, MountingFaceInterface) and frame is not None:
                 _validate_canonical_mounting_face_frame(definition.mounting_face, frame)
 
-        encoded = json.dumps(
-            self._specification_hash_payload(),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        encoded = canonical_json_bytes(
+            self._specification_hash_payload()
+        )
         expected = f"sha256:{hashlib.sha256(encoded).hexdigest()}"
         if self.specification_hash == "pending":
             object.__setattr__(self, "specification_hash", expected)
@@ -1360,12 +1351,9 @@ class CanonicalPhysicalMechanism(CanonicalModel):
                 raise ValueError(
                     "canonical multi-joint verification requires exactly one obligation"
                 )
-        encoded = json.dumps(
-            self._mechanism_hash_payload(),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        encoded = canonical_json_bytes(
+            self._mechanism_hash_payload()
+        )
         expected = f"sha256:{hashlib.sha256(encoded).hexdigest()}"
         if self.mechanism_hash == "pending":
             object.__setattr__(self, "mechanism_hash", expected)

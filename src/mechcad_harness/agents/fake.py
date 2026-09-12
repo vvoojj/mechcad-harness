@@ -1,4 +1,7 @@
 from collections.abc import Iterable
+import hashlib
+
+from mechcad_harness.core.canonical import canonical_json_bytes
 
 from .models import AgentAdapterExecutionError, AgentAdapterExecutionOutcome, AgentAdapterIdentity, AgentAdapterProvenance, AgentAuthoredResponsePayload, AgentIdentity, AgentInvocationRequest, response_model_for_contract
 
@@ -38,7 +41,7 @@ class FakeAgentAdapter:
             response = response_model_for_contract(request.response_contract).model_validate(response.model_dump(mode="json"))
         except Exception as exc:
             raise AgentAdapterExecutionError("fake authored response failed selected response contract", provenance=provenance, failure_kind="structured_validation") from exc
-        return AgentAdapterExecutionOutcome(authored_response=response, provenance=provenance, execution_metadata={"authored_response_hash": f"sha256:{__import__('hashlib').sha256(__import__('json').dumps(response.model_dump(mode='json'), sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"})
+        return AgentAdapterExecutionOutcome(authored_response=response, provenance=provenance, execution_metadata={"authored_response_hash": f"sha256:{hashlib.sha256(canonical_json_bytes(response.model_dump(mode='json'))).hexdigest()}"})
 
     def provenance(self) -> AgentAdapterProvenance:
         return AgentAdapterProvenance(adapter_name=self.identity.adapter_name, adapter_version=self.identity.adapter_version, provider="test", transport="in-process")

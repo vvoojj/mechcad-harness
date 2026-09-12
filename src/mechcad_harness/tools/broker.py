@@ -1,7 +1,7 @@
-import json
 import hashlib
 from uuid import uuid4
 
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models import Evidence
 
 from .errors import ToolExecutionError, ToolPermissionError
@@ -10,7 +10,7 @@ from .persistence import ToolStore
 
 
 def payload_hash(payload: dict) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    encoded = canonical_json_bytes(payload)
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 

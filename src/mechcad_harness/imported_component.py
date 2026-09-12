@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Literal
 
 from pydantic import Field, field_validator
 
 from mechcad_harness.artifacts.storage import ArtifactStore
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.common import Model
 
 
@@ -64,7 +64,7 @@ def imported_component_hash(component: ImportedCadComponent) -> str:
         "source_revision": component.source_revision,
         "source_state_hash": component.source_state_hash,
     }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    canonical = canonical_json_bytes(payload)
     return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
 

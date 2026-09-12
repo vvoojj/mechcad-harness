@@ -3,10 +3,10 @@ from enum import StrEnum
 import math
 from typing import Any, Literal, NamedTuple, Protocol
 import hashlib
-import json
 
 from pydantic import Field, field_validator
 
+from mechcad_harness.core.canonical import canonical_json_text
 from mechcad_harness.models import ChangeProposal, ConstraintRequest, DesignState, Issue
 from mechcad_harness.models.common import Model
 from mechcad_harness.tools.models import TorqueInput
@@ -221,7 +221,7 @@ def materialize_response_contract(contract: AgentAuthoredResponseContract) -> Re
     contract = AgentAuthoredResponseContract(contract)
     response_model = response_model_for_contract(contract)
     schema = response_model.model_json_schema()
-    schema_json = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    schema_json = canonical_json_text(schema)
     schema_hash = f"sha256:{hashlib.sha256(schema_json.encode()).hexdigest()}"
     return ResponseContractMaterialization(contract, response_model, schema, schema_json, schema_hash)
 

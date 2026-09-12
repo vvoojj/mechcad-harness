@@ -119,7 +119,7 @@ Verification convention: `WIRED` = reachable from production composition;
 
 Counts are per row by its **primary (first-listed) status**; some rows carry a
 secondary status noted in the row (e.g. #22, #28). This differs from the main
-report's `LEGACY_RESIDUES = 9`, which counts P3 **findings**, not rows.
+report's `LEGACY_RESIDUES = 10`, which counts P3 **findings**, not rows.
 
 | Status | Count |
 | --- | --- |

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import math
 import hashlib
-import json
 from enum import StrEnum
 
 from pydantic import Field, model_validator
 
 from mechcad_harness.cad_assembly import CadComponentInstance, CadRigidTransform, assembly_hash
 from mechcad_harness.cad_assembly import CadAssemblyProgram
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.common import Model
 from mechcad_harness.transient_assembly_analysis import TransientAssemblyAnalysisRequest
 
@@ -88,7 +88,7 @@ class CadKinematicSweepResult(Model):
             minimum_clearance_mm=minimum.minimum_exact_distance_mm,
         )
         payload = result.model_dump(mode="json", exclude={"result_hash"})
-        return result.model_copy(update={"result_hash": f"sha256:{hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"})
+        return result.model_copy(update={"result_hash": f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"})
 
 
 class RevoluteAxis(Model):
@@ -150,7 +150,7 @@ class CadKinematicSweepRequest(Model):
         if not all(math.isfinite(value) and value >= 0 for value in (self.volume_tolerance_mm3, self.distance_tolerance_mm)):
             raise ValueError("collision tolerances must be finite and non-negative")
         payload = self.model_dump(mode="json", exclude={"request_hash"})
-        digest = f"sha256:{hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
+        digest = f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
         if self.request_hash == "pending":
             self.request_hash = digest
         elif self.request_hash != digest:

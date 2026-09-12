@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from types import MappingProxyType
@@ -22,6 +21,7 @@ from mechcad_harness.candidates.canonical_cad import (
 from mechcad_harness.candidates.canonical_mechanism import (
     CanonicalMechanismReconstruction,
 )
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.candidates.generated_authority import (
     _fact_value,
     build_candidate_view,
@@ -567,9 +567,9 @@ def _inventory_hash_payload(inventory: "MultiJointCollisionPairInventory") -> di
 
 
 def _inventory_hash(inventory: "MultiJointCollisionPairInventory") -> str:
-    encoded = json.dumps(
-        _inventory_hash_payload(inventory), sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    encoded = canonical_json_bytes(
+        _inventory_hash_payload(inventory)
+    )
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
@@ -2122,7 +2122,7 @@ def physical_to_m10_v2_model_id(
         "physical_body_ids": list(body_ids),
         "physical_joint_ids": list(joint_ids),
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = canonical_json_bytes(payload)
     return "physical-to-m10-v2-model@1:" + hashlib.sha256(encoded).hexdigest()
 
 
@@ -2289,7 +2289,7 @@ def physical_to_m10_bridge_hash(bridge: PhysicalToM10V2Bridge) -> str:
     payload.pop("model", None)
     payload.pop("inventory", None)
     payload.pop("physical_to_m10_bridge_hash", None)
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = canonical_json_bytes(payload)
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 

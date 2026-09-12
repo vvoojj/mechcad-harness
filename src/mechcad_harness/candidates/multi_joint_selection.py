@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Literal, NamedTuple
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.common import Model
 from mechcad_harness.models.multi_joint_verification import (
     MultiJointVerificationConfigurationSet,
@@ -31,9 +31,7 @@ from .services import CandidateCurrentness
 
 
 def _digest(payload: object) -> str:
-    encoded = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    encoded = canonical_json_bytes(payload)
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 

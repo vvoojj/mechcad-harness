@@ -1,4 +1,3 @@
-import json
 import re
 from collections.abc import Mapping
 from enum import StrEnum
@@ -16,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 
+from ..core.canonical import canonical_json_bytes
 from ..materials import MaterialDataAuthority
 from .common import Model
 
@@ -648,9 +648,7 @@ def evaluate_material_authority_policy(
 
 
 def structural_definition_hash(definition: StructuralAnalysisDefinition) -> str:
-    payload = json.dumps(
+    payload = canonical_json_bytes(
         definition.model_dump(mode="json"),
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    )
     return "sha256:" + sha256(payload).hexdigest()

@@ -1,9 +1,9 @@
 import hashlib
-import json
 from enum import StrEnum
 
 from pydantic import Field
 
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.common import Model
 
 
@@ -62,7 +62,7 @@ class YagiCarrierSlidingInterfaceDesign(Model):
 
 
 def _hash_payload(value) -> str:
-    return f"sha256:{hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()}"
+    return f"sha256:{hashlib.sha256(canonical_json_bytes(value)).hexdigest()}"
 
 
 def select_yagi_carrier_sliding_interface() -> YagiCarrierSlidingInterfaceDesign:

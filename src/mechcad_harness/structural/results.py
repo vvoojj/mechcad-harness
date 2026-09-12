@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import re
 from collections import Counter
@@ -11,6 +10,7 @@ from typing import Callable
 
 from mechcad_harness.artifacts.models import ArtifactType
 from mechcad_harness.artifacts.storage import ArtifactStore, ArtifactVerificationError
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.structural import (
     StructuralAnalysisDefinition,
     StructuralBodyAcceleration,
@@ -1107,7 +1107,7 @@ class StructuralResultInterpreter:
     def _mesh_specification_hash(request):
         payload = request.mesh_specification.model_dump(mode="json")
         return "sha256:" + hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            canonical_json_bytes(payload)
         ).hexdigest()
 
     @staticmethod

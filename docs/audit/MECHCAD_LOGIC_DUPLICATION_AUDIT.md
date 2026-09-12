@@ -957,3 +957,43 @@ encoded by tests and whether the tests already describe semantic drift.
 - Unrelated dirty work preserved: YES (`.coverage`, `.superpowers/sdd/*`,
   untracked Rotator V2 audit/plan/test files, `projects/`, and
   `src/mechcad-harness/` left untouched).
+
+---
+
+## 17. F2 Remediation Record (post-acceptance)
+
+Records the authorized F2-only remediation. It does not revise any finding above.
+
+- **Direction executed:** `EXTRACT_NEUTRAL_CANONICAL_SERIALIZATION_CORE` (§9.1).
+- **Neutral core:** `src/mechcad_harness/core/canonical.py`
+  (`canonical_json_bytes` / `canonical_json_text`), a dependency leaf importing
+  only the standard library and preserving the accepted strict byte contract
+  (`ensure_ascii=False, sort_keys=True, separators=(",", ":")`).
+- **`state/hashing.py:canonical_json`** delegates to the neutral core; its public
+  surface and emitted bytes are unchanged.
+- **Migrated content-identity serializers:** the strict `json.dumps` sites in
+  `models/{physical_pair_policy,multi_joint_verification,physical_mechanism,`
+  `structural}.py`, `tools/broker.py`,
+  `candidates/{multi_joint_selection,multi_joint_m10_evaluation,canonical_m10,`
+  `m10_evaluation,multi_joint_m10_bridge,services}.py`,
+  `structural/{models,evidence_models,validation,results,service,`
+  `evidence_service,evidence}.py`, `cad_{assembly,program,compilation,analysis}.py`,
+  `imported_component.py`, `structural_request.py`, `application.py`,
+  `agents/{models,opencode,fake}.py`, and the `yagi_*` / `azimuth_mount_plate.py`
+  helpers.
+- **Intentionally not migrated:** `artifacts/storage.py` (artifact byte/metadata
+  authority); `structural/evidence.py` volatile-key filtering remains local;
+  `default=str` sites (`changes/provenance.py`, `agents/constraint_resolution.py`,
+  `runs/persistence.py`, `tools/persistence.py`); canonical-record file
+  persistence (`state/manager.py`, `dependency/storage.py`); embedded FreeCAD
+  script strings and backend manifest/wire serializers (`backends/**`,
+  `transient_freecad_measurement.py`, `structural/geometry.py`,
+  `analysis_service.py`); and the accepted M13-3P source-byte **frozen** M10
+  modules (`multi_joint_kinematics.py`, `multi_joint_pair_scope.py`,
+  `multi_joint_collision_sweep.py`, `multi_joint_continuous_path.py`,
+  `multi_joint_continuous_clearance.py`) locked by
+  `tests/unit/test_m13_3_legacy_goldens.py`.
+- **Hash bytes:** all existing accepted/persisted ASCII payload hashes are
+  unchanged; consolidation normalizes non-ASCII serialization to the canonical
+  UTF-8 contract (the F2 drift fix).
+- **Other findings:** this remediation does not close F1/F3/F4/F5/F6/F7/F8/F11.

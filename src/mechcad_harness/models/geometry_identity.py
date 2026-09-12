@@ -51,10 +51,10 @@ def canonical_geometry_reference_payload(reference, *, m13: bool) -> dict:
 
 
 def geometry_identity_hash(identity: "GeometryArtifactIdentity") -> str:
-    from mechcad_harness.state.hashing import canonical_json
+    from mechcad_harness.core.canonical import canonical_json_bytes
 
     payload = geometry_identity_payload(identity)
-    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+    return "sha256:" + hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def geometry_identity_payload(identity: "GeometryArtifactIdentity") -> dict:
@@ -69,10 +69,10 @@ def geometry_identity_payload(identity: "GeometryArtifactIdentity") -> dict:
 
 def geometry_reference_hash(identity: "GeometryArtifactIdentity") -> str:
     """Return the enclosing geometry-reference hash for an identity projection."""
-    from mechcad_harness.state.hashing import canonical_json
+    from mechcad_harness.core.canonical import canonical_json_bytes
 
     payload = reference_hash_payload(geometry_identity_payload(identity))
-    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+    return "sha256:" + hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 class GeometryArtifactIdentity(Model):

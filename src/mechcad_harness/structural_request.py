@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from hashlib import sha256
 from math import isfinite
 from typing import Literal
 
 from pydantic import ConfigDict, Field, model_validator
 
+from .core.canonical import canonical_json_bytes
 from .models.common import Model
 from .models.structural import (
     StructuralAnalysisDefinition,
@@ -136,5 +136,5 @@ def structural_request_hash(request: StructuralAnalysisRequest) -> str:
         "execution_settings": request.execution_settings.model_dump(mode="json"),
         "analytical_policy_hash": request.analytical_policy_hash,
     }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    canonical = canonical_json_bytes(payload)
     return "sha256:" + sha256(canonical).hexdigest()

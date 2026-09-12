@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from mechcad_harness.core.canonical import canonical_json_bytes
 
 
 POLICY_ID = "rectangular-cantilever-linear-static-validation@1"
@@ -205,7 +206,7 @@ AnalyticalValidationResult = StructuralAnalyticalValidationResult
 
 
 def _stable_hash(payload: Any) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = canonical_json_bytes(payload)
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 

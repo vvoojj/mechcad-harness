@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Literal
 
 from pydantic import ConfigDict, Field, model_validator
 
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.kinematic_sweep import CadKinematicSweepRequest, RevoluteAxis
 from mechcad_harness.models.common import Model
 from mechcad_harness.yagi_collision_layout import YagiCollisionLayoutSpec
@@ -29,7 +29,7 @@ class YagiELKinematicReference(Model):
     @model_validator(mode="after")
     def validate_reference_hash(self):
         payload = self.model_dump(mode="json", exclude={"reference_hash"})
-        expected = f"sha256:{hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()}"
+        expected = f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
         if self.reference_hash == "pending":
             object.__setattr__(self, "reference_hash", expected)
         elif self.reference_hash != expected:

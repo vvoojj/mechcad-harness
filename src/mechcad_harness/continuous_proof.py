@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from enum import StrEnum
 
 from pydantic import Field, model_validator
 
 from mechcad_harness.cad_assembly import CadAssemblyProgram, assembly_hash
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.kinematic_sweep import (
     CadKinematicSweepService,
     CollisionClassification,
@@ -111,7 +111,7 @@ class ContinuousSingleAxisProofRequest(Model):
             raise ValueError("tolerances must be non-negative")
         # Compute deterministic request hash
         payload = self.model_dump(mode="json", exclude={"request_hash"})
-        digest = f"sha256:{hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
+        digest = f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
         if self.request_hash == "pending":
             self.request_hash = digest
         elif self.request_hash != digest:
@@ -272,7 +272,7 @@ class ContinuousSingleAxisClearanceProof:
         )
         # Deterministic result hash
         payload = result.model_dump(mode="json", exclude={"result_hash"})
-        digest = f"sha256:{hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
+        digest = f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
         return result.model_copy(update={"result_hash": digest})
 
     def _prove_interval(

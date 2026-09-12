@@ -84,11 +84,11 @@ def _finite_float(value: object) -> float:
 
 
 def _self_hash(model: Model, hash_field: str) -> str:
-    from mechcad_harness.state.hashing import canonical_json
+    from mechcad_harness.core.canonical import canonical_json_bytes
 
     payload = model.model_dump(mode="json")
     payload.pop(hash_field, None)
-    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+    return "sha256:" + hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 class GeneratedInterfaceRef(Model):
@@ -381,7 +381,7 @@ def _validate_acyclic(derivations: tuple[object, ...]) -> None:
 
 
 def placement_derivations_hash(derivations) -> str:
-    from mechcad_harness.state.hashing import canonical_json
+    from mechcad_harness.core.canonical import canonical_json_bytes
 
     records = tuple(derivations)
     _validate_acyclic(records)
@@ -391,7 +391,7 @@ def placement_derivations_hash(derivations) -> str:
             for record in sorted(records, key=lambda item: item.derivation_id)
         ]
     }
-    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+    return "sha256:" + hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def _cross(first: tuple[float, float, float], second: tuple[float, float, float]):

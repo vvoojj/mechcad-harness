@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Mapping
 from enum import StrEnum
@@ -11,6 +10,7 @@ from pydantic import AliasChoices, ConfigDict, Field, field_validator, model_val
 from typing_extensions import TypeAliasType
 
 from mechcad_harness.backends.models import BackendProvenance
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.common import Model
 from mechcad_harness.structural.models import (
     StructuralAnalysisResult,
@@ -141,11 +141,9 @@ def _canonical(value: Any, *, identity_field: str | None = None) -> Any:
 
 
 def _hash(value: Any, *, identity_field: str | None = None) -> str:
-    encoded = json.dumps(
-        _canonical(value, identity_field=identity_field),
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    encoded = canonical_json_bytes(
+        _canonical(value, identity_field=identity_field)
+    )
     return "sha256:" + sha256(encoded).hexdigest()
 
 

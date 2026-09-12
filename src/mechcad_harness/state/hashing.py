@@ -1,7 +1,7 @@
 import hashlib
-import json
 from typing import Any
 
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models import DesignState
 
 
@@ -12,7 +12,7 @@ def canonical_payload(state: DesignState) -> dict[str, Any]:
 
 def canonical_json(state: DesignState | dict[str, Any]) -> bytes:
     payload = canonical_payload(state) if isinstance(state, DesignState) else state
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return canonical_json_bytes(payload)
 
 
 def state_hash(state: DesignState | dict[str, Any]) -> str:

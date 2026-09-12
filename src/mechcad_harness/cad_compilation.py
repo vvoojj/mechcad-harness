@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import re
 from typing import Literal
@@ -17,6 +16,7 @@ from mechcad_harness.cad_program import (
     ThroughSlotOperation,
     cad_program_hash,
 )
+from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.common import Model
 
 
@@ -172,7 +172,7 @@ class MountingPlateDesignSpec(Model):
 
 
 def mounting_plate_spec_hash(spec: MountingPlateDesignSpec) -> str:
-    payload = json.dumps(spec.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload = canonical_json_bytes(spec.model_dump(mode="json"))
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 

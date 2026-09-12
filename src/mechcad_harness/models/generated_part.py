@@ -24,11 +24,11 @@ _SAFE_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*$")
 
 
 def _canonical_json(value: Any) -> bytes:
-    # Defer the state package import so generated models can be loaded while
-    # the canonical physical model is still initializing.
-    from mechcad_harness.state.hashing import canonical_json
+    # The neutral core is a dependency leaf; importing it here keeps generated
+    # models loadable without a models -> state layering inversion.
+    from mechcad_harness.core.canonical import canonical_json_bytes
 
-    return canonical_json(value)
+    return canonical_json_bytes(value)
 
 
 def _require_hash(value: str) -> str:

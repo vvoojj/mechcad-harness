@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 from enum import StrEnum
 from hashlib import sha256
@@ -9,6 +8,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from mechcad_harness.backends.models import BackendProvenance
+from mechcad_harness.core.canonical import canonical_json_text
 from mechcad_harness.models.common import Model
 from mechcad_harness.models.structural import StructuralResultField
 from mechcad_harness.structural_request import StructuralSourceBinding
@@ -426,7 +426,7 @@ class StructuralLoadCaseResult(_ImmutableFiniteModel):
             if sample.mesh_hash != self.mesh_hash or sample.identity.mesh_hash != self.mesh_hash:
                 raise ValueError("local result mesh hash does not match case mesh hash")
         identities = [sample.identity.model_dump(mode="json", exclude_none=False) for sample in self.stress_samples]
-        if len({json.dumps(identity, sort_keys=True, separators=(",", ":")) for identity in identities}) != len(identities):
+        if len({canonical_json_text(identity) for identity in identities}) != len(identities):
             raise ValueError("duplicate stress sample identity")
         displacement_identities = [(sample.mesh_hash, sample.node_id) for sample in self.displacements]
         if len(set(displacement_identities)) != len(displacement_identities):
@@ -649,7 +649,7 @@ class StructuralExecutionManifest(Model):
 # Deterministic semantic hashing helpers (engineering identity, no volatile data)
 # ---------------------------------------------------------------------------
 def _stable_json(value) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return canonical_json_text(value)
 
 
 def resolved_region_hash(region: ResolvedStructuralRegion) -> str:
