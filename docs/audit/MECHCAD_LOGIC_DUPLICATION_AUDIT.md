@@ -606,6 +606,11 @@ None of these currently allows two production paths to write incompatible
 *canonical* records; the canonical-revision-writer and invalidation-engine
 invariants hold.
 
+The F1, F2, F4, F5, F6, F7, and F11 entries above retain their historical audit
+risk statements. Their accepted current-state remediation records are appended
+below and the companion ownership map reflects the resulting authorities. F3
+and F8 remain unresolved.
+
 ---
 
 ## 9. Suggested Remediation Order
@@ -1200,3 +1205,68 @@ the new `analysis.section` node identity.
 
 **F11 STATUS:** ACCEPTED remediation. **F3 STATUS:** UNRESOLVED; no F3
 remediation was started by this change.
+
+## 20. F4 Remediation Record (post-acceptance)
+
+**Record date:** 2026-09-13
+
+This appended record documents the accepted F4 remediation. The historical F4
+finding, timeline, and evidence above remain unchanged. This record does not
+resolve F1, F2, F3, F5, F6, F7, F8, F11, or any P3/INFO finding.
+
+- **Mesh-specification authority:** `src/mechcad_harness/structural/models.py::mesh_specification_hash`.
+- **Mesh-input authority:** `src/mechcad_harness/structural/models.py::mesh_input_hash`.
+- **Accepted commit:** `d398e07`.
+- **Current behavior:** the former 4+2 semantic implementations are reduced to
+  one mesh-specification and one mesh-input authority. Producers and verifiers
+  continue to recompute through these model-layer functions.
+- **Compatibility:** existing digest bytes remain unchanged, including the
+  accepted characterization vectors and persisted structural bindings.
+- **Focused evidence:** `python -m pytest tests/unit/test_structural_models.py tests/unit/test_structural_service.py tests/unit/test_structural_results.py tests/unit/test_structural_evidence_verifier.py -q` produced `372 passed`.
+- **Full-unit evidence:** `python -m pytest tests/unit -q` produced `2635 passed, 19 skipped, 5 failed`; the five failures were the accepted unrelated baseline of four README documentation-contract failures and one untracked Rotator V2 candidate-inventory failure.
+- **Independent review:** **PASS_WITH_NOTES**; no blocking authority, digest-compatibility, producer/verifier, or scope regression was found.
+
+**F4 STATUS:** ACCEPTED remediation; the original F4 finding remains the
+historical pre-remediation record.
+
+## 21. F5 Remediation Record (post-acceptance)
+
+**Record date:** 2026-09-13
+
+This appended record documents the accepted F5 remediation. The historical F5
+finding, timeline, and evidence above remain unchanged. This record does not
+resolve F1, F2, F3, F4, F6, F7, F8, F11, or any P3/INFO finding.
+
+- **FreeCAD provenance identity authority:** `src/mechcad_harness/backends/models.py::FREECAD_PROVENANCE_IDENTITY`.
+- **Accepted commit:** `3a1fdfd`.
+- **Current behavior:** structural runtime discovery derives its compatibility
+  view from the backend model authority; the FreeCAD backend no longer owns a
+  second independent provenance identity value.
+- **Compatibility:** accepted FreeCAD provenance bytes remain unchanged.
+- **Focused evidence:** `python -m pytest tests/unit/test_structural_runtime.py -q` produced `7 passed`.
+- **Full-unit evidence:** `python -m pytest tests/unit -q` produced `2635 passed, 19 skipped, 5 failed`; the five failures were the accepted unrelated baseline of four README documentation-contract failures and one untracked Rotator V2 candidate-inventory failure.
+- **Independent review:** **PASS_WITH_NOTES**; no blocking identity, provenance-byte, structural-runtime, or scope regression was found.
+
+**F5 STATUS:** ACCEPTED remediation; the original F5 finding remains the
+historical pre-remediation record.
+
+## 22. F6 Remediation Record (post-acceptance)
+
+**Record date:** 2026-09-13
+
+This appended record documents the accepted F6 remediation. The historical F6
+finding, timeline, and evidence above remain unchanged. This record does not
+resolve F1, F2, F3, F4, F5, F7, F8, F11, or any P3/INFO finding.
+
+- **Physical-root hash authority:** `src/mechcad_harness/models/physical_mechanism.py::physical_kinematic_root_hash`.
+- **Accepted commit:** `773da15`.
+- **Current behavior:** `candidates/models.py` imports and re-exports the same
+  function rather than defining a second candidate hash implementation.
+- **Compatibility:** physical-root hash bytes remain unchanged, and identity
+  checks continue to use the canonical model-layer function.
+- **Focused evidence:** `python -m pytest tests/unit/test_m13_3_physical_primitives.py tests/unit/test_m13_3_bridge_compiler.py -q` produced `41 passed`.
+- **Full-unit evidence:** `python -m pytest tests/unit -q` produced `2635 passed, 19 skipped, 5 failed`; the five failures were the accepted unrelated baseline of four README documentation-contract failures and one untracked Rotator V2 candidate-inventory failure.
+- **Independent review:** **PASS_WITH_NOTES**; no blocking hash-byte, import/re-export, bridge, or scope regression was found.
+
+**F6 STATUS:** ACCEPTED remediation; the original F6 finding remains the
+historical pre-remediation record.
