@@ -35,7 +35,7 @@ Verification convention: `WIRED` = reachable from production composition;
 | 4 | Revision hashing / canonical JSON | M0/M2 `37f3ff3` | `core/canonical.py` (WIRED); `state/hashing.py:canonical_json` delegates to it | intentional separate serializers for artifact persistence, `default=str` records, and frozen wire contracts | F2 | SINGLE_AUTHORITY |
 | 5 | Dependency invalidation | M3 `df584f0` | `dependency/graph.py:impact`, `dependency/storage.py` (WIRED) | — | — | SINGLE_AUTHORITY |
 | 6 | Dependency path matching | M2/M3 | `dependency/graph.py:path_matches` (WIRED) | `changes/ownership.py`, `changes/engine.py:_segments` | F16 | POSSIBLE_DUPLICATION |
-| 7 | Evidence freshness | M3 `df584f0` | `dependency/storage.py:get_evidence_freshness` (WIRED) | structural currentness; candidate currentness | F3 | POSSIBLE_DUPLICATION / SEMANTIC_DUPLICATION |
+| 7 | Evidence freshness | M3 `df584f0` | `dependency/graph.py:impact`, `dependency/storage.py:get_evidence_freshness` (WIRED) | structural strict-pointer currentness and candidate source-relevance currentness are distinct layered contracts | F3 | LEGITIMATE_LAYERING |
 | 8 | Run control / status machine | M4 `a958c397` | `runs/controller.py`, `runs/models.py` (WIRED) | legacy `models/task.py:TaskStatus`/`AgentTask` | F17 | LEGACY_RESIDUE |
 | 9 | Production orchestration | M8B-1 `8079c57` | `application.py:ProductionApplication` (WIRED) | — | — | SINGLE_AUTHORITY |
 
@@ -93,7 +93,7 @@ Verification convention: `WIRED` = reachable from production composition;
 | 42 | FRD/DAT parsing / result interpretation | M11-4 `682300b` | `structural/results.py` (WIRED) | — | — | SINGLE_AUTHORITY |
 | 43 | Structural deck / load lowering | M11-3 `682300b` | `structural/deck.py` (WIRED) | independent verifier in `structural/results.py` | — | INTENTIONAL_INDEPENDENT_VERIFIER |
 | 44 | Structural Evidence publish/verify | M11-5 `07950cd` | `structural/evidence_service.py` (WIRED) | duplicate artifact-read/verify | F4, F21 | POSSIBLE_DUPLICATION (F21 only; F4 resolved) |
-| 45 | Structural Evidence currentness | M11-5 `07950cd` | `structural/evidence_service.py:currentness` (WIRED) | candidate currentness enum+logic | F3 | SEMANTIC_DUPLICATION |
+| 45 | Structural Evidence currentness | M11-5 `07950cd` | `structural/evidence_service.py:currentness` plus `core/currentness.py:Currentness` (WIRED) | candidate source-relevance evaluator shares status vocabulary only | F3 | SINGLE_AUTHORITY |
 | 46 | Mesh specification / input hashing | M11-2/M11-5 | `structural/models.py:mesh_specification_hash`, `structural/models.py:mesh_input_hash` (WIRED) | — | F4 | SINGLE_AUTHORITY |
 | 47 | FreeCAD runtime identity | M7A / M11-2 | `backends/models.py:FREECAD_PROVENANCE_IDENTITY` (WIRED) | `structural/runtime.py:FREECAD_IDENTITY` is a derived compatibility view | F5 | SINGLE_AUTHORITY |
 | 48 | `analysis.structural` dependency node / typed FEA Evidence | M11-5 `07950cd` | `structural/evidence.py:EvidenceSubject.STRUCTURAL_ANALYSIS`, `structural/evidence_service.py` (WIRED; typed Evidence at `analysis.structural`) | — | F11 | SINGLE_AUTHORITY |
@@ -123,13 +123,13 @@ report's `LEGACY_RESIDUES = 10`, which counts P3 **findings**, not rows.
 
 | Status | Count |
 | --- | --- |
-| SINGLE_AUTHORITY | 28 |
-| LEGITIMATE_LAYERING | 6 |
+| SINGLE_AUTHORITY | 29 |
+| LEGITIMATE_LAYERING | 7 |
 | LEGITIMATE_ADAPTER_VARIANTS | 4 |
 | INTENTIONAL_SUPERSESSION | 5 |
 | INTENTIONAL_INDEPENDENT_VERIFIER | 2 |
-| SEMANTIC_DUPLICATION | 4 |
-| POSSIBLE_DUPLICATION | 7 |
+| SEMANTIC_DUPLICATION | 3 |
+| POSSIBLE_DUPLICATION | 6 |
 | AUTHORITY_CONFLICT (latent/overload) | 0 |
 | LEGACY_RESIDUE | 4 |
 | UNKNOWN | 0 |

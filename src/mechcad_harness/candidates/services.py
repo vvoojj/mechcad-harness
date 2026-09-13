@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-from enum import StrEnum
 
 from pydantic import Field
 
 from mechcad_harness.artifacts import ArtifactStore, ArtifactType, EngineeringArtifact
 from mechcad_harness.core.canonical import canonical_json_bytes
+from mechcad_harness.core.currentness import Currentness
 from mechcad_harness.models.common import Model
 from mechcad_harness.state import StateManager
 
@@ -17,10 +17,7 @@ class CandidateIntegrityError(ValueError):
     pass
 
 
-class CandidateCurrentness(StrEnum):
-    CURRENT = "current"
-    STALE_RELATIVE_TO_CURRENT_STATE = "stale_relative_to_current_state"
-    CURRENTNESS_UNAVAILABLE = "currentness_unavailable"
+CandidateCurrentness = Currentness
 
 
 class CandidateIntegrityVerifier:

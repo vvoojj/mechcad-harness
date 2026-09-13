@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from mechcad_harness.core.currentness import Currentness
 from mechcad_harness.candidates import (
     CandidateCurrentness,
     CandidateCurrentnessService,
@@ -200,6 +201,19 @@ def test_source_validation_and_relevance_sensitive_currentness(tmp_path):
     changed = unrelated.model_copy(update={"id": "DES-CHANGED"})
     manager.create_revision("PRJ-M12", changed)
     assert service.evaluate(candidate, request, policy) is CandidateCurrentness.STALE_RELATIVE_TO_CURRENT_STATE
+
+
+def test_candidate_currentness_name_is_the_neutral_status_authority():
+    assert CandidateCurrentness is Currentness
+    assert CandidateCurrentness.CURRENT.value == "current"
+    assert (
+        CandidateCurrentness.STALE_RELATIVE_TO_CURRENT_STATE.value
+        == "stale_relative_to_current_state"
+    )
+    assert (
+        CandidateCurrentness.CURRENTNESS_UNAVAILABLE.value
+        == "currentness_unavailable"
+    )
 
 
 def test_explicit_publication_fresh_reloads_and_rejects_tamper(tmp_path):

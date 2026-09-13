@@ -608,8 +608,11 @@ invariants hold.
 
 The F1, F2, F4, F5, F6, F7, and F11 entries above retain their historical audit
 risk statements. Their accepted current-state remediation records are appended
-below and the companion ownership map reflects the resulting authorities. F3
-and F8 remain unresolved.
+below and the companion ownership map reflects the resulting authorities. The
+pre-remediation status summary recorded F3 and F8 as unresolved; current-tree
+status is now governed by the appended records: F3 is resolved by the F3
+post-acceptance record, while F8 remains unresolved/pending its separately
+approved Option D disposition.
 
 ---
 
@@ -1206,6 +1209,10 @@ the new `analysis.section` node identity.
 **F11 STATUS:** ACCEPTED remediation. **F3 STATUS:** UNRESOLVED; no F3
 remediation was started by this change.
 
+The F3 status in this F11 record is scoped to that earlier remediation and is
+historical, not the current-tree status. The appended F3 post-acceptance record
+below resolves F3 for the current tree.
+
 ## 20. F4 Remediation Record (post-acceptance)
 
 **Record date:** 2026-09-13
@@ -1270,3 +1277,42 @@ resolve F1, F2, F3, F4, F5, F7, F8, F11, or any P3/INFO finding.
 
 **F6 STATUS:** ACCEPTED remediation; the original F6 finding remains the
 historical pre-remediation record.
+
+## 23. F3 Remediation Record (post-acceptance)
+
+**Record date:** 2026-09-13
+
+The historical F3 finding above remains unchanged as the pre-remediation audit
+record. The current-tree correction is that the duplicated implementation was
+the three-value structural/candidate status vocabulary, not an equivalent
+pointer evaluator: structural currentness requires exact current-pointer tuple
+equality, while candidate currentness may remain current across a newer revision
+when every explicit consumed-authority path remains equal.
+
+`core/currentness.py::Currentness` is the standard-library-only neutral status
+authority. `StructuralEvidenceCurrentness` and `CandidateCurrentness` are direct
+re-export aliases of that one enum. `EvidenceFreshness` remains the independent
+M3 graph/history vocabulary and no evaluator's semantics changed.
+
+F11's `analysis.section` / `analysis.structural` separation remains retained:
+section-tool Evidence uses `analysis.section`, while typed structural-FEA
+Evidence remains at `analysis.structural`; their records, readiness, and
+verification authorities remain distinct.
+
+### Verification Evidence
+
+| Command | Result |
+| --- | --- |
+| `python -m pytest tests/unit/test_core_currentness.py tests/unit/test_dependency.py tests/unit/test_runs.py tests/unit/test_agent_authoritative_context.py tests/unit/test_section_tools.py tests/unit/test_section_warping_tools.py tests/unit/test_section_engineering_tools.py tests/unit/test_structural_evidence_models.py tests/unit/test_structural_evidence_verifier.py tests/unit/test_m12_candidate_foundation.py tests/unit/test_m12_revolute_drive_service.py -q` | `237 passed, 2 skipped in 33.06s` |
+| `python -m compileall -q src/mechcad_harness tests` | exit code `0`, no output |
+| `git diff --check` | diagnostics only for unrelated pre-existing worktree changes: `.superpowers/sdd/progress.md:60-61,87,89-92` and `.superpowers/sdd/task-1-brief.md:33` |
+
+The two skipped tests were optional-dependency skips: structural profile is not
+installed in `tests/unit/test_section_tools.py:38` and
+`tests/unit/test_section_warping_tools.py:37`. No live CAD/solver invocation was
+run. No implementation commit was created or separately authorized; commits:
+none.
+
+**F3 STATUS:** ACCEPTED remediation record for this bounded current-tree
+correction; it is not an independent final acceptance marker. The original F3
+finding remains the historical pre-remediation record.

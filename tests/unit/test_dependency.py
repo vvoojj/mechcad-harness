@@ -200,6 +200,31 @@ def test_end_to_end_unrelated_then_material_change_and_replacement(tmp_path):
     assert store.get_evidence_freshness("PRJ-1", "EVD-M-3") is EvidenceFreshness.CURRENT
 
 
+def test_graph_freshness_can_remain_current_after_unrelated_revision(tmp_path):
+    manager = StateManager(tmp_path)
+    manager.create_project("PRJ-1", make_state())
+    graph = DependencyGraph.from_yaml(
+        dependency_file(
+            tmp_path,
+            rules=[
+                {"when": ["/materials/*"], "invalidates": ["analysis.materials"]},
+                {"when": ["/components/*/description"], "invalidates": ["analysis.packaging"]},
+            ],
+        )
+    )
+    store = EvidenceStore(tmp_path, manager, graph)
+    evidence = make_evidence(manager, "PRJ-1", node="analysis.materials")
+    store.write_evidence("PRJ-1", evidence)
+
+    manager.create_revision("PRJ-1", make_state())
+    store.record_invalidation(
+        store.build_invalidation("PRJ-1", 2, 1, ("/components/C-1/description",), "CS-2")
+    )
+
+    assert store.get_evidence_freshness("PRJ-1", evidence.id) is EvidenceFreshness.CURRENT
+    assert manager.load_current_pointer("PRJ-1")["revision"] != evidence.revision
+
+
 def test_structural_only_evidence_does_not_make_section_ready(tmp_path):
     manager = StateManager(tmp_path)
     manager.create_project("PRJ-1", make_state())

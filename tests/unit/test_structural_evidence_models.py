@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from mechcad_harness.backends.models import BackendProvenance
+from mechcad_harness.core.currentness import Currentness
 from mechcad_harness.dependency import DependencyEdge, DependencyGraph, EvidenceStore
 from mechcad_harness.models import DesignState, Evidence
 from mechcad_harness.state import StateManager
@@ -425,6 +426,19 @@ def test_convergence_study_hash_and_statuses_are_typed_and_immutable():
 
     with pytest.raises(ValidationError, match="response_semantics"):
         _study(response_semantics="signed")
+
+
+def test_structural_currentness_name_is_the_neutral_status_authority():
+    assert StructuralEvidenceCurrentness is Currentness
+    assert StructuralEvidenceCurrentness.CURRENT.value == "current"
+    assert (
+        StructuralEvidenceCurrentness.STALE_RELATIVE_TO_CURRENT_STATE.value
+        == "stale_relative_to_current_state"
+    )
+    assert (
+        StructuralEvidenceCurrentness.CURRENTNESS_UNAVAILABLE.value
+        == "currentness_unavailable"
+    )
 
 
 def test_convergence_subject_requires_study_result(evidence_payload):

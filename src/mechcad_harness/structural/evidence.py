@@ -11,6 +11,7 @@ from typing_extensions import TypeAliasType
 
 from mechcad_harness.backends.models import BackendProvenance
 from mechcad_harness.core.canonical import canonical_json_bytes
+from mechcad_harness.core.currentness import Currentness
 from mechcad_harness.models.common import Model
 from mechcad_harness.structural.models import (
     StructuralAnalysisResult,
@@ -56,10 +57,7 @@ class EvidenceSubject(StrEnum):
     STRUCTURAL_CONVERGENCE_STUDY = "analysis.structural.convergence"
 
 
-class StructuralEvidenceCurrentness(StrEnum):
-    CURRENT = "current"
-    STALE_RELATIVE_TO_CURRENT_STATE = "stale_relative_to_current_state"
-    CURRENTNESS_UNAVAILABLE = "currentness_unavailable"
+StructuralEvidenceCurrentness = Currentness
 
 
 class StructuralRepeatabilityStatus(StrEnum):

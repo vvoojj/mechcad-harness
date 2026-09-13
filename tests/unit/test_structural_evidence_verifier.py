@@ -1361,6 +1361,50 @@ def test_historical_verification_does_not_discover_runtimes_or_launch_processes(
     assert _fresh_verifier(persisted).verify(persisted.evidence_id).valid
 
 
+def test_structural_currentness_is_strict_current_pointer_equality(tmp_path, monkeypatch):
+    persisted = _persisted_evidence(tmp_path, monkeypatch)
+    evidence_store = EvidenceStore(persisted.workspace, persisted.state_manager, persisted.graph)
+    binding = persisted.request.source_binding
+
+    class PointerStateManager:
+        pointer = {
+            "project_id": persisted.project_id,
+            "revision": binding.source_revision,
+            "state_hash": binding.source_state_hash,
+        }
+
+        def load_current_pointer(self, project_id):
+            assert project_id == persisted.project_id
+            return dict(self.pointer)
+
+    pointer_manager = PointerStateManager()
+    verifier = StructuralEvidenceVerifier(
+        workspace=persisted.workspace,
+        project_id=persisted.project_id,
+        state_manager=pointer_manager,
+        artifact_store=ArtifactStore(persisted.workspace, project_id=persisted.project_id, run_id="RUN-1"),
+        evidence_store=evidence_store,
+    )
+
+    assert verifier.currentness(persisted.evidence_id) is StructuralEvidenceCurrentness.CURRENT
+    pointer_manager.pointer = {
+        "project_id": persisted.project_id,
+        "revision": binding.source_revision + 1,
+        "state_hash": binding.source_state_hash,
+    }
+    assert verifier.currentness(persisted.evidence_id) is (
+        StructuralEvidenceCurrentness.STALE_RELATIVE_TO_CURRENT_STATE
+    )
+    pointer_manager.pointer = {
+        "project_id": persisted.project_id,
+        "revision": binding.source_revision,
+        "state_hash": "sha256:" + "f" * 64,
+    }
+    assert verifier.currentness(persisted.evidence_id) is (
+        StructuralEvidenceCurrentness.STALE_RELATIVE_TO_CURRENT_STATE
+    )
+
+
 def test_currentness_is_independent_from_historical_verification(tmp_path, monkeypatch):
     persisted = _persisted_evidence(tmp_path, monkeypatch)
     pointer_path = persisted.workspace / "projects" / persisted.project_id / "current.json"
