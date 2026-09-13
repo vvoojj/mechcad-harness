@@ -18,6 +18,9 @@ from mechcad_harness.candidates.canonical_mechanism import (
 )
 from mechcad_harness.models import (
     CanonicalAcceptedDesignChoice,
+    CanonicalComponentProperty,
+    CanonicalComponentPropertyAvailability,
+    CanonicalComponentPropertyAuthority,
     CanonicalPhysicalMechanism,
     DesignState,
 )
@@ -27,7 +30,21 @@ from mechcad_harness.state import StateManager, state_hash
 from test_m12_canonical_physical_mechanism import _mechanism
 
 
-def _fixture(tmp_path):
+def _canonical_properties(entries):
+    return tuple(
+        CanonicalComponentProperty(
+            key=key,
+            availability=CanonicalComponentPropertyAvailability.AVAILABLE,
+            normalized_value=value,
+            canonical_unit="mm",
+            source_identity="test:canonical-cad-dimensions@1",
+            authority=CanonicalComponentPropertyAuthority.USER_DECLARED,
+        )
+        for key, value in entries
+    )
+
+
+def _fixture(tmp_path, *, mount_properties=None, mount_choices=None):
     manager = StateManager(tmp_path)
     base = DesignState(id="PRJ-CAD", revision=1)
     base_snapshot = manager.create_project("PRJ-CAD", base)
@@ -55,24 +72,50 @@ def _fixture(tmp_path):
     source_component = original.components[0].model_copy(
         update={"specification_hash": source_spec.specification_hash, "component_hash": "pending"}
     )
+    mount_specification = original.component_specifications[1]
+    mount_component = original.components[1]
+    if mount_properties is not None:
+        mount_specification = type(mount_specification).model_validate(
+            mount_specification.model_dump(mode="python")
+            | {
+                "properties": _canonical_properties(mount_properties),
+                "specification_hash": "pending",
+            }
+        )
+        mount_component = mount_component.model_copy(
+            update={
+                "specification_hash": mount_specification.specification_hash,
+                "component_hash": "pending",
+            }
+        )
+    choice_entries = (
+        (
+            "mount-1.geometry.length_mm",
+            40.0,
+        ),
+        (
+            "mount-1.geometry.width_mm",
+            30.0,
+        ),
+        (
+            "mount-1.geometry.thickness_mm",
+            5.0,
+        ),
+    ) if mount_choices is None else mount_choices
     choices = tuple(original.accepted_design_choices) + tuple(
         CanonicalAcceptedDesignChoice(
-            key=f"mount-1.geometry.{key}",
+            key=key,
             value=value,
             origin="explicit_policy_assumption",
             provenance="test:canonical-cad",
         )
-        for key, value in (
-            ("length_mm", 40.0),
-            ("width_mm", 30.0),
-            ("thickness_mm", 5.0),
-        )
+        for key, value in choice_entries
     )
     mechanism = CanonicalPhysicalMechanism.model_validate(
         original.model_dump(mode="python")
         | {
-            "component_specifications": (source_spec, *original.component_specifications[1:]),
-            "components": (source_component, *original.components[1:]),
+            "component_specifications": (source_spec, mount_specification),
+            "components": (source_component, mount_component),
             "accepted_design_choices": choices,
             "mechanism_hash": "pending",
         }
@@ -89,6 +132,124 @@ def _fixture(tmp_path):
         ArtifactStore(tmp_path, project_id="PRJ-CAD", run_id="lookup")
     )
     return manager, source, mechanism, snapshot, reconstruction, resolver
+
+
+@pytest.mark.parametrize(
+    ("semantic_name", "alias", "value"),
+    (
+        (semantic_name, alias, value)
+        for semantic_name, aliases, value in (
+            ("length_mm", ("geometry.length_mm", "plate_length_mm", "length_mm"), 40.0),
+            ("width_mm", ("geometry.width_mm", "plate_width_mm", "width_mm"), 30.0),
+            ("thickness_mm", ("geometry.thickness_mm", "plate_thickness_mm", "thickness_mm"), 5.0),
+        )
+        for alias in aliases
+    ),
+)
+def test_canonical_cad_accepts_one_choice_for_each_legacy_alias(
+    tmp_path, semantic_name, alias, value
+):
+    values = {"length_mm": 40.0, "width_mm": 30.0, "thickness_mm": 5.0}
+    properties = tuple(
+        (f"geometry.{name}", dimension_value)
+        for name, dimension_value in values.items()
+        if name != semantic_name
+    )
+
+    _, _, _, _, reconstruction, resolver = _fixture(
+        tmp_path,
+        mount_properties=properties,
+        mount_choices=((f"mount-1.{alias}", value),),
+    )
+
+    realization = CanonicalPhysicalCadCompiler(resolver).realize(reconstruction)
+
+    base = realization.assembly.parts[0].operations[0]
+    assert (base.length_mm, base.width_mm, base.thickness_mm) == (40.0, 30.0, 5.0)
+
+
+@pytest.mark.parametrize(
+    ("semantic_name", "alias"),
+    (
+        (semantic_name, alias)
+        for semantic_name, aliases in (
+            ("length_mm", ("geometry.length_mm", "plate_length_mm", "length_mm")),
+            ("width_mm", ("geometry.width_mm", "plate_width_mm", "width_mm")),
+            ("thickness_mm", ("geometry.thickness_mm", "plate_thickness_mm", "thickness_mm")),
+        )
+        for alias in aliases
+    ),
+)
+def test_canonical_cad_accepts_equal_property_and_choice_aliases(
+    tmp_path, semantic_name, alias
+):
+    values = {"length_mm": 40.0, "width_mm": 30.0, "thickness_mm": 5.0}
+    properties = tuple(
+        (alias if name == semantic_name else f"geometry.{name}", dimension_value)
+        for name, dimension_value in values.items()
+    )
+
+    _, _, _, _, reconstruction, resolver = _fixture(
+        tmp_path,
+        mount_properties=properties,
+        mount_choices=((f"mount-1.{alias}", values[semantic_name]),),
+    )
+
+    realization = CanonicalPhysicalCadCompiler(resolver).realize(reconstruction)
+
+    base = realization.assembly.parts[0].operations[0]
+    assert (base.length_mm, base.width_mm, base.thickness_mm) == (40.0, 30.0, 5.0)
+
+
+def test_canonical_cad_rejects_empty_legacy_dimension_input_as_integrity_error(tmp_path):
+    _, _, _, _, reconstruction, resolver = _fixture(
+        tmp_path,
+        mount_properties=(),
+        mount_choices=(),
+    )
+
+    with pytest.raises(CanonicalCadIntegrityError, match="unavailable"):
+        CanonicalPhysicalCadCompiler(resolver).realize(reconstruction)
+
+
+def test_canonical_cad_rejects_incomplete_legacy_dimension_input_as_integrity_error(tmp_path):
+    _, _, _, _, reconstruction, resolver = _fixture(
+        tmp_path,
+        mount_properties=(),
+        mount_choices=(("mount-1.geometry.length_mm", 40.0),),
+    )
+
+    with pytest.raises(CanonicalCadIntegrityError, match="unavailable"):
+        CanonicalPhysicalCadCompiler(resolver).realize(reconstruction)
+
+
+@pytest.mark.parametrize(
+    ("semantic_name", "alias"),
+    (
+        (semantic_name, alias)
+        for semantic_name, aliases in (
+            ("length_mm", ("geometry.length_mm", "plate_length_mm", "length_mm")),
+            ("width_mm", ("geometry.width_mm", "plate_width_mm", "width_mm")),
+            ("thickness_mm", ("geometry.thickness_mm", "plate_thickness_mm", "thickness_mm")),
+        )
+        for alias in aliases
+    ),
+)
+def test_canonical_cad_rejects_conflicting_property_and_choice_aliases(
+    tmp_path, semantic_name, alias
+):
+    values = {"length_mm": 40.0, "width_mm": 30.0, "thickness_mm": 5.0}
+    values[semantic_name] = 100.0
+    properties = tuple((f"geometry.{name}", dimension_value) for name, dimension_value in values.items())
+
+    _, _, _, _, reconstruction, resolver = _fixture(
+        tmp_path,
+        mount_properties=properties,
+        mount_choices=((f"mount-1.{alias}", 30.0),),
+    )
+
+    with pytest.raises(CanonicalCadIntegrityError, match=f"mount-1.*{semantic_name}"):
+        CanonicalPhysicalCadCompiler(resolver).realize(reconstruction)
 
 
 def test_canonical_cad_rebinds_cross_revision_source_and_generates_fresh_identity(tmp_path):

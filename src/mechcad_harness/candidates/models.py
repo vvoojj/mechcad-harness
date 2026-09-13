@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 from enum import StrEnum
+from numbers import Real
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import ConfigDict, Field, field_validator, model_serializer, model_validator
@@ -29,6 +30,12 @@ from mechcad_harness.models.supplied_component_interface import (
 from mechcad_harness.models.generated_part import (
     GeneratedPartSpecification,
     validate_generated_interface_registry,
+)
+from mechcad_harness.candidates.dimensions import (
+    LEGACY_PLATE_DIMENSION_ALIASES,
+    DimensionInput,
+    DimensionResolutionError,
+    resolve_dimensions,
 )
 from mechcad_harness.models.physical_pair_policy import PhysicalPairClassificationBinding
 from mechcad_harness.models.quaternion import rotate_vector
@@ -1063,6 +1070,70 @@ class CandidateDesignVariable(CandidateModel):
         return value
 
 
+_LEGACY_PLATE_COMPONENT_TYPES = frozenset({"fixture", "mount", "support-mount", "driven-body"})
+_SCOPED_DIMENSION_SPELLINGS = (
+    "{instance}.{dimension}",
+    "{instance}.geometry.{dimension}",
+    "geometry.{instance}.{dimension}",
+)
+
+
+def _candidate_dimension_inputs(
+    specification: ComponentSpecificationSnapshot,
+    physical_instance_id: str,
+    design_variables: tuple[CandidateDesignVariable, ...],
+) -> tuple[DimensionInput, ...]:
+    inputs = []
+    for property in specification.properties:
+        semantic_name = next(
+            (
+                semantic_name
+                for semantic_name, aliases in LEGACY_PLATE_DIMENSION_ALIASES.items()
+                if property.key in aliases
+            ),
+            None,
+        )
+        if (
+            semantic_name is not None
+            and property.availability is ComponentPropertyAvailability.AVAILABLE
+            and property.normalized_value is not None
+            and property.canonical_unit == "mm"
+        ):
+            inputs.append(
+                DimensionInput(
+                    component_instance_id=physical_instance_id,
+                    semantic_name=semantic_name,
+                    alias=property.key,
+                    value=property.normalized_value,
+                    unit="mm",
+                    identity=property.property_hash,
+                )
+            )
+
+    scoped_names = {
+        spelling.format(instance=physical_instance_id, dimension=dimension): dimension
+        for dimension in LEGACY_PLATE_DIMENSION_ALIASES
+        for spelling in _SCOPED_DIMENSION_SPELLINGS
+    }
+    for variable in design_variables:
+        semantic_name = scoped_names.get(variable.name)
+        if semantic_name is None:
+            continue
+        if isinstance(variable.value, bool) or not isinstance(variable.value, Real):
+            raise ValueError("dimension value must be a real number")
+        inputs.append(
+            DimensionInput(
+                component_instance_id=physical_instance_id,
+                semantic_name=semantic_name,
+                alias=semantic_name,
+                value=variable.value,
+                unit="mm",
+                identity=f"candidate:design-variable:{variable.name}",
+            )
+        )
+    return tuple(inputs)
+
+
 class MechanicalDesignCandidate(CandidateModel):
     schema_version: Literal["mechanical-design-candidate@1"] = "mechanical-design-candidate@1"
     source_binding: CandidateSourceBinding
@@ -1097,6 +1168,32 @@ class MechanicalDesignCandidate(CandidateModel):
         names = tuple(variable.name for variable in self.design_variables)
         if len(set(names)) != len(names):
             raise ValueError("candidate design variable names must be unique")
+        specifications_by_hash = {
+            specification.specification_hash: specification
+            for specification in self.component_specifications
+        }
+        for component in self.realization.components:
+            specification = specifications_by_hash[component.specification_hash]
+            if (
+                specification.generated_part is not None
+                or specification.geometry_source is not None
+                or specification.component_type not in _LEGACY_PLATE_COMPONENT_TYPES
+            ):
+                continue
+            inputs = _candidate_dimension_inputs(
+                specification,
+                component.instance_id,
+                self.design_variables,
+            )
+            if not inputs:
+                continue
+            try:
+                resolve_dimensions(
+                    inputs,
+                    required_dimensions=tuple(LEGACY_PLATE_DIMENSION_ALIASES),
+                )
+            except DimensionResolutionError as exc:
+                raise ValueError(str(exc)) from exc
         if (self.parent_candidate_hash is None) != (self.derivation_kind is None):
             raise ValueError("candidate lineage must include parent hash and derivation kind together")
         expected = candidate_hash(self)

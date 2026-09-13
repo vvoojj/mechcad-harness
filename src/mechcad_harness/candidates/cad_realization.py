@@ -4,6 +4,7 @@ import hashlib
 import math
 from dataclasses import replace
 from enum import StrEnum
+from numbers import Real
 from typing import Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_serializer, model_validator
@@ -13,6 +14,13 @@ from mechcad_harness.cad_assembly import CadComponentInstance
 from mechcad_harness.cad_compilation import MountingPlateDesignSpec, compile_mounting_plate
 from mechcad_harness.cad_program import cad_program_hash
 from mechcad_harness.generated_part_cad import compile_generated_part
+from mechcad_harness.candidates.dimensions import (
+    LEGACY_PLATE_DIMENSION_ALIASES,
+    DimensionConflictError,
+    DimensionInput,
+    DimensionResolutionError,
+    resolve_dimensions,
+)
 from mechcad_harness.candidates.models import (
     CandidateSourceBinding,
     CandidateSynthesisPolicy,
@@ -102,11 +110,6 @@ class CandidateCadRealizationService:
     """Realize a current candidate through existing generic CAD contracts."""
 
     _GENERATED_COMPONENT_TYPES = frozenset({"fixture", "mount", "support-mount", "driven-body"})
-    _DIMENSION_ALIASES = {
-        "length_mm": ("geometry.length_mm", "plate_length_mm", "length_mm"),
-        "width_mm": ("geometry.width_mm", "plate_width_mm", "width_mm"),
-        "thickness_mm": ("geometry.thickness_mm", "plate_thickness_mm", "thickness_mm"),
-    }
 
     def __init__(self, workspace, project_id: str, state_manager, provider_identity: str = "candidate-cad-realization@1"):
         self.workspace = workspace
@@ -771,45 +774,81 @@ class CandidateCadRealizationService:
         return build_candidate_view(candidate, specification.specification_hash)
 
     def _generated_dimensions(self, specification, physical_instance_id, candidate):
-        properties = {property.key: property for property in specification.properties}
-        values = {}
-        identities = []
-        for dimension, aliases in self._DIMENSION_ALIASES.items():
-            property = next((properties[alias] for alias in aliases if alias in properties), None)
-            if property is not None:
-                if (
-                    property.availability is not ComponentPropertyAvailability.AVAILABLE
-                    or property.normalized_value is None
-                    or property.canonical_unit != "mm"
-                    or not math.isfinite(property.normalized_value)
-                    or property.normalized_value <= 0
-                ):
-                    return None
-                values[dimension] = property.normalized_value
-                identities.append(property.property_hash)
-                continue
-            variable = next(
+        inputs = []
+        for property in specification.properties:
+            semantic_name = next(
                 (
-                    variable
-                    for variable in candidate.design_variables
-                    if variable.name in (
-                        f"{physical_instance_id}.{dimension}",
-                        f"{physical_instance_id}.geometry.{dimension}",
-                        f"geometry.{physical_instance_id}.{dimension}",
-                    )
+                    semantic_name
+                    for semantic_name, aliases in LEGACY_PLATE_DIMENSION_ALIASES.items()
+                    if property.key in aliases
                 ),
                 None,
             )
-            if variable is None or isinstance(variable.value, bool):
+            if semantic_name is None:
+                continue
+            if (
+                property.availability is not ComponentPropertyAvailability.AVAILABLE
+                or property.normalized_value is None
+                or property.canonical_unit != "mm"
+                or not math.isfinite(property.normalized_value)
+                or property.normalized_value <= 0
+            ):
                 return None
-            try:
-                value = float(variable.value)
-            except (TypeError, ValueError):
+            inputs.append(
+                DimensionInput(
+                    component_instance_id=physical_instance_id,
+                    semantic_name=semantic_name,
+                    alias=property.key,
+                    value=property.normalized_value,
+                    unit="mm",
+                    identity=property.property_hash,
+                )
+            )
+
+        scoped_names = {
+            spelling.format(instance=physical_instance_id, dimension=dimension): dimension
+            for dimension in LEGACY_PLATE_DIMENSION_ALIASES
+            for spelling in (
+                "{instance}.{dimension}",
+                "{instance}.geometry.{dimension}",
+                "geometry.{instance}.{dimension}",
+            )
+        }
+        for variable in candidate.design_variables:
+            semantic_name = scoped_names.get(variable.name)
+            if semantic_name is None:
+                continue
+            if isinstance(variable.value, bool) or not isinstance(variable.value, Real):
                 return None
-            if not math.isfinite(value) or value <= 0:
-                return None
-            values[dimension] = value
-            identities.append(f"candidate:design-variable:{variable.name}")
+            inputs.append(
+                DimensionInput(
+                    component_instance_id=physical_instance_id,
+                    semantic_name=semantic_name,
+                    alias=semantic_name,
+                    value=variable.value,
+                    unit="mm",
+                    identity=f"candidate:design-variable:{variable.name}",
+                )
+            )
+
+        if not inputs:
+            return None
+        try:
+            resolved = resolve_dimensions(
+                inputs,
+                required_dimensions=tuple(LEGACY_PLATE_DIMENSION_ALIASES),
+            )
+        except DimensionConflictError as exc:
+            raise CandidateCadIntegrityError(str(exc)) from exc
+        except DimensionResolutionError:
+            return None
+
+        values = {}
+        identities = []
+        for semantic_name in LEGACY_PLATE_DIMENSION_ALIASES:
+            dimension = resolved[(physical_instance_id, semantic_name)]
+            values[semantic_name] = dimension.value
+            identities.extend(dimension.identities)
         return values, tuple(identities)
 
     def _placement_error(self, candidate, mapping) -> bool:

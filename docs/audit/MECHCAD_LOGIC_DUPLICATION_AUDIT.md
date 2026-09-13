@@ -997,3 +997,74 @@ Records the authorized F2-only remediation. It does not revise any finding above
   unchanged; consolidation normalizes non-ASCII serialization to the canonical
   UTF-8 contract (the F2 drift fix).
 - **Other findings:** this remediation does not close F1/F3/F4/F5/F6/F7/F8/F11.
+
+## 18. F7 Remediation Record (post-acceptance)
+
+**Record date:** 2026-09-13
+
+This appended record documents the authorized current-tree F7 remediation. The
+historical F7 finding text above is retained as written and describes the
+pre-remediation duplication and reachability evidence; this record does not
+rewrite that finding or reclassify any other finding.
+
+- **Shared semantic authority:**
+  `src/mechcad_harness/candidates/dimensions.py` owns
+  `LEGACY_PLATE_DIMENSION_ALIASES`, `DimensionInput`,
+  `ResolvedDimension`, and `resolve_dimensions`. Resolution is scoped by
+  `(component_instance_id, semantic_name)` and requires exact equality across
+  every supplied alias value.
+- **Legacy plate families covered:** `length_mm` uses
+  `geometry.length_mm`, `plate_length_mm`, and `length_mm`; `width_mm` uses
+  `geometry.width_mm`, `plate_width_mm`, and `width_mm`; `thickness_mm` uses
+  `geometry.thickness_mm`, `plate_thickness_mm`, and `thickness_mm`.
+- **Alias policy:** aliases are an unordered agreement set, not a precedence
+  list. Equal values are accepted and retain deterministic source identities;
+  conflicting finite positive millimetre values fail closed.
+- **Candidate boundary:** `candidates/models.py` performs the early agreement
+  gate. `candidates/cad_realization.py` is a candidate-stage adapter that
+  normalizes candidate properties and scoped variables into the shared API;
+  resolver conflicts become `CandidateCadIntegrityError` at the existing CAD
+  boundary.
+- **Canonical boundary:** `candidates/canonical_cad.py` is an independent
+  canonical-stage adapter. It collects canonical accepted choices and
+  properties into the same shared API and retains resolver-level defense in
+  depth; it does not consume candidate CAD records or artifacts.
+- **Fixture-search checkpoint:** the accepted, golden, and persisted fixture
+  search from the F7 compatibility checkpoint found no authoritative fixture
+  containing contradictory aliases for one component instance and semantic
+  dimension. Matches were classified as unambiguous single-spelling fixtures,
+  generated-part fields, or explicit remediation regressions. This is evidence
+  about the searched fixture set, not a compatibility migration or a claim
+  that ambiguous persisted authority was repaired.
+- **Promotion evidence:** `tests/unit/test_m12_promoted_verification.py::test_promoted_legacy_plate_preserves_candidate_and_canonical_base_dimensions`
+  realizes an unambiguous geometry-alias candidate plate, executes the existing
+  promoted verification/reconstruction path, realizes canonical CAD, and
+  compares only the candidate/canonical `BasePlateOperation` dimensions. It
+  intentionally does not compare stage-specific request, realization, or
+  assembly hashes.
+- **Generated-part evidence:**
+  `tests/unit/test_m13_2_candidate_cad_integration.py::test_candidate_and_canonical_generated_shaft_compilation_preserve_parameters_and_identities`
+  confirms the existing generated shaft parameters and
+  `generated_geometry_definition_identities` through candidate and canonical
+  stage adapters without introducing legacy plate aliases or changing M13-2
+  generated-part models.
+- **Focused test result:**
+  `python -m pytest tests/unit/test_m12_promoted_verification.py tests/unit/test_m12_promotion_compiler.py tests/unit/test_m13_2_candidate_cad_integration.py tests/unit/test_m13_2_promotion_canonical_roundtrip.py -q`
+  — **132 passed in 62.45s** after the final fix wave. The requested `pytest
+  ... -q` spelling was not available as a command in the execution environment;
+  `python -m pytest` ran the equivalent suite.
+- **Earlier final fix-wave regression result:**
+  `python -m pytest tests/unit/test_f7_dimension_resolution.py tests/unit/test_m12_candidate_cad_compiler.py tests/unit/test_m12_candidate_cad_replay.py tests/unit/test_m12_canonical_cad.py tests/unit/test_m12_canonical_m10.py tests/unit/test_m12_promoted_verification.py tests/unit/test_m12_promotion_compiler.py tests/unit/test_m13_2_candidate_cad_integration.py tests/unit/test_m13_2_promotion_canonical_roundtrip.py -q`
+  — **236 passed in 71.23s**. This covers the resolver, candidate adapters and
+  replay, canonical CAD and M10, promotion/canonical roundtrip, and promoted
+  verification boundaries after the fix wave.
+- **Final fix-wave regression result after the incomplete canonical-input
+  regression:**
+  `python -m pytest tests/unit/test_f7_dimension_resolution.py tests/unit/test_m12_candidate_cad_compiler.py tests/unit/test_m12_candidate_cad_replay.py tests/unit/test_m12_canonical_cad.py tests/unit/test_m12_canonical_m10.py tests/unit/test_m12_promoted_verification.py tests/unit/test_m12_promotion_compiler.py tests/unit/test_m13_2_candidate_cad_integration.py tests/unit/test_m13_2_promotion_canonical_roundtrip.py -q`
+  — **237 passed in 72.07s**. This covers the same resolver, candidate
+  adapters and replay, canonical CAD and M10, promotion/canonical roundtrip,
+  and promoted verification boundaries, including the final canonical
+  incomplete-input regression.
+- **Excluded findings:** this record does not resolve or reclassify F1, F2, F3,
+  F4, F5, F6, F8, F11, or any P3/INFO finding. M13-2 generated-part behavior
+  remains unchanged.

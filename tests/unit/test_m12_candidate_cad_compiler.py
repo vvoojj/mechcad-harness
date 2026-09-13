@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from mechcad_harness.artifacts import ArtifactStore, ArtifactType
 from mechcad_harness.cad_assembly import CadRigidTransform
@@ -83,12 +85,35 @@ def _plate_properties(length: float = 40.0, width: float = 30.0, thickness: floa
     )
 
 
+def _explicit_properties(entries):
+    return tuple(
+        ComponentPropertySnapshot(
+            key=key,
+            availability=ComponentPropertyAvailability.AVAILABLE,
+            normalized_value=value,
+            canonical_unit="mm",
+            source_identity="candidate:explicit-dimensions@1",
+            authority=ComponentPropertyAuthority.USER_DECLARED,
+        )
+        for key, value in entries
+    )
+
+
+def _mount_specification(properties):
+    return ComponentSpecificationSnapshot(
+        component_type="mount",
+        source_identity="candidate:mount@1",
+        properties=_explicit_properties(properties),
+    )
+
+
 def _candidate(
     state: DesignState,
     *,
     specification: ComponentSpecificationSnapshot,
     instance_id: str = "mount",
     role: PhysicalComponentRole = PhysicalComponentRole.MOUNT_OR_SUPPORT,
+    design_variables=(),
 ):
     source = _source(state)
     synthesis_request = CandidateSynthesisRequest(source_binding=source)
@@ -105,6 +130,7 @@ def _candidate(
         synthesis_policy_hash=synthesis_policy.policy_hash,
         component_specifications=(specification,),
         realization=PhysicalMechanismRealization(components=(instance,)),
+        design_variables=design_variables,
         generator_identity="m12-4-test-generator",
         generator_version="1",
     )
@@ -147,6 +173,157 @@ def _generated_request(candidate: MechanicalDesignCandidate, specification: Comp
         candidate_instance_ids=("mount",),
         mappings=(mapping,),
     )
+
+
+@pytest.mark.parametrize(
+    ("semantic_name", "aliases"),
+    (
+        ("length_mm", ("geometry.length_mm", "length_mm")),
+        ("width_mm", ("geometry.width_mm", "width_mm")),
+        ("thickness_mm", ("geometry.thickness_mm", "thickness_mm")),
+    ),
+)
+def test_candidate_rejects_conflicting_legacy_plate_aliases(semantic_name, aliases):
+    state = _state()
+    values = {
+        "geometry.length_mm": 40.0,
+        "geometry.width_mm": 30.0,
+        "geometry.thickness_mm": 5.0,
+    }
+    values.update({aliases[0]: 100.0, aliases[1]: 30.0})
+    specification = _mount_specification(tuple(values.items()))
+
+    with pytest.raises(ValidationError, match=f"mount.*{semantic_name}"):
+        _candidate(state, specification=specification)
+
+
+def test_candidate_rejects_conflicting_property_and_scoped_design_variable():
+    state = _state()
+    specification = _mount_specification(
+        (
+            ("geometry.length_mm", 100.0),
+            ("geometry.width_mm", 30.0),
+            ("geometry.thickness_mm", 5.0),
+        )
+    )
+
+    with pytest.raises(ValidationError, match="mount.*length_mm"):
+        _candidate(
+            state,
+            specification=specification,
+            design_variables=(CandidateDesignVariable(name="mount.length_mm", value=30.0),),
+        )
+
+
+def test_candidate_accepts_equal_property_and_scoped_design_variable():
+    state = _state()
+    specification = _mount_specification(
+        (
+            ("geometry.length_mm", 100.0),
+            ("geometry.width_mm", 30.0),
+            ("geometry.thickness_mm", 5.0),
+        )
+    )
+
+    candidate, _, _ = _candidate(
+        state,
+        specification=specification,
+        design_variables=(CandidateDesignVariable(name="mount.length_mm", value=100.0),),
+    )
+
+    assert candidate.design_variables[0].name == "mount.length_mm"
+
+
+@pytest.mark.parametrize("value", ("100.0", True))
+def test_candidate_rejects_non_real_or_boolean_dimension_design_variables(value):
+    state = _state()
+    specification = _mount_specification(
+        (
+            ("geometry.length_mm", 100.0),
+            ("geometry.width_mm", 30.0),
+            ("geometry.thickness_mm", 5.0),
+        )
+    )
+
+    with pytest.raises(ValidationError, match="dimension value"):
+        _candidate(
+            state,
+            specification=specification,
+            design_variables=(CandidateDesignVariable(name="mount.length_mm", value=value),),
+        )
+
+
+@pytest.mark.parametrize("value", ("100.0", True))
+def test_candidate_cad_treats_non_real_or_boolean_dimension_design_variables_as_unavailable(
+    tmp_path, value
+):
+    specification = _mount_specification(
+        (
+            ("geometry.length_mm", 100.0),
+            ("geometry.width_mm", 30.0),
+            ("geometry.thickness_mm", 5.0),
+        )
+    )
+    candidate = SimpleNamespace(
+        design_variables=(CandidateDesignVariable(name="mount.length_mm", value=value),)
+    )
+
+    assert _service(tmp_path, None)._generated_dimensions(
+        specification, "mount", candidate
+    ) is None
+
+
+def test_candidate_cad_resolves_equal_sources_and_keeps_all_identities(tmp_path):
+    state = _state()
+    specification = _mount_specification(
+        (
+            ("geometry.length_mm", 100.0),
+            ("geometry.width_mm", 30.0),
+            ("geometry.thickness_mm", 5.0),
+        )
+    )
+    candidate, _, _ = _candidate(
+        state,
+        specification=specification,
+        design_variables=(CandidateDesignVariable(name="mount.length_mm", value=100.0),),
+    )
+
+    values, identities = _service(tmp_path, None)._generated_dimensions(
+        specification, "mount", candidate
+    )
+
+    assert values == {"length_mm": 100.0, "width_mm": 30.0, "thickness_mm": 5.0}
+    assert identities == (
+        "candidate:design-variable:mount.length_mm",
+        specification.properties[0].property_hash,
+        specification.properties[1].property_hash,
+        specification.properties[2].property_hash,
+    )
+
+
+def test_candidate_cad_converts_resolver_conflicts_to_integrity_error(tmp_path):
+    state = _state()
+    valid_specification = _mount_specification(
+        (
+            ("geometry.length_mm", 100.0),
+            ("geometry.width_mm", 30.0),
+            ("geometry.thickness_mm", 5.0),
+        )
+    )
+    candidate, _, _ = _candidate(state, specification=valid_specification)
+    conflicting_specification = _mount_specification(
+        (
+            ("geometry.length_mm", 100.0),
+            ("length_mm", 30.0),
+            ("geometry.width_mm", 30.0),
+            ("geometry.thickness_mm", 5.0),
+        )
+    )
+
+    with pytest.raises(CandidateCadIntegrityError, match="mount.*length_mm"):
+        _service(tmp_path, None)._generated_dimensions(
+            conflicting_specification, "mount", candidate
+        )
 
 
 def _service(tmp_path, manager: StateManager) -> CandidateCadRealizationService:

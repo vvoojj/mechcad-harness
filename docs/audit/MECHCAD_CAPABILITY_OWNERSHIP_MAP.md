@@ -103,7 +103,7 @@ Verification convention: `WIRED` = reachable from production composition;
 | # | CAPABILITY | ORIG | CURRENT OWNER | OTHER IMPLS | FIND | STATUS |
 | --- | --- | --- | --- | --- | --- | --- |
 | 49 | Candidate authority / realization | M12-2/3 `28ac193` | `candidates/models.py`, `candidates/services.py` (WIRED) | — | — | SINGLE_AUTHORITY |
-| 50 | Candidate CAD realization | M12-4 `bae65cc` | `candidates/cad_realization.py` (WIRED) | `candidates/canonical_cad.py` (WIRED, different stage) | F7 | SEMANTIC_DUPLICATION (alias drift) |
+| 50 | Candidate CAD realization | M12-4 `bae65cc` | `candidates/dimensions.py` (WIRED, shared semantic authority) | `candidates/cad_realization.py` and `candidates/canonical_cad.py` (WIRED, stage-specific adapters) | F7 | LEGITIMATE_ADAPTER_VARIANTS (shared dimension resolution) |
 | 51 | Candidate M10 evaluation | M12-4 `bae65cc` | `candidates/m10_evaluation.py` (WIRED) | `candidates/canonical_m10.py` (WIRED) | F1 | SEMANTIC_DUPLICATION (diverged) |
 | 52 | Candidate comparison / selection | M12-4 `bae65cc` | `candidates/comparison.py`, `candidates/selection.py` (WIRED) | `candidates/multi_joint_selection.py` (WIRED, distinct family) | — | LEGITIMATE_LAYERING |
 | 53 | Promotion / canonical rebind | M12-5 `161986b` | `candidates/promotion.py`, `candidates/canonical_mechanism.py` (WIRED) | `candidates/promotion_artifacts.py` (post-apply verify) | — | SINGLE_AUTHORITY + independent verifier |

@@ -22,6 +22,7 @@ from mechcad_harness.candidates import (
     PromotionValueClassification,
     ProjectArtifactResolver,
 )
+from mechcad_harness.candidates.cad_realization import CandidateCadRealizationService
 from mechcad_harness.candidates.canonical_cad import (
     CanonicalCadIntegrityError,
     CanonicalPhysicalCadCompiler,
@@ -58,6 +59,7 @@ from test_m12_canonical_physical_mechanism import _mechanism
 from test_m12_canonical_reconstruction import _mechanism_with_source
 from test_m12_promotion_apply import _request_and_manager
 from test_m12_promotion_compiler import _classifications
+from test_m13_2_promotion_canonical_roundtrip import _generated_promotion_fixture
 
 
 @dataclass
@@ -111,13 +113,58 @@ class _TypedM10Result:
         return self.outcome
 
 
-def _context(tmp_path, *, m10_status=CanonicalM10VerificationStatus.VERIFIED_CLEAR):
+def _context(
+    tmp_path,
+    *,
+    m10_status=CanonicalM10VerificationStatus.VERIFIED_CLEAR,
+    mount_properties=None,
+):
     import test_m12_candidate_evaluation as evaluation_fixtures
 
     original_evaluation_candidate = evaluation_fixtures._evaluation_candidate
 
     def _candidate_with_declared_scope_connection(state=None):
         candidate, synthesis_request, synthesis_policy = original_evaluation_candidate(state)
+        if mount_properties is not None:
+            mount_specification = next(
+                specification
+                for specification in candidate.component_specifications
+                if specification.component_type == "mount"
+            )
+            mount_specification = type(mount_specification).model_validate(
+                mount_specification.model_dump(mode="json")
+                | {"properties": mount_properties, "specification_hash": "pending"}
+            )
+            specifications = tuple(
+                mount_specification
+                if specification.component_type == "mount"
+                else specification
+                for specification in candidate.component_specifications
+            )
+            components = tuple(
+                type(component).model_validate(
+                    component.model_dump(mode="json")
+                    | {
+                        "specification_hash": (
+                            mount_specification.specification_hash
+                            if component.instance_id == "mount"
+                            else component.specification_hash
+                        )
+                    }
+                )
+                for component in candidate.realization.components
+            )
+            realization = candidate.realization.model_copy(
+                update={"components": components, "realization_hash": "pending"}
+            )
+            candidate = type(candidate).model_validate(
+                candidate.model_dump(mode="json")
+                | {
+                    "component_specifications": specifications,
+                    "realization": realization.model_dump(mode="json"),
+                    "candidate_hash": "pending",
+                }
+            )
         realization = candidate.realization.model_copy(
             update={
                 "connections": (
@@ -155,6 +202,25 @@ def _context(tmp_path, *, m10_status=CanonicalM10VerificationStatus.VERIFIED_CLE
         request.source_state_hash,
     )
     mechanism = _mechanism_with_source(source.sha256)
+    mount_dimensions = {
+        "length_mm": 40.0,
+        "width_mm": 30.0,
+        "thickness_mm": 5.0,
+    }
+    if mount_properties is not None:
+        request_mount_specification = next(
+            specification
+            for specification in request.candidate.component_specifications
+            if specification.component_type == "mount"
+        )
+        mount_dimensions = {
+            dimension: next(
+                property.normalized_value
+                for property in request_mount_specification.properties
+                if property.key == f"geometry.{dimension}"
+            )
+            for dimension in mount_dimensions
+        }
     binding = mechanism.joint_bindings[0].model_copy(
         update={
             "semantic_hash": _joint_semantic_hash(mechanism.joint_bindings[0]),
@@ -174,9 +240,7 @@ def _context(tmp_path, *, m10_status=CanonicalM10VerificationStatus.VERIFIED_CLE
                     provenance="test:task-14-review",
                 )
                 for key, value in (
-                    ("length_mm", 40.0),
-                    ("width_mm", 30.0),
-                    ("thickness_mm", 5.0),
+                    *mount_dimensions.items(),
                 )
             ),
             "mechanism_hash": "pending",
@@ -319,6 +383,121 @@ def _context(tmp_path, *, m10_status=CanonicalM10VerificationStatus.VERIFIED_CLE
     ), source, reconstruction, cad, m10
 
 
+def _compiled_promotion_context(tmp_path, *, mount_dimension_spelling=None):
+    manager, compiler, request, candidate_cad_request = _generated_promotion_fixture(
+        tmp_path,
+        include_mount=True,
+        mount_dimension_spelling=mount_dimension_spelling,
+    )
+    state = manager.load_current_state(request.project_id)
+    compilation = compiler.compile(state, request)
+    promoted_state = state.model_copy(
+        update={"physical_mechanisms": [compilation.canonical_mechanism]}
+    )
+    applied_snapshot = manager.create_revision(request.project_id, promoted_state)
+    resolver = ProjectArtifactResolver(
+        ArtifactStore(tmp_path, project_id=request.project_id, run_id="lookup")
+    )
+    reconstruction_compiler = CanonicalPhysicalMechanismCompiler(
+        manager, lambda project_id: resolver
+    )
+    reconstruction = reconstruction_compiler.reconstruct(
+        request.project_id,
+        applied_snapshot.revision,
+        applied_snapshot.state_hash,
+        compilation.canonical_mechanism.id,
+    )
+    canonical_cad = CanonicalPhysicalCadCompiler(resolver).realize(reconstruction)
+    canonical_m10 = CanonicalM10VerificationService(
+        _CanonicalM10Application(CanonicalM10VerificationStatus.VERIFIED_CLEAR)
+    ).execute(reconstruction, canonical_cad)
+
+    frozen_scope = CandidatePromotionApplicationService._scope_projection(request)
+    from mechcad_harness.candidates.promotion_artifacts import (
+        SelectedCandidateDecisionManifest,
+    )
+    from mechcad_harness.candidates.promotion_models import PromotionDecisionInputReference
+
+    reference = PromotionDecisionInputReference(
+        promotion_request_hash=request.request_hash,
+        project_id=request.project_id,
+        base_revision=request.source_revision,
+        base_state_hash=request.source_state_hash,
+        candidate_hash=request.candidate.candidate_hash,
+        synthesis_request_hash=request.synthesis_request.request_hash,
+        synthesis_policy_hash=request.synthesis_policy.policy_hash,
+        m12_3_result_hash=request.m12_3_result.result_hash,
+        evaluation_hash=request.evaluation.evaluation_hash,
+        selection_hash=request.selection.selection_hash,
+        promotion_policy_hash=request.promotion_policy.policy_hash,
+        canonical_target_mechanism_id=request.canonical_target_mechanism_id,
+        mapping_identities=tuple(item.mapping_hash for item in compilation.mapping),
+        classification_identities=tuple(
+            item.classification_hash for item in request.classifications
+        ),
+    )
+    decision = SelectedCandidateDecisionManifest(
+        input_reference=reference,
+        pre_promotion_scope_projection=frozen_scope,
+        promotion_policy_hash=request.promotion_policy.policy_hash,
+        base_revision=request.source_revision,
+        base_state_hash=request.source_state_hash,
+        compilation_hash=compilation.compilation_hash,
+        promotion_proposal_hash=compilation.promotion_proposal_hash,
+        projection_hash=compilation.projection.projection_hash,
+        projection=compilation.projection,
+        mapping=compilation.mapping,
+    )
+    store = ArtifactStore(tmp_path, project_id=request.project_id, run_id="RUN-1")
+    manifest_service = PromotionManifestService()
+    decision_artifact = manifest_service.publish_decision(store, manifest=decision)
+    result_artifact = manifest_service.publish_result(
+        store,
+        decision_artifact=decision_artifact,
+        compilation=compilation,
+        proposal=compilation.proposal,
+        changeset_id="CS-1",
+        changed_paths=tuple(operation.path for operation in compilation.proposal.operations),
+        resulting_revision=applied_snapshot.revision,
+        resulting_state_hash=applied_snapshot.state_hash,
+    )
+    application_result = CandidatePromotionApplicationResult(
+        request=request,
+        compilation=compilation,
+        decision_artifact_id=decision_artifact.artifact_id,
+        result_artifact_id=result_artifact.artifact_id,
+        applied_revision=applied_snapshot.revision,
+        applied_state_hash=applied_snapshot.state_hash,
+        status=PromotionApplicationStatus.PROMOTION_APPLIED,
+    )
+    return (
+        _VerificationContext(
+            application_result=application_result,
+            manifest_store=store,
+            manifest_service=manifest_service,
+            canonical_mechanism_compiler=reconstruction_compiler,
+            canonical_cad_compiler=CanonicalPhysicalCadCompiler(resolver),
+            canonical_m10_service=CanonicalM10VerificationService(
+                _CanonicalM10Application(CanonicalM10VerificationStatus.VERIFIED_CLEAR)
+            ),
+            scope_equivalence_service=SimpleNamespace(
+                compare=lambda frozen, derived: CanonicalM10ScopeEquivalenceResult(
+                    project_id=derived.project_id,
+                    revision=derived.revision,
+                    state_hash=derived.state_hash,
+                    frozen_projection_hash=frozen.projection_hash,
+                    derived_scope_hash=derived.scope_hash,
+                    equivalent=True,
+                )
+            ),
+            request_scope_projection=frozen_scope,
+        ),
+        reconstruction,
+        candidate_cad_request,
+        compilation,
+    )
+
+
 def test_verified_path_uses_only_typed_records_and_fresh_canonical_execution(tmp_path):
     context, _, _, _, _ = _context(tmp_path)
 
@@ -333,6 +512,152 @@ def test_verified_path_uses_only_typed_records_and_fresh_canonical_execution(tmp
     assert result.canonical_cad_realization_hash
     assert result.canonical_m10_request_hashes
     assert result.canonical_m10_result_hashes
+
+
+def test_promoted_legacy_plate_preserves_candidate_and_canonical_base_dimensions(tmp_path):
+    context, reconstruction, _, compilation = _compiled_promotion_context(
+        tmp_path
+    )
+    request = context.application_result.request
+    candidate = request.candidate
+    assert candidate is request.candidate
+    candidate_cad_request = request.evaluation.cad_request
+    assert candidate_cad_request is not None
+    assert candidate_cad_request.candidate_hash == candidate.candidate_hash
+    assert all(
+        mapping.candidate_hash == candidate.candidate_hash
+        for mapping in candidate_cad_request.mappings
+    )
+    candidate_specification = next(
+        specification
+        for specification in candidate.component_specifications
+        if specification.source_identity == "fixture:legacy-mount"
+    )
+    candidate_stage = CandidateCadRealizationService(
+        workspace=tmp_path,
+        project_id=request.project_id,
+        state_manager=context.canonical_mechanism_compiler.state_manager,
+    ).realize(
+        candidate,
+        request.synthesis_request,
+        request.synthesis_policy,
+        candidate_cad_request,
+    )
+    assert candidate_stage.status.value == "success"
+    assert candidate_stage.realization is not None
+    assert candidate_stage.realization.candidate_hash == candidate.candidate_hash
+    assert all(
+        mapping.candidate_hash == candidate.candidate_hash
+        for mapping in candidate_stage.realization.mappings
+    )
+    candidate_mapping = next(
+        mapping
+        for mapping in candidate_stage.realization.mappings
+        if mapping.physical_instance_id == "mount-a"
+    )
+    candidate_part = next(
+        part
+        for part in candidate_stage.realization.assembly.parts
+        if part.part_id == candidate_mapping.cad_instance_id
+    )
+    candidate_base = candidate_part.operations[0]
+    assert tuple(property.key for property in candidate_specification.properties) == (
+        "geometry.length_mm",
+        "geometry.width_mm",
+        "geometry.thickness_mm",
+    )
+
+    verification = verify_promoted_mechanism(context)
+    assert verification.status is PromotedMechanismVerificationStatus.VERIFIED
+    canonical_realization = context.canonical_cad_compiler.realize(reconstruction)
+    canonical_instance_id = next(
+        mapping.canonical_instance_id
+        for mapping in compilation.mapping
+        if mapping.candidate_instance_id == "mount-a"
+    )
+    canonical_mapping = next(
+        mapping
+        for mapping in canonical_realization.mappings
+        if mapping.physical_instance_id == canonical_instance_id
+    )
+    canonical_part = next(
+        part
+        for part in canonical_realization.assembly.parts
+        if part.part_id == canonical_mapping.cad_instance_id
+    )
+    canonical_base = canonical_part.operations[0]
+
+    assert (
+        candidate_base.length_mm,
+        candidate_base.width_mm,
+        candidate_base.thickness_mm,
+    ) == (
+        canonical_base.length_mm,
+        canonical_base.width_mm,
+        canonical_base.thickness_mm,
+    )
+
+
+@pytest.mark.parametrize(
+    "mount_dimension_spelling",
+    (
+        "mount-a.length_mm",
+        "mount-a.geometry.length_mm",
+        "geometry.mount-a.length_mm",
+    ),
+)
+def test_promoted_legacy_plate_remaps_all_scoped_dimension_spellings(
+    tmp_path, mount_dimension_spelling
+):
+    context, reconstruction, _, compilation = _compiled_promotion_context(
+        tmp_path,
+        mount_dimension_spelling=mount_dimension_spelling,
+    )
+    candidate = context.application_result.request.candidate
+    candidate_cad_request = context.application_result.request.evaluation.cad_request
+    assert candidate_cad_request is not None
+
+    candidate_stage = CandidateCadRealizationService(
+        workspace=tmp_path,
+        project_id=candidate.source_binding.project_id,
+        state_manager=context.canonical_mechanism_compiler.state_manager,
+    ).realize(
+        candidate,
+        context.application_result.request.synthesis_request,
+        context.application_result.request.synthesis_policy,
+        candidate_cad_request,
+    )
+    assert candidate_stage.status.value == "success"
+    assert candidate_stage.realization is not None
+
+    canonical_realization = context.canonical_cad_compiler.realize(reconstruction)
+    canonical_instance_id = next(
+        mapping.canonical_instance_id
+        for mapping in compilation.mapping
+        if mapping.candidate_instance_id == "mount-a"
+    )
+    canonical_mapping = next(
+        mapping
+        for mapping in canonical_realization.mappings
+        if mapping.physical_instance_id == canonical_instance_id
+    )
+    canonical_part = next(
+        part
+        for part in canonical_realization.assembly.parts
+        if part.part_id == canonical_mapping.cad_instance_id
+    )
+    candidate_mapping = next(
+        mapping
+        for mapping in candidate_stage.realization.mappings
+        if mapping.physical_instance_id == "mount-a"
+    )
+    candidate_part = next(
+        part
+        for part in candidate_stage.realization.assembly.parts
+        if part.part_id == candidate_mapping.cad_instance_id
+    )
+
+    assert candidate_part.operations[0] == canonical_part.operations[0]
 
 
 def test_canonical_cad_m10_records_reverify_at_n_plus_one_and_old_nodes_are_stale_after_mechanism_change(

@@ -195,9 +195,17 @@ def _generated_specification():
     )
 
 
-def _generated_promotion_fixture(tmp_path, *, classifications=True):
+def _generated_promotion_fixture(
+    tmp_path,
+    *,
+    classifications=True,
+    include_mount=False,
+    mount_dimension_spelling=None,
+):
     manager, candidate, synthesis_request, synthesis_policy, specifications, artifact = _mixed_fixture(
-        tmp_path
+        tmp_path,
+        include_mount=include_mount,
+        mount_dimension_spelling=mount_dimension_spelling,
     )
     realization = candidate.realization.model_copy(
         update={
@@ -286,6 +294,18 @@ def _generated_promotion_fixture(tmp_path, *, classifications=True):
                 constituent_key="hub",
                 disposition=CandidateM10BodyDisposition.OUTPUT_RIGID,
                 output_transform_group="output-joint",
+            ),
+            *(
+                (
+                    CandidateM10ConstituentDisposition(
+                        physical_instance_id="mount-a",
+                        cad_instance_id="cad-mount-a",
+                        constituent_key="mount",
+                        disposition=CandidateM10BodyDisposition.FIXED,
+                    ),
+                )
+                if include_mount
+                else ()
             ),
         ),
     )

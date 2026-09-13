@@ -28,6 +28,12 @@ from mechcad_harness.models.physical_mechanism import (
     CanonicalGeometryFidelity,
 )
 from mechcad_harness.state.hashing import canonical_json
+from mechcad_harness.candidates.dimensions import (
+    LEGACY_PLATE_DIMENSION_ALIASES,
+    DimensionInput,
+    DimensionResolutionError,
+    resolve_dimensions,
+)
 
 from .canonical_mechanism import (
     CanonicalMechanismReconstruction,
@@ -39,11 +45,6 @@ from .generated_authority import build_canonical_view
 
 
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]+")
-_DIMENSION_ALIASES = {
-    "length_mm": ("length_mm", "geometry.length_mm", "plate_length_mm"),
-    "width_mm": ("width_mm", "geometry.width_mm", "plate_width_mm"),
-    "thickness_mm": ("thickness_mm", "geometry.thickness_mm", "plate_thickness_mm"),
-}
 
 
 def _hash_model(value: Model, identity_field: str) -> str:
@@ -616,49 +617,86 @@ class CanonicalPhysicalCadCompiler:
             raise CanonicalCadIntegrityError(
                 f"canonical component type is not supported for generated CAD: {specification.component_type}"
             )
-        dimensions = {}
-        identities = []
-        choices = {choice.key: choice for choice in mechanism.accepted_design_choices}
-        properties = {property.key: property for property in specification.properties}
-        for dimension, aliases in _DIMENSION_ALIASES.items():
-            choice = next(
+        inputs = []
+        choice_semantics = {}
+        for semantic_name, aliases in LEGACY_PLATE_DIMENSION_ALIASES.items():
+            for alias in aliases:
+                suffix = alias.removeprefix("geometry.")
+                for key in (
+                    f"{instance_id}.{alias}",
+                    f"{instance_id}.geometry.{suffix}",
+                    f"geometry.{instance_id}.{suffix}",
+                ):
+                    choice_semantics[key] = (semantic_name, alias)
+
+        for choice in mechanism.accepted_design_choices:
+            semantic = choice_semantics.get(choice.key)
+            if semantic is None:
+                continue
+            semantic_name, alias = semantic
+            inputs.append(
+                DimensionInput(
+                    component_instance_id=instance_id,
+                    semantic_name=semantic_name,
+                    alias=alias,
+                    value=choice.value,
+                    unit="mm",
+                    identity=choice.choice_hash,
+                )
+            )
+
+        for property_value in specification.properties:
+            semantic_name = next(
                 (
-                    choices[key]
-                    for alias in aliases
-                    for key in (
-                        f"{instance_id}.{alias}",
-                        f"{instance_id}.geometry.{alias.removeprefix('geometry.')}",
-                        f"geometry.{instance_id}.{alias.removeprefix('geometry.')}",
-                    )
-                    if key in choices
+                    semantic_name
+                    for semantic_name, aliases in LEGACY_PLATE_DIMENSION_ALIASES.items()
+                    if property_value.key in aliases
                 ),
                 None,
             )
-            if choice is not None:
-                value = choice.value
-                if isinstance(value, bool) or not isinstance(value, (int, float)):
-                    raise CanonicalCadIntegrityError("canonical geometry choice must be numeric")
-                if value <= 0:
-                    raise CanonicalCadIntegrityError("canonical geometry choice must be positive")
-                dimensions[dimension] = float(value)
-                identities.append(choice.choice_hash)
-                continue
-
-            property_value = next(
-                (properties[alias] for alias in aliases if alias in properties), None
-            )
             if (
-                property_value is None
-                or property_value.availability is not CanonicalComponentPropertyAvailability.AVAILABLE
+                semantic_name is None
+                or property_value.availability
+                is not CanonicalComponentPropertyAvailability.AVAILABLE
                 or property_value.normalized_value is None
                 or property_value.canonical_unit != "mm"
-                or property_value.normalized_value <= 0
             ):
-                raise CanonicalCadIntegrityError(
-                    f"canonical geometry is unavailable for {instance_id}.{dimension}"
+                continue
+            inputs.append(
+                DimensionInput(
+                    component_instance_id=instance_id,
+                    semantic_name=semantic_name,
+                    alias=property_value.key,
+                    value=property_value.normalized_value,
+                    unit="mm",
+                    identity=property_value.property_hash,
                 )
-            dimensions[dimension] = property_value.normalized_value
-            identities.append(property_value.property_hash)
+            )
+
+        try:
+            resolved = resolve_dimensions(
+                inputs,
+                required_dimensions=tuple(LEGACY_PLATE_DIMENSION_ALIASES),
+            )
+        except DimensionResolutionError as exc:
+            raise CanonicalCadIntegrityError(str(exc)) from exc
+        if not resolved or any(
+            (instance_id, semantic_name) not in resolved
+            for semantic_name in LEGACY_PLATE_DIMENSION_ALIASES
+        ):
+            raise CanonicalCadIntegrityError(
+                f"canonical geometry is unavailable for {instance_id}"
+            )
+
+        dimensions = {
+            semantic_name: resolved[(instance_id, semantic_name)].value
+            for semantic_name in LEGACY_PLATE_DIMENSION_ALIASES
+        }
+        identities = tuple(
+            identity
+            for semantic_name in LEGACY_PLATE_DIMENSION_ALIASES
+            for identity in resolved[(instance_id, semantic_name)].identities
+        )
         try:
             program = compile_mounting_plate(
                 MountingPlateDesignSpec(

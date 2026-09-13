@@ -1248,9 +1248,20 @@ class CandidatePromotionCompiler:
             origin = CanonicalDesignChoiceOrigin.CANDIDATE_LOCAL_CHOICE
             provenance = f"candidate-local-choice:{identity}"
         choice_key = variable.name
-        prefix, separator, suffix = variable.name.partition(".")
-        if separator and prefix in canonical_by_candidate:
-            choice_key = f"{canonical_by_candidate[prefix]}.{suffix}"
+        for candidate_instance_id, canonical_instance_id in canonical_by_candidate.items():
+            candidate_prefix = f"{candidate_instance_id}."
+            geometry_prefix = f"geometry.{candidate_instance_id}."
+            if variable.name.startswith(candidate_prefix):
+                choice_key = (
+                    f"{canonical_instance_id}.{variable.name[len(candidate_instance_id) + 1:]}"
+                )
+                break
+            if variable.name.startswith(geometry_prefix):
+                choice_key = (
+                    f"geometry.{canonical_instance_id}."
+                    f"{variable.name[len(geometry_prefix):]}"
+                )
+                break
         return CanonicalAcceptedDesignChoice(
             key=choice_key,
             value=variable.value,

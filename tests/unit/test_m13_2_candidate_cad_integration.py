@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from mechcad_harness.artifacts import ArtifactStore, ArtifactType
 from mechcad_harness.cad_assembly import CadAssemblyProgram, CadComponentInstance, CadRigidTransform, assembly_hash
+from mechcad_harness.cad_compilation import MountingPlateDesignSpec, compile_mounting_plate
 from mechcad_harness.cad_program import acceptance_program, cad_program_hash
 from mechcad_harness.generated_part_cad import compile_generated_part
 from mechcad_harness.candidates import (
@@ -35,6 +38,8 @@ from mechcad_harness.candidates.cad_realization import (
     CandidateCadIntegrityError,
     CandidateCadRealizationService,
 )
+from mechcad_harness.candidates.canonical_cad import CanonicalPhysicalCadCompiler
+from mechcad_harness.candidates.promotion import CandidatePromotionCompiler
 from mechcad_harness.candidates.evaluation import _validate_cad_inputs
 from mechcad_harness.imported_component import ImportedCadComponent, imported_component_hash
 from mechcad_harness.models import (
@@ -48,6 +53,8 @@ from mechcad_harness.models import (
     pose_from_interface,
     SolidCircularShaftSpecification,
     DesignState,
+    CanonicalAcceptedDesignChoice,
+    CanonicalDesignChoiceOrigin,
     generated_geometry_definition_identities,
     placement_derivations_hash,
     selection_hash,
@@ -500,6 +507,62 @@ def test_generated_part_routes_to_generated_compiler_with_exact_fidelity(tmp_pat
     )
 
 
+def test_candidate_and_canonical_generated_shaft_compilation_preserve_parameters_and_identities():
+    state = _state()
+    specification = _shaft_spec()
+    candidate, _, _ = _candidate(state, specification)
+    request = _request(candidate, specification)
+    mapping = request.mappings[0]
+
+    candidate_program, candidate_reason = CandidateCadRealizationService(
+        workspace=".", project_id="PRJ-M13-2-T7", state_manager=None
+    )._compile_generated(specification, mapping, candidate)
+
+    canonical_specification = CandidatePromotionCompiler._canonical_specification(
+        specification
+    )
+    canonical_choices = tuple(
+        CanonicalAcceptedDesignChoice(
+            key=variable.name,
+            value=variable.value,
+            origin=CanonicalDesignChoiceOrigin.CANDIDATE_LOCAL_CHOICE,
+            provenance="fixture:generated-shaft-equivalence",
+        )
+        for variable in candidate.design_variables
+    )
+    canonical_mechanism = SimpleNamespace(
+        component_specifications=(canonical_specification,),
+        accepted_design_choices=canonical_choices,
+    )
+    canonical_program, canonical_identities = CanonicalPhysicalCadCompiler(
+        lambda project_id: None
+    )._compile_generated(
+        canonical_specification,
+        "PM-M13-2:shaft-a",
+        "canonical-shaft-a",
+        canonical_mechanism,
+    )
+
+    assert candidate_program is not None
+    assert canonical_program is not None
+    assert candidate_reason is None
+    assert mapping.geometry_definition_identities == generated_geometry_definition_identities(
+        specification.generated_part
+    )
+    assert (
+        candidate_program.operations[0].diameter_mm,
+        candidate_program.operations[0].length_mm,
+    ) == (12.5, 40.0)
+    assert (
+        canonical_program.operations[0].diameter_mm,
+        canonical_program.operations[0].length_mm,
+    ) == (12.5, 40.0)
+    assert canonical_program.operations == candidate_program.operations
+    assert canonical_identities == generated_geometry_definition_identities(
+        specification.generated_part
+    )
+
+
 def test_generated_compiler_scopes_component_properties_to_target_specification():
     state = _state()
     target = _property_shaft_spec("target-shaft", 12.5, 40.0)
@@ -921,7 +984,13 @@ def _supplied_motor_spec(artifact) -> ComponentSpecificationSnapshot:
     )
 
 
-def _mixed_fixture(tmp_path, *, motor_instance_ids=("motor-a",)):
+def _mixed_fixture(
+    tmp_path,
+    *,
+    motor_instance_ids=("motor-a",),
+    include_mount=False,
+    mount_dimension_spelling=None,
+):
     state = _state()
     manager = StateManager(tmp_path)
     manager.create_project("PRJ-M13-2-T7", state)
@@ -939,7 +1008,27 @@ def _mixed_fixture(tmp_path, *, motor_instance_ids=("motor-a",)):
     motor = _supplied_motor_spec(artifact)
     shaft = _shaft_spec()
     hub = _hub_spec()
-    specifications = (motor, shaft, hub)
+    mount = ComponentSpecificationSnapshot(
+        component_type="mount",
+        source_identity="fixture:legacy-mount",
+        properties=tuple(
+            ComponentPropertySnapshot(
+                key=key,
+                availability=ComponentPropertyAvailability.AVAILABLE,
+                normalized_value=value,
+                canonical_unit="mm",
+                source_identity="fixture:legacy-mount-dimensions",
+                authority=ComponentPropertyAuthority.USER_DECLARED,
+            )
+            for key, value in (
+                ("geometry.length_mm", 40.0),
+                ("geometry.width_mm", 30.0),
+                ("geometry.thickness_mm", 5.0),
+            )
+        ),
+        interfaces=("frame",),
+    )
+    specifications = (motor, shaft, hub) + ((mount,) if include_mount else ())
     source = _source(state)
     synthesis_request = CandidateSynthesisRequest(source_binding=source)
     synthesis_policy = CandidateSynthesisPolicy()
@@ -964,6 +1053,17 @@ def _mixed_fixture(tmp_path, *, motor_instance_ids=("motor-a",)):
             role=PhysicalComponentRole.HUB_OR_COUPLING,
             interfaces=hub.interfaces,
         ),
+    ) + (
+        (
+            PhysicalComponentInstance(
+                instance_id="mount-a",
+                specification_hash=mount.specification_hash,
+                role=PhysicalComponentRole.MOUNT_OR_SUPPORT,
+                interfaces=mount.interfaces,
+            ),
+        )
+        if include_mount
+        else ()
     )
     candidate = MechanicalDesignCandidate(
         source_binding=source,
@@ -985,8 +1085,22 @@ def _mixed_fixture(tmp_path, *, motor_instance_ids=("motor-a",)):
             CandidateDesignVariable(name="hub_bore_depth", value=50.0),
             CandidateDesignVariable(name="diameter", value=12.5),
             CandidateDesignVariable(name="length", value=40.0),
+            *(
+                (CandidateDesignVariable(name=mount_dimension_spelling, value=40.0),)
+                if mount_dimension_spelling is not None
+                else ()
+            ),
             CandidateDesignVariable(name="shaft-a.placement.axial_offset_mm", value=4.0),
             CandidateDesignVariable(name="hub-a.placement.axial_offset_mm", value=2.0),
+            *(
+                (
+                    CandidateDesignVariable(name="mount-a.placement.x_mm", value=0.0),
+                    CandidateDesignVariable(name="mount-a.placement.y_mm", value=0.0),
+                    CandidateDesignVariable(name="mount-a.placement.z_mm", value=0.0),
+                )
+                if include_mount
+                else ()
+            ),
         ),
         generator_identity="m13-2-task-9-test-generator",
         generator_version="1",
@@ -995,7 +1109,7 @@ def _mixed_fixture(tmp_path, *, motor_instance_ids=("motor-a",)):
 
 
 def _mixed_request(candidate, specifications, artifact, *, source_instance_id="motor-a"):
-    motor, shaft, hub = specifications
+    motor, shaft, hub = specifications[:3]
     shaft_program = compile_generated_part(
         shaft.generated_part,
         GeneratedAuthorityView(design_selections=tuple(candidate.design_variables)),
@@ -1135,6 +1249,49 @@ def _mixed_request(candidate, specifications, artifact, *, source_instance_id="m
         hub.generated_part.interfaces[0].interface_hash,
         (derivations[1].inputs[0].input_hash,),
     )
+    mappings = tuple(source_mappings) + (shaft_mapping, hub_mapping)
+    if len(specifications) == 4:
+        mount = specifications[3]
+        mount_program = compile_mounting_plate(
+            MountingPlateDesignSpec(
+                part_id="cad-mount-a",
+                plate_length_mm=40.0,
+                plate_width_mm=30.0,
+                plate_thickness_mm=5.0,
+            )
+        )
+        mount_transform = CadRigidTransform()
+        mount_origin = CandidatePlacementOrigin(
+            authority="candidate_design_variable",
+            input_identities=tuple(
+                f"candidate:design-variable:mount-a.placement.{axis}"
+                for axis in ("x_mm", "y_mm", "z_mm")
+            ),
+            derivation="accepted-design-variable-placement@1",
+            transform=mount_transform,
+        )
+        mappings += (
+            CandidateCadInstanceMapping(
+                candidate_hash=candidate.candidate_hash,
+                physical_instance_id="mount-a",
+                cad_instance_id="cad-mount-a",
+                fidelity=CandidateGeometryFidelity.DECLARED_BOUNDED_COLLISION_REPRESENTATION,
+                representation_identity=cad_program_hash(mount_program),
+                geometry_definition_identities=tuple(
+                    property.property_hash for property in mount.properties
+                ) + tuple(
+                    f"candidate:design-variable:{variable.name}"
+                    for variable in candidate.design_variables
+                    if variable.name in {
+                        "mount-a.length_mm",
+                        "mount-a.geometry.length_mm",
+                        "geometry.mount-a.length_mm",
+                    }
+                ),
+                placement=mount_transform,
+                placement_origin=mount_origin,
+            ),
+        )
     return CandidateCadRealizationRequest(
         schema_version="candidate-cad-realization-request@2",
         candidate_hash=candidate.candidate_hash,
@@ -1143,7 +1300,7 @@ def _mixed_request(candidate, specifications, artifact, *, source_instance_id="m
         compiler_identity="candidate-cad-compiler",
         compiler_version="1",
         candidate_instance_ids=tuple(component.instance_id for component in candidate.realization.components),
-        mappings=tuple(source_mappings) + (shaft_mapping, hub_mapping),
+        mappings=mappings,
         placement_derivations=derivations,
         placement_derivations_hash=placement_derivations_hash(derivations),
         design_variable_identities=tuple(
@@ -1153,7 +1310,9 @@ def _mixed_request(candidate, specifications, artifact, *, source_instance_id="m
                 variable.name == f"{component.instance_id}.placement.{axis}"
                 for component in candidate.realization.components
                 for axis in ("x_mm", "y_mm", "z_mm")
-            )
+            ) or variable.name == "mount-a.length_mm"
+            or variable.name == "mount-a.geometry.length_mm"
+            or variable.name == "geometry.mount-a.length_mm"
         ),
     )
 
