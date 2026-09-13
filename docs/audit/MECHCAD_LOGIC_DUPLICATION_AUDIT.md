@@ -611,8 +611,8 @@ risk statements. Their accepted current-state remediation records are appended
 below and the companion ownership map reflects the resulting authorities. The
 pre-remediation status summary recorded F3 and F8 as unresolved; current-tree
 status is now governed by the appended records: F3 is resolved by the F3
-post-acceptance record, while F8 remains unresolved/pending its separately
-approved Option D disposition.
+post-acceptance record, and F8 is closed under the approved Option D
+disposition.
 
 ---
 
@@ -1316,3 +1316,57 @@ none.
 **F3 STATUS:** ACCEPTED remediation record for this bounded current-tree
 correction; it is not an independent final acceptance marker. The original F3
 finding remains the historical pre-remediation record.
+
+## 24. F8 Post-Review Correction / Option D Disposition
+
+**Record date:** 2026-09-13
+
+This is an appended post-review correction to the F8 finding. The original F8
+finding, its P2 classification, timeline, and pre-disposition evidence above
+remain unchanged. This record does not begin F3 remediation, supersede the
+M13-3P compatibility freeze, or begin any P3 finding.
+
+### Approved Direction
+
+Option D was approved: no production consolidation is performed. The accepted
+M13-3P source-byte contract remains in force, and
+`src/mechcad_harness/multi_joint_continuous_clearance.py` remains byte-frozen.
+Approval source: the explicit user instruction for this F8 execution on
+2026-09-13. This is a bounded remediation disposition, not a new independent
+acceptance marker.
+
+The current F8 surfaces are reclassified as follows:
+
+- The status classes are **separately typed compatibility vocabularies**. Their
+  members have equal wire strings (`verified_clear`, `collision_witness`, and
+  `not_proven`), but the Python enum classes and members are not identical. Each
+  proof engine retains its own public enum class and local `is` checks.
+- The bound calculations are **distinct semantic contracts**, not one duplicated
+  motion-bound authority. M10-1 uses
+  `2*R*sin(min(abs(delta), pi)/2) + 1e-9*(1+abs(R))`; M10-4 accumulates
+  `2*R*sin(min(delta, pi)/2) + 1e-9` once per influencing joint and then sums
+  endpoint bounds. The shared chord term does not make the complete primitives
+  interchangeable.
+
+### Compatibility Evidence
+
+- New characterization coverage is in
+  `tests/unit/test_f8_proof_authority_characterization.py`.
+- The tests cover zero, small, `pi/2`, `pi`, and greater-than-`pi` deltas,
+  exact padding formulas, equal wire strings, distinct enum type identity, and
+  status serialization round trips.
+- `tests/unit/test_m13_3_legacy_goldens.py` passed 3 tests, including the
+  protected source digest assertion.
+- `tests/unit/test_m13_3p_legacy_goldens.py` passed 10 tests, including v1
+  M10-4 JSON, record digests, and result hashes.
+- The frozen file digest remains
+  `sha256:66a62f30a7fe96c40f6cb049bf96906a427931b276ce9847dad42e6f95ad2bc5`.
+- No F8 production source, frozen module, legacy golden constant, request/result
+  hash, public enum class, proof padding semantic, or reconstruction record was
+  modified.
+
+### Current F8 Disposition
+
+**F8 STATUS:** CLOSED AS OPTION D / INTENTIONAL COMPATIBILITY AND DISTINCT
+SEMANTICS. The historical finding remains retained as pre-disposition evidence;
+the current ownership map records the corrected authority boundary.

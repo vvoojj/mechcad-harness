@@ -16,7 +16,7 @@ audit artifact, not normative architecture and not a historical record.
   `SINGLE_AUTHORITY`, `LEGITIMATE_LAYERING`, `LEGITIMATE_ADAPTER_VARIANTS`,
   `INTENTIONAL_SUPERSESSION`, `LEGACY_RESIDUE`, `BRIDGE_RESIDUE`,
   `SEMANTIC_DUPLICATION`, `AUTHORITY_CONFLICT`, `POSSIBLE_DUPLICATION`,
-  `UNKNOWN`.
+  `INTENTIONAL_COMPATIBILITY_DUPLICATION`, `UNKNOWN`.
 - `FIND` references findings in the main report (`F1`…`F21`). Every finding ID
   below refers to exactly one semantic finding; `—` means the row's
   duplication status is explained directly in the main report or its
@@ -72,10 +72,10 @@ Verification convention: `WIRED` = reachable from production composition;
 | --- | --- | --- | --- | --- | --- | --- |
 | 27 | Multi-joint forward kinematics | M10-2 `89b1d75` | `multi_joint_kinematics.py:evaluate` (WIRED) | V1 / V2 schemas in same module | — | INTENTIONAL_SUPERSESSION (see main report §6) |
 | 28 | Multi-joint exact discrete collision sweep | M10-3 `89b1d75` | `multi_joint_collision_sweep.py` (WIRED) | V1/V2 orchestration bodies ~130 duplicated lines | F9 | INTENTIONAL_SUPERSESSION + LEGACY_RESIDUE |
-| 29 | Continuous single-axis clearance proof | M10-1 `89b1d75` | `continuous_proof.py` (WIRED) | status enum duplicated | F8 | SEMANTIC_DUPLICATION |
+| 29 | Continuous single-axis clearance proof | M10-1 `89b1d75` | `continuous_proof.py` (WIRED) | separately typed status vocabulary; same three wire strings as multi-joint proof | F8 | INTENTIONAL_COMPATIBILITY_DUPLICATION |
 | 30 | Continuous multi-joint path proof | M10-4 `89b1d75` | `multi_joint_continuous_clearance.py` (WIRED) | V1/V2 schemas; one proof engine | — | LEGITIMATE_ADAPTER_VARIANTS (see main report §6) |
 | 31 | Reach-bound derivation | M10-4 `89b1d75` | `multi_joint_continuous_path.py` (WIRED) | V1/V2 | — | INTENTIONAL_SUPERSESSION (see main report §6) |
-| 32 | Motion-bound math (`2R·sin(Δ/2)+pad`) | M10 `89b1d75` | `continuous_proof.py:145-158` (WIRED) | inline copy in `multi_joint_continuous_clearance.py:466` | F8 | SEMANTIC_DUPLICATION |
+| 32 | Motion-bound math (`2R·sin(Δ/2)+pad`) | M10 `89b1d75` | `continuous_proof.py:145-158` (WIRED) | distinct M10-4 per-joint bound in frozen `multi_joint_continuous_clearance.py:466`; scaled single-axis pad versus fixed per-contribution pad | F8 | LEGITIMATE_LAYERING |
 | 33 | Exact transient measurement provider | M7C1/M10 `9ab9e48`/`89b1d75` | `transient_freecad_measurement.py` (WIRED) | `cad_analysis.py` (TESTS) | F15 | SINGLE_AUTHORITY (live) |
 | 34 | Rigid-body constituent groups (M10 v2) | M13-3P `f3ab0c7` | `multi_joint_pair_scope.py`, v2 schemas (WIRED) | — | — | SINGLE_AUTHORITY |
 | 35 | Physical pair classification | M12-5 / M13-3 | `models/physical_pair_policy.py:PhysicalPairClassification` (WIRED) | `candidates/canonical_m10.py:CanonicalM10PairClassification` | F19 | POSSIBLE_DUPLICATION |
@@ -128,8 +128,9 @@ report's `LEGACY_RESIDUES = 10`, which counts P3 **findings**, not rows.
 | LEGITIMATE_ADAPTER_VARIANTS | 4 |
 | INTENTIONAL_SUPERSESSION | 5 |
 | INTENTIONAL_INDEPENDENT_VERIFIER | 2 |
-| SEMANTIC_DUPLICATION | 3 |
+| SEMANTIC_DUPLICATION | 2 |
 | POSSIBLE_DUPLICATION | 6 |
+| INTENTIONAL_COMPATIBILITY_DUPLICATION | 1 |
 | AUTHORITY_CONFLICT (latent/overload) | 0 |
 | LEGACY_RESIDUE | 4 |
 | UNKNOWN | 0 |
