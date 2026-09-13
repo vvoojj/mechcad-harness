@@ -34,6 +34,7 @@ from mechcad_harness.candidates import (
 from mechcad_harness.candidates.m10_evaluation import (
     CandidateCollisionPairInventory,
 )
+from mechcad_harness.candidates.canonical_m10 import CanonicalM10VerificationService
 
 from test_m12_candidate_m10_binding import _binding, _inventory, _realization, _scope
 
@@ -150,6 +151,105 @@ def _rehash_result(result):
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
     })
+
+
+def _continuous_request(pair_assembly, binding, *, source_assembly_id=None):
+    return ContinuousSingleAxisProofRequest(
+        source_assembly_id=source_assembly_id or pair_assembly.assembly_id,
+        source_assembly_hash=assembly_hash(pair_assembly),
+        axis=binding.output_axis,
+        start_angle_deg=-10.0,
+        end_angle_deg=10.0,
+        moving_instance_ids=("cad-hub",),
+        stationary_instance_ids=("cad-mount",),
+        required_clearance_mm=1.0,
+        proof_guard_mm=1e-6,
+        max_depth=16,
+        minimum_interval_deg=1e-6,
+        max_exact_evaluations=4096,
+    )
+
+
+def test_d1_continuous_source_assembly_id_strictness_is_explicit_per_stage():
+    realization = _realization()
+    binding = _binding(realization)
+    pair_assembly = CandidateM10EvaluationService._induced_pair_assembly(
+        realization.assembly, "cad-hub", "cad-mount"
+    )
+    request = _continuous_request(
+        pair_assembly, binding, source_assembly_id="forged-source-assembly"
+    )
+    result = _rehash_result(
+        _continuous_result(
+            {
+                "assembly": pair_assembly,
+                "axis": binding.output_axis,
+                "start_angle_deg": request.start_angle_deg,
+                "end_angle_deg": request.end_angle_deg,
+                "moving_instance_ids": request.moving_instance_ids,
+                "stationary_instance_ids": request.stationary_instance_ids,
+                "required_clearance_mm": request.required_clearance_mm,
+                "proof_guard_mm": request.proof_guard_mm,
+                "max_depth": request.max_depth,
+                "minimum_interval_deg": request.minimum_interval_deg,
+                "max_exact_evaluations": request.max_exact_evaluations,
+            }
+        ).model_copy(update={"request_hash": request.request_hash})
+    )
+
+    CandidateM10EvaluationService.CONTINUOUS_RESULT_VALIDATION.validate(
+        request, result, pair_assembly
+    )
+    with pytest.raises(ValueError, match="source assembly"):
+        CanonicalM10VerificationService.CONTINUOUS_RESULT_VALIDATION.validate(
+            request, result, pair_assembly
+        )
+
+
+def test_d2_collision_witness_classification_strictness_is_explicit_per_stage():
+    realization = _realization()
+    binding = _binding(realization)
+    pair_assembly = CandidateM10EvaluationService._induced_pair_assembly(
+        realization.assembly, "cad-hub", "cad-mount"
+    )
+    request = _continuous_request(pair_assembly, binding)
+    result = _continuous_result(
+        {
+            "assembly": pair_assembly,
+            "axis": binding.output_axis,
+            "start_angle_deg": request.start_angle_deg,
+            "end_angle_deg": request.end_angle_deg,
+            "moving_instance_ids": request.moving_instance_ids,
+            "stationary_instance_ids": request.stationary_instance_ids,
+            "required_clearance_mm": request.required_clearance_mm,
+            "proof_guard_mm": request.proof_guard_mm,
+            "max_depth": request.max_depth,
+            "minimum_interval_deg": request.minimum_interval_deg,
+            "max_exact_evaluations": request.max_exact_evaluations,
+        },
+        ContinuousSingleAxisProofStatus.COLLISION_WITNESS,
+    ).model_copy(
+        update={
+            "request_hash": request.request_hash,
+            "collision_witness": ContinuousCollisionWitness(
+                witness_angle_deg=0.0,
+                moving_instance_id="cad-hub",
+                stationary_instance_id="cad-mount",
+                interference_volume_mm3=0.0,
+                exact_distance_mm=5.0,
+                classification=CollisionClassification.POSITIVE_CLEARANCE,
+            ),
+        }
+    )
+    result = _rehash_result(result)
+
+    with pytest.raises(ValueError, match="classification"):
+        CandidateM10EvaluationService.CONTINUOUS_RESULT_VALIDATION.validate(
+            request, result, pair_assembly
+        )
+    CanonicalM10VerificationService.CONTINUOUS_RESULT_VALIDATION.validate(
+        request, result, pair_assembly
+    )
 
 
 def test_evaluate_calls_continuous_m10_once_per_checked_pair_with_induced_assembly():

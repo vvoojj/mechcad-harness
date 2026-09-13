@@ -865,6 +865,73 @@ encoded by tests and whether the tests already describe semantic drift.
 - KNOWN_UNTESTED_DRIFT_SURFACE: D1 (`source_assembly_id`) and D2 (witness
   classification) have no test on either side.
 
+## F1 Remediation Record (post-acceptance)
+
+**Date:** 2026-09-13
+
+This record remediates F1 only. It does not rewrite the accepted historical
+finding, alter candidate/canonical M10 stage authority, or remediate F3, F4,
+F5, F6, F8, F11, or any P3 finding.
+
+### Shared Kernel
+
+`src/mechcad_harness/candidates/m10_result_validation.py` owns the input-neutral
+continuous-result and home-result validation mechanics plus the M10 result-hash
+calculation. It defines frozen validation contracts; it does not import candidate
+realizations, canonical mechanisms, promotion services, application composition,
+or stage outcome models.
+
+`CandidateM10EvaluationService` and `CanonicalM10VerificationService` remain
+separate execution stages. Each owns an explicit contract instance and its own
+pair-assembly construction, requests, models, outcomes, and callers. Canonical
+execution still derives from canonical reconstruction and fresh canonical CAD;
+it accepts no candidate M10 result as an execution input.
+
+### D1-D10 Contract Matrix
+
+| Difference | Classification | Preserved contract |
+| --- | --- | --- |
+| Shared result/request, path, partition, certificate, witness-pair, aggregate, and result-hash validation | SHARED | one neutral kernel |
+| D1 continuous `source_assembly_id` | CANDIDATE_ONLY relaxation | candidate validates the assembly hash; canonical validates assembly ID and hash |
+| D2 collision-witness classification | CANDIDATE_ONLY strictness | candidate permits only `INTERFERENCE`/`TOUCHING`; canonical does not add that restriction |
+| D3 accepted discrete sweep version | CANDIDATE_ONLY strictness | candidate pins the accepted sweep version; canonical retains its model-level request/result equality check |
+| D4 model-level result-hash recomputation | CANONICAL_ONLY | canonical proof/home models retain the additional check |
+| D5 nested model partition validation | CANONICAL_ONLY | canonical proof/home/outcome models retain the additional checks |
+| D6 stage-status vocabulary | STRUCTURALLY_DIFFERENT | unchanged candidate stage versus canonical aggregate vocabulary |
+| D7 outcome bindings | STRUCTURALLY_DIFFERENT | unchanged candidate hashes versus canonical embedded scope/inventory/request |
+| D8 induced-pair assembly suffix | STRUCTURALLY_DIFFERENT | candidate and canonical assembly identities remain distinct |
+| D9 scope proof-service version | STRUCTURALLY_DIFFERENT | candidate-bound scope retains it; canonical scope excludes it |
+| D10 result-hash utility | SHARED | one `m10_result_hash` implementation |
+
+No request model, result model, schema version, request hash payload, result hash
+payload, or wire format changed. Candidate and canonical M10 request hashes remain
+intentionally distinct.
+
+### D1 And D2 Regressions
+
+`tests/unit/test_m12_candidate_m10_service.py` now explicitly verifies:
+
+- D1: a request with the right induced-assembly hash but a forged assembly ID is
+  accepted by the candidate contract and rejected by the canonical contract.
+- D2: a collision witness with `POSITIVE_CLEARANCE` classification is rejected by
+  the candidate contract and accepted by the canonical contract.
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `py -3 -m pytest tests/unit/test_m12_candidate_m10_service.py::test_d1_continuous_source_assembly_id_strictness_is_explicit_per_stage tests/unit/test_m12_candidate_m10_service.py::test_d2_collision_witness_classification_strictness_is_explicit_per_stage -q` | `2 passed` |
+| `py -3 -m pytest tests/unit/test_m12_candidate_m10_binding.py tests/unit/test_m12_candidate_m10_service.py tests/unit/test_m12_candidate_m10_replay.py tests/unit/test_m12_canonical_m10.py tests/test_m10_1_continuous_proof.py -q` | `103 passed` |
+| broader candidate/promotion matrix | `300 passed` |
+| `py -3 -m pytest tests/unit -q` | `2627 passed, 19 skipped, 5 failed` in `382.41s`; failures were four existing README-content assertions and one unrelated untracked Rotator V2 test |
+| `py -3 -m pytest tests/ -q` | did not complete before the explicit `3700s` ceiling; three failure markers appeared before timeout, so this run is not recorded as a pass |
+| `py -3 -m compileall -q src/mechcad_harness tests` | exit `0` |
+
+A fresh skeptical review found no functional F1 regression, authority crossover,
+stage-merging, hash/wire change, D6-D9 regression, or scope expansion. It found
+only obsolete imports introduced during extraction; those imports were removed
+before the final focused rerun.
+
 **F2**
 - TESTS_FOR_ORIGINAL: state/revision hash stability tests.
 - TESTS_FOR_SECONDARY: per-module content-hash tests exist, but none compare

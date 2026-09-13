@@ -18,21 +18,24 @@ from pydantic import (
 
 from mechcad_harness.cad_assembly import CadAssemblyProgram, assembly_hash
 from mechcad_harness.candidates.canonical_cad import CanonicalCadRealization
-from mechcad_harness.candidates.canonical_mechanism import CanonicalMechanismReconstruction
+from mechcad_harness.candidates.canonical_mechanism import (
+    CanonicalMechanismReconstruction,
+)
+from mechcad_harness.candidates.m10_result_validation import (
+    ContinuousM10ResultValidationContract,
+    HomeM10ResultValidationContract,
+    m10_result_hash,
+)
 from mechcad_harness.continuous_proof import (
-    CONTINUOUS_PROOF_ALGORITHM_VERSION,
     ContinuousSingleAxisProofRequest,
     ContinuousSingleAxisProofResult,
     ContinuousSingleAxisProofStatus,
 )
-from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.kinematic_sweep import (
     CadKinematicSweepRequest,
     CadKinematicSweepResult,
-    CollisionClassification,
     RevoluteAxis,
     SweepAggregateClassification,
-    transformed_assembly_program,
 )
 from mechcad_harness.models import (
     CanonicalConnectionMeaning,
@@ -77,13 +80,6 @@ def _hash_model(value: Model, identity_field: str) -> str:
     payload = value.model_dump(mode="json")
     payload.pop(identity_field, None)
     return _hash_payload(payload)
-
-
-def _result_hash(value: Model) -> str:
-    payload = value.model_dump(mode="json", exclude={"result_hash"})
-    return "sha256:" + hashlib.sha256(
-        canonical_json_bytes(payload)
-    ).hexdigest()
 
 
 def _canonical_pair(pair: tuple[str, str]) -> tuple[str, str]:
@@ -311,7 +307,7 @@ class CanonicalM10PairProof(CanonicalM10Model):
             raise ValueError("canonical M10 proof request identity mismatch")
         if self.result.result_hash != self.result_hash:
             raise ValueError("canonical M10 proof result identity mismatch")
-        if self.result.result_hash != _result_hash(self.result):
+        if self.result.result_hash != m10_result_hash(self.result):
             raise ValueError("canonical M10 proof result hash mismatch")
         expected = _hash_model(self, "proof_hash")
         if self.proof_hash == "pending":
@@ -359,7 +355,7 @@ class CanonicalM10HomeExactCheck(CanonicalM10Model):
             raise ValueError("canonical M10 home request identity mismatch")
         if self.result.result_hash != self.result_hash:
             raise ValueError("canonical M10 home result identity mismatch")
-        if self.result.result_hash != _result_hash(self.result):
+        if self.result.result_hash != m10_result_hash(self.result):
             raise ValueError("canonical M10 home result hash mismatch")
         expected = _hash_model(self, "check_hash")
         if self.check_hash == "pending":
@@ -656,6 +652,12 @@ class CanonicalM10ScopeEquivalenceService:
 
 class CanonicalM10VerificationService:
     """Execute fresh M10 checks from canonical reconstruction and CAD only."""
+
+    CONTINUOUS_RESULT_VALIDATION = ContinuousM10ResultValidationContract(
+        require_source_assembly_id=True,
+        allowed_collision_witness_classifications=None,
+    )
+    HOME_RESULT_VALIDATION = HomeM10ResultValidationContract(accepted_sweep_version=None)
 
     def __init__(
         self,
@@ -1138,107 +1140,13 @@ class CanonicalM10VerificationService:
 
     @staticmethod
     def _validate_continuous_result(request, result, assembly):
-        if request.source_assembly_id != assembly.assembly_id or request.source_assembly_hash != assembly_hash(assembly):
-            raise ValueError("canonical M10 continuous source assembly mismatch")
-        comparisons = (
-            (result.request_hash, request.request_hash, "request"),
-            (result.source_assembly_hash, request.source_assembly_hash, "source assembly"),
-            (result.axis, request.axis, "axis"),
-            (result.start_angle_deg, request.start_angle_deg, "path"),
-            (result.end_angle_deg, request.end_angle_deg, "path"),
-            (result.moving_instance_ids, request.moving_instance_ids, "moving partition"),
-            (result.stationary_instance_ids, request.stationary_instance_ids, "stationary partition"),
-            (result.required_clearance_mm, request.required_clearance_mm, "clearance"),
-            (result.proof_guard_mm, request.proof_guard_mm, "proof guard"),
-            (result.proof_algorithm_version, CONTINUOUS_PROOF_ALGORITHM_VERSION, "algorithm version"),
+        CanonicalM10VerificationService.CONTINUOUS_RESULT_VALIDATION.validate(
+            request, result, assembly
         )
-        for actual, expected, label in comparisons:
-            if actual != expected:
-                raise ValueError(f"canonical M10 continuous result {label} mismatch")
-        expected_pairs = tuple(
-            (moving, stationary)
-            for moving in request.moving_instance_ids
-            for stationary in request.stationary_instance_ids
-        )
-        for certificate in result.certified_leaf_certificates:
-            actual_pairs = tuple(
-                (pair.moving_instance_id, pair.stationary_instance_id)
-                for pair in certificate.pair_certificates
-            )
-            if actual_pairs != expected_pairs:
-                raise ValueError("canonical M10 continuous certificate pair mismatch")
-        if result.status is ContinuousSingleAxisProofStatus.COLLISION_WITNESS:
-            if result.collision_witness is None:
-                raise ValueError("canonical M10 collision witness is missing")
-            witness_pair = (
-                result.collision_witness.moving_instance_id,
-                result.collision_witness.stationary_instance_id,
-            )
-            if witness_pair not in expected_pairs:
-                raise ValueError("canonical M10 collision witness pair mismatch")
-        elif result.collision_witness is not None:
-            raise ValueError("canonical M10 non-collision result carries a witness")
-        if result.status is ContinuousSingleAxisProofStatus.VERIFIED_CLEAR and not result.certified_leaf_certificates:
-            raise ValueError("canonical M10 verified-clear result requires certificates")
-        if result.result_hash != _result_hash(result):
-            raise ValueError("canonical M10 continuous result hash mismatch")
 
     @staticmethod
     def _validate_home_result(request, result, assembly):
-        if request.sample_angles_deg != (0.0,):
-            raise ValueError("canonical M10 home request must use exactly zero angle")
-        if result.request_hash != request.request_hash or result.source_assembly_hash != request.source_assembly_hash:
-            raise ValueError("canonical M10 home result identity mismatch")
-        if tuple(sample.angle_deg for sample in result.samples) != (0.0,):
-            raise ValueError("canonical M10 home result must contain one zero-angle sample")
-        expected_transformed = assembly_hash(
-            transformed_assembly_program(
-                assembly, request.axis, 0.0, request.moving_instance_ids, request.stationary_instance_ids
-            )
-        )
-        sample = result.samples[0]
-        if sample.transformed_assembly_hash != expected_transformed:
-            raise ValueError("canonical M10 home transformed assembly mismatch")
-        expected_pairs = tuple(
-            (moving, stationary)
-            for moving in request.moving_instance_ids
-            for stationary in request.stationary_instance_ids
-        )
-        actual_pairs = tuple(
-            (pair.moving_instance_id, pair.stationary_instance_id)
-            for pair in sample.pair_results
-        )
-        if actual_pairs != expected_pairs:
-            raise ValueError("canonical M10 home result pair mismatch")
-        expected_pair_classifications = tuple(
-            CollisionClassification.from_measurement(
-                pair.interference_volume_mm3,
-                pair.exact_distance_mm,
-                volume_tolerance_mm3=request.volume_tolerance_mm3,
-                distance_tolerance_mm=request.distance_tolerance_mm,
-            )
-            for pair in sample.pair_results
-        )
-        if tuple(pair.classification for pair in sample.pair_results) != expected_pair_classifications:
-            raise ValueError("canonical M10 home pair classification mismatch")
-        precedence = {
-            CollisionClassification.POSITIVE_CLEARANCE: 0,
-            CollisionClassification.TOUCHING: 1,
-            CollisionClassification.INTERFERENCE: 2,
-        }
-        if sample.classification is not max(expected_pair_classifications, key=precedence.__getitem__):
-            raise ValueError("canonical M10 home sample classification mismatch")
-        expected_aggregate = (
-            SweepAggregateClassification.COLLISION_PRESENT
-            if CollisionClassification.INTERFERENCE in expected_pair_classifications
-            else SweepAggregateClassification.TOUCHING_PRESENT
-            if CollisionClassification.TOUCHING in expected_pair_classifications
-            else SweepAggregateClassification.COLLISION_FREE
-        )
-        if result.aggregate_classification is not expected_aggregate:
-            raise ValueError("canonical M10 home aggregate classification mismatch")
-        if result.result_hash != _result_hash(result):
-            raise ValueError("canonical M10 home result hash mismatch")
+        CanonicalM10VerificationService.HOME_RESULT_VALIDATION.validate(request, result, assembly)
 
 __all__ = [
     "CanonicalM10BodyDisposition",
