@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from enum import StrEnum
 from numbers import Real
@@ -38,6 +37,7 @@ from mechcad_harness.candidates.dimensions import (
     resolve_dimensions,
 )
 from mechcad_harness.models.physical_pair_policy import PhysicalPairClassificationBinding
+from mechcad_harness.models.physical_mechanism import physical_kinematic_root_hash
 from mechcad_harness.models.quaternion import rotate_vector
 from mechcad_harness.state.hashing import canonical_json, state_hash
 
@@ -60,17 +60,6 @@ def _require_hash(value: str) -> str:
 
 def _hash_payload(payload: dict) -> str:
     return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
-
-
-def physical_kinematic_root_hash(kinematic_root_physical_body_id: str) -> str:
-    if not isinstance(kinematic_root_physical_body_id, str) or not kinematic_root_physical_body_id.strip():
-        raise ValueError("kinematic root physical body ID must not be empty or whitespace")
-    return _hash_payload(
-        {
-            "schema_version": "physical-kinematic-root@1",
-            "kinematic_root_physical_body_id": kinematic_root_physical_body_id,
-        }
-    )
 
 
 def _require_nonblank_physical_identity(value: str) -> str:

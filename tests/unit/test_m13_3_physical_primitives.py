@@ -20,6 +20,9 @@ from mechcad_harness.models import (
     PhysicalPairClassificationBinding,
     physical_pair_classification_set_hash,
 )
+from mechcad_harness.models.physical_mechanism import (
+    physical_kinematic_root_hash as canonical_physical_kinematic_root_hash,
+)
 
 
 def _hash(payload: dict) -> str:
@@ -29,6 +32,8 @@ def _hash(payload: dict) -> str:
 
 def test_physical_primitives_are_publicly_exported_and_usable():
     assert ExportedPhysicalRigidBodyBinding is PhysicalRigidBodyBinding
+    assert physical_kinematic_root_hash is canonical_physical_kinematic_root_hash
+    assert exported_physical_kinematic_root_hash is canonical_physical_kinematic_root_hash
     assert exported_physical_kinematic_root_hash("body-r") == physical_kinematic_root_hash("body-r")
 
 

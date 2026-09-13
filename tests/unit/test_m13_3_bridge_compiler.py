@@ -211,6 +211,39 @@ def test_candidate_compiler_finalizes_model_inventory_scope_and_bridge(tmp_path)
     assert PhysicalToM10V2Bridge.model_validate(bridge.model_dump(mode="json")) == bridge
 
 
+def test_bridge_rejects_a_root_hash_that_does_not_match_trusted_physical_input(tmp_path):
+    manager, base_candidate, synthesis_request, synthesis_policy, specifications, artifact = _mixed_fixture(tmp_path)
+    candidate = _physical_candidate(base_candidate, specifications)
+    request = _mixed_request(candidate, specifications, artifact)
+    realization = CandidateCadRealizationService(tmp_path, "PRJ-M13-2-T7", manager).realize(
+        candidate, synthesis_request, synthesis_policy, request
+    ).realization
+    assert realization is not None
+    bridge = compile_candidate(candidate, realization, request.placement_derivations)
+    forged_bridge = bridge.model_copy(
+        update={"kinematic_root_binding_hash": physical_kinematic_root_hash("wrong-root")}
+    )
+    forged_bridge = forged_bridge.model_copy(
+        update={"physical_to_m10_bridge_hash": physical_to_m10_bridge_hash(forged_bridge)}
+    )
+
+    with pytest.raises(ValueError, match="kinematic root"):
+        validate_physical_to_m10_v2_bridge(
+            forged_bridge,
+            physical_mechanism_hash=candidate.realization.realization_hash,
+            root_physical_body_id=candidate.realization.kinematic_root_physical_body_id,
+            model=bridge.model,
+            bodies=candidate.realization.physical_rigid_body_bindings,
+            joints=candidate.realization.physical_revolute_joint_bindings,
+            components=candidate.realization.components,
+            connections=candidate.realization.connections,
+            mappings=realization.mappings,
+            assembly=realization.assembly,
+            cad_realization_hash=realization.realization_hash,
+            pair_bindings=candidate.realization.physical_pair_classification_bindings,
+        )
+
+
 def _compiled_candidate_bridge(tmp_path):
     manager, base_candidate, synthesis_request, synthesis_policy, specifications, artifact = _mixed_fixture(tmp_path)
     candidate = _physical_candidate(base_candidate, specifications)
