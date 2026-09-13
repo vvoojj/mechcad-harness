@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 from mechcad_harness.artifacts.storage import ArtifactStore, ArtifactType
-from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.structural import StructuralAnalysisDefinition
 from mechcad_harness.runs.controller import RunController
 from mechcad_harness.runs.models import SourceBinding
@@ -25,6 +24,7 @@ from mechcad_harness.structural.models import (
     StructuralExecutionStatus,
     mesh_input_hash,
     mesh_manifest_hash,
+    mesh_specification_hash,
 )
 from mechcad_harness.structural.preflight import ConstraintPreflight
 from mechcad_harness.structural.runtime import DiscoveredRuntime
@@ -38,12 +38,6 @@ class StructuralPipelineError(Exception):
         self.stage = stage
         self.status = status
         self.detail = detail
-
-
-def _mesh_specification_hash(request: StructuralAnalysisRequest) -> str:
-    payload = request.mesh_specification.model_dump(mode="json")
-    return "sha256:" + __import__("hashlib").sha256(
-        canonical_json_bytes(payload)).hexdigest()
 
 
 class StructuralAnalysisService:
@@ -166,7 +160,7 @@ class StructuralAnalysisService:
             raise StructuralPipelineError(
                 "region_resolution", StructuralExecutionStatus.REGION_RESOLUTION_FAILED, str(exc)) from exc
         # --- mesh ---
-        mesh_spec_hash = _mesh_specification_hash(request)
+        mesh_spec_hash = mesh_specification_hash(request.mesh_specification)
         mesh_input_identity = mesh_input_hash(
             source_geometry_hash=binding.geometry_artifact_hash,
             mesh_specification_hash=mesh_spec_hash,

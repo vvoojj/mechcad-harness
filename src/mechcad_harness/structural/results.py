@@ -10,7 +10,6 @@ from typing import Callable
 
 from mechcad_harness.artifacts.models import ArtifactType
 from mechcad_harness.artifacts.storage import ArtifactStore, ArtifactVerificationError
-from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.structural import (
     StructuralAnalysisDefinition,
     StructuralBodyAcceleration,
@@ -42,6 +41,7 @@ from mechcad_harness.structural.models import (
     mesh_input_hash,
     lowered_load_semantic_hash,
     mesh_manifest_hash,
+    mesh_specification_hash,
     structural_request_manifest_hash,
 )
 from mechcad_harness.structural.mesh import C3D10_LOCAL_FACES, ParsedMesh, canonical_c3d10_nodes
@@ -1013,7 +1013,7 @@ class StructuralResultInterpreter:
             manifest.geometry_artifact_id == binding.geometry_artifact_id,
             manifest.geometry_artifact_hash == binding.geometry_artifact_hash,
             manifest.calculix_identity == CALCULIX_PROVIDER_IDENTITY,
-            manifest.mesh_specification_hash == self._mesh_specification_hash(request),
+            manifest.mesh_specification_hash == mesh_specification_hash(request.mesh_specification),
             manifest.mesh_manifest is not None
             and manifest.mesh_manifest_hash == mesh_manifest_hash(manifest.mesh_manifest)
             and manifest.mesh_manifest.region_map_hash == manifest.region_map_hash,
@@ -1102,13 +1102,6 @@ class StructuralResultInterpreter:
             raise StructuralResultIntegrityError("request manifest hash mismatch")
         if tuple(load for case in manifest.case_manifests for load in case.lowered_loads) != manifest.lowered_loads:
             raise StructuralResultIntegrityError("lowered-load provenance does not match case manifests")
-
-    @staticmethod
-    def _mesh_specification_hash(request):
-        payload = request.mesh_specification.model_dump(mode="json")
-        return "sha256:" + hashlib.sha256(
-            canonical_json_bytes(payload)
-        ).hexdigest()
 
     @staticmethod
     def _expected_artifact_id(request, kind: str, load_case_id: str) -> str:
@@ -1200,7 +1193,7 @@ class StructuralResultInterpreter:
         expected = manifest.mesh_manifest
         if expected is None:
             raise StructuralResultIntegrityError("mesh manifest is required")
-        if expected.mesh_specification_hash != StructuralResultInterpreter._mesh_specification_hash(request):
+        if expected.mesh_specification_hash != mesh_specification_hash(request.mesh_specification):
             raise StructuralResultIntegrityError("mesh manifest mesh specification hash mismatch")
         if expected.mesh_hash != manifest.mesh_artifact_hash:
             raise StructuralResultIntegrityError("mesh manifest hash does not match MSH artifact")

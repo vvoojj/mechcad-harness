@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from mechcad_harness.artifacts.models import ArtifactType
 from mechcad_harness.artifacts.storage import ArtifactStore, ArtifactVerificationError
-from mechcad_harness.core.canonical import canonical_json_bytes, canonical_json_text
+from mechcad_harness.core.canonical import canonical_json_text
 from mechcad_harness.dependency.storage import EvidenceStore
 from mechcad_harness.models.evidence import Evidence
 from mechcad_harness.models.structural import structural_definition_hash
@@ -32,7 +32,6 @@ from mechcad_harness.structural.evidence import (
     structural_evidence_hash,
     structural_mesh_convergence_result_hash,
     structural_mesh_convergence_study_hash,
-    structural_mesh_specification_hash,
     structural_repeatability_policy_hash,
 )
 from mechcad_harness.structural.models import (
@@ -46,6 +45,8 @@ from mechcad_harness.structural.models import (
     StructuralResultParserProvenance,
     StructuralCriterionStatus,
     execution_manifest_hash,
+    mesh_input_hash,
+    mesh_specification_hash,
     structural_result_hash,
     structural_verification_hash,
 )
@@ -344,7 +345,7 @@ class StructuralMeshConvergenceService:
                 raise StructuralEvidenceIntegrityError("runtime/provider semantics mismatch")
             if not set(study.required_runtime_identities).issubset(_persisted_identity_tokens(payload)):
                 raise StructuralEvidenceIntegrityError("required runtime identity is missing")
-            if structural_mesh_specification_hash(request.mesh_specification) != expected_mesh_hash:
+            if mesh_specification_hash(request.mesh_specification) != expected_mesh_hash:
                 raise StructuralEvidenceIntegrityError("request mesh specification order mismatch")
             mesh_manifest = manifest.mesh_manifest
             if (
@@ -1283,7 +1284,13 @@ class StructuralEvidenceVerifier:
         )
         if not self._is_trusted_freecad_provenance(source_artifact.backend_provenance):
             raise StructuralEvidenceIntegrityError("source STEP producer provenance is not trusted")
-        mesh_input = self._mesh_input_hash(request, manifest)
+        mesh_input = mesh_input_hash(
+            source_geometry_hash=request.source_binding.geometry_artifact_hash,
+            mesh_specification_hash=manifest.mesh_specification_hash,
+            region_map_hash=manifest.region_map_hash,
+            gmsh_identity=manifest.gmsh_identity,
+            gmsh_version=manifest.gmsh_version,
+        )
         mesh_artifact, mesh_bytes = self._read_artifact(
             store,
             manifest.mesh_artifact_id,
@@ -1510,19 +1517,6 @@ class StructuralEvidenceVerifier:
     @staticmethod
     def _is_trusted_freecad_provenance(provenance) -> bool:
         return provenance is not None and provenance == provenance_from_identity(FREECAD_IDENTITY)
-
-    @staticmethod
-    def _mesh_input_hash(request, manifest) -> str:
-        payload = {
-            "source_geometry_hash": request.source_binding.geometry_artifact_hash,
-            "mesh_specification_hash": manifest.mesh_specification_hash,
-            "region_map_hash": manifest.region_map_hash,
-            "gmsh_identity": manifest.gmsh_identity,
-            "gmsh_version": manifest.gmsh_version,
-        }
-        return "sha256:" + hashlib.sha256(
-            canonical_json_bytes(payload)
-        ).hexdigest()
 
     @staticmethod
     def _sha256(content: bytes) -> str:

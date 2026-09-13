@@ -48,6 +48,7 @@ from mechcad_harness.structural.models import (
     REGION_RESOLVER_VERSION,
     execution_manifest_hash,
     mesh_input_hash,
+    mesh_specification_hash,
 )
 from mechcad_harness.structural_request import (
     MeshSpecification,
@@ -1202,7 +1203,7 @@ def _cantilever_request():
 def _cantilever_manifest(request, mesh):
     mesh_hash = _mesh_hash(mesh)
     region_hash = "sha256:" + "r" * 64
-    mesh_spec_hash = StructuralResultInterpreter._mesh_specification_hash(request)
+    mesh_spec_hash = mesh_specification_hash(request.mesh_specification)
     mesh_manifest = StructuralMeshManifest(
         mesh_specification_hash=mesh_spec_hash, gmsh_identity="gmsh", gmsh_version="1",
         element_family="c3d10", node_count=len(mesh.nodes), volume_element_count=1,
@@ -1247,7 +1248,7 @@ def _cantilever_policy(relative_tolerance: float = 0.03, request=None):
         elastic_modulus_mpa=1000.0,
         poisson_ratio=0.3,
         resultant_force_n=(0.0, -15.0, 0.0),
-        mesh_specification_hash=StructuralResultInterpreter._mesh_specification_hash(request),
+        mesh_specification_hash=mesh_specification_hash(request.mesh_specification),
         mesh_hash=_mesh_hash(mesh),
         region_map_hash="sha256:" + "r" * 64,
         free_end_region_id="free",
@@ -1825,7 +1826,7 @@ $EndElements
         f"{request.request_hash}||msh".encode("utf-8")
     ).hexdigest()[:16]
     region_map_hash_value = "sha256:" + "r" * 64
-    mesh_spec_hash = StructuralResultInterpreter._mesh_specification_hash(request)
+    mesh_spec_hash = mesh_specification_hash(request.mesh_specification)
     deck_id = StructuralResultInterpreter._expected_artifact_id(request, "inp", "LC-1")
     frd_id = StructuralResultInterpreter._expected_artifact_id(request, "frd", "LC-1")
     log_id = StructuralResultInterpreter._expected_artifact_id(request, "log", "LC-1")
@@ -1966,7 +1967,7 @@ $EndElements
         resolver_identity=REGION_RESOLVER_IDENTITY,
         resolver_version=REGION_RESOLVER_VERSION,
         gmsh_identity=GMSH_PROVIDER_IDENTITY, gmsh_version="4.15.0",
-        mesh_specification_hash=StructuralResultInterpreter._mesh_specification_hash(request),
+        mesh_specification_hash=mesh_specification_hash(request.mesh_specification),
         mesh_artifact_id=mesh_artifact.artifact_id, mesh_artifact_hash=mesh_artifact.sha256,
         mesh_manifest=mesh_manifest, mesh_manifest_hash=mesh_manifest_hash(mesh_manifest),
         deck_builder_identity=DECK_BUILDER_IDENTITY, deck_builder_version="1",

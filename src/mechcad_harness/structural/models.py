@@ -11,7 +11,7 @@ from mechcad_harness.backends.models import BackendProvenance
 from mechcad_harness.core.canonical import canonical_json_text
 from mechcad_harness.models.common import Model
 from mechcad_harness.models.structural import StructuralResultField
-from mechcad_harness.structural_request import StructuralSourceBinding
+from mechcad_harness.structural_request import MeshSpecification, StructuralSourceBinding
 
 
 # ---------------------------------------------------------------------------
@@ -693,6 +693,11 @@ def lowered_load_semantic_hash(nodal_loads: dict[int, tuple[float, float, float]
 
 def canonical_load_semantic_hash(load) -> str:
     return _hash_payload(load.model_dump(mode="json"))
+
+
+def mesh_specification_hash(specification: MeshSpecification) -> str:
+    """Return the identity of every declared field in a closed mesh specification."""
+    return _hash_payload(specification.model_dump(mode="json"))
 
 
 def mesh_input_hash(*, source_geometry_hash: str, mesh_specification_hash: str,

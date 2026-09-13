@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import re
 from pathlib import Path
@@ -29,6 +27,7 @@ from mechcad_harness.structural.models import (
     StructuralCriterionStatus,
     StructuralExecutionStatus,
     StructuralResultMaturity,
+    mesh_specification_hash,
 )
 from mechcad_harness.structural.results import (
     StructuralAnalysisEvaluation,
@@ -78,13 +77,6 @@ CANTILEVER_MESH_SPECIFICATION = MeshSpecification(
     quality_policy_id="m11-4-fixed-cantilever-quality@1",
     mesher_settings_version="m11-4-fixed-cantilever-mesher@1",
 )
-
-
-def _mesh_specification_hash(mesh_specification: MeshSpecification) -> str:
-    payload = json.dumps(
-        mesh_specification.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
 def test_m11_4_live_reaction_dat_discovery(live_app, tmp_path: Path):
@@ -294,7 +286,7 @@ def _prepare_cantilever(live_app, definition, tmp_path: Path):
         elastic_modulus_mpa=snapshots[StructuralMaterialPropertyName.ELASTIC_MODULUS].value,
         poisson_ratio=snapshots[StructuralMaterialPropertyName.POISSON_RATIO].value,
         resultant_force_n=(0.0, 0.0, -CANTILEVER_FORCE_N),
-        mesh_specification_hash=_mesh_specification_hash(CANTILEVER_MESH_SPECIFICATION),
+        mesh_specification_hash=mesh_specification_hash(CANTILEVER_MESH_SPECIFICATION),
         mesh_hash=None,
         region_map_hash=None,
         free_end_region_id="free",
@@ -320,7 +312,7 @@ def _prepare_cantilever(live_app, definition, tmp_path: Path):
     policy = policy.model_copy(update={"request_hash": request.request_hash})
     structural = live_app.structural_service
     step_path = tmp_path / step_artifact.relative_path
-    assert StructuralResultInterpreter._mesh_specification_hash(request) == policy.mesh_specification_hash
+    assert mesh_specification_hash(request.mesh_specification) == policy.mesh_specification_hash
     assert request.analytical_policy_hash == cantilever_validation_policy_hash(policy)
     realization = structural.geometry_adapter.realize_geometry(step_path)
     region_map = structural.region_resolver.resolve(
@@ -329,7 +321,7 @@ def _prepare_cantilever(live_app, definition, tmp_path: Path):
     _inp_mesh, _mesh_manifest, msh_bytes = structural.gmsh_provider.mesh(
         step_path,
         region_map,
-        mesh_spec_hash=StructuralResultInterpreter._mesh_specification_hash(request),
+        mesh_spec_hash=mesh_specification_hash(request.mesh_specification),
         target_size_mm=request.mesh_specification.global_target_size_mm,
         element_family=request.mesh_specification.element_family,
     )

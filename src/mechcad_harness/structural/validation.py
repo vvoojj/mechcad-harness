@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from typing import Any
 
-from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.structural import (
     StructuralAnalysisDefinition,
     StructuralMaterialPropertyName,
@@ -30,6 +28,7 @@ from mechcad_harness.structural.models import (
     StructuralExecutionManifest,
     StructuralLoadCaseResult,
     execution_manifest_hash,
+    mesh_specification_hash,
     structural_result_hash,
 )
 from mechcad_harness.structural_request import StructuralAnalysisRequest, structural_request_hash
@@ -96,11 +95,6 @@ def cantilever_material_observation(
         elastic_modulus_source_identity=elastic.source_identity,
         poisson_ratio_source_identity=poisson.source_identity,
     )
-
-
-def _stable_hash(payload: Any) -> str:
-    encoded = canonical_json_bytes(payload)
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def _vector_norm(value: tuple[float, float, float]) -> float:
@@ -212,7 +206,7 @@ class StructuralAnalyticalValidator:
             if isinstance(result, StructuralAnalysisResult)
             else execution_manifest_hash(execution_manifest)
         )
-        request_mesh_hash = _mesh_specification_hash(request)
+        request_mesh_hash = mesh_specification_hash(request.mesh_specification)
         computed_mesh_hash = _mesh_hash(mesh)
         manifest_mesh = execution_manifest.mesh_manifest
         manifest_groups = tuple(manifest_mesh.physical_groups) if manifest_mesh is not None else ()
@@ -659,8 +653,3 @@ def reconstruct_analytical_validation(
         material_observation=material_observation,
         definition=definition,
     )
-
-
-def _mesh_specification_hash(request: StructuralAnalysisRequest) -> str:
-    payload = request.mesh_specification.model_dump(mode="json")
-    return _stable_hash(payload)

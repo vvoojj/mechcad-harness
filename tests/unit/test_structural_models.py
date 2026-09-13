@@ -31,6 +31,8 @@ from mechcad_harness.models.structural import (
     evaluate_material_authority_policy,
     structural_definition_hash,
 )
+from mechcad_harness.structural.models import mesh_input_hash, mesh_specification_hash
+from mechcad_harness.structural_request import MeshRefinement, MeshSpecification
 
 
 def make_snapshot(
@@ -1053,3 +1055,47 @@ def test_structural_definition_change_invalidates_structural_analysis(tmp_path):
     assert "analysis.structural" in impact.direct_nodes
     assert "validation.structural" not in impact.direct_nodes
     assert "validation.structural" in impact.all_nodes
+
+
+def _identity_specification(**updates) -> MeshSpecification:
+    values = {
+        "element_family": "c3d10",
+        "global_target_size_mm": 5.0,
+        "refinements": (MeshRefinement(region_id="free", target_size_mm=2.5),),
+        "quality_policy_id": "quality@1",
+        "mesher_settings_version": "gmsh-settings@1",
+    }
+    values.update(updates)
+    return MeshSpecification(**values)
+
+
+def test_mesh_identity_reference_digests_preserve_pre_change_bytes():
+    specification = _identity_specification()
+    assert mesh_specification_hash(specification) == "sha256:174fe65bf908f1eb7498e1f375f4dd9f09bca7ec9f5786da2652455d40a3d7cd"
+    assert mesh_input_hash(
+        source_geometry_hash="sha256:" + "1" * 64,
+        mesh_specification_hash=mesh_specification_hash(specification),
+        region_map_hash="sha256:" + "2" * 64,
+        gmsh_identity="mechcad-structural-gmsh@1",
+        gmsh_version="4.13.1",
+    ) == "sha256:4919280e8151fad564c3fccb5fff8208b914aa486117c6e5efb5670facfd2000"
+
+
+def test_every_declared_mesh_specification_field_participates_in_identity():
+    baseline = _identity_specification()
+    changes = {
+        "element_family": "future-family",
+        "global_target_size_mm": 4.0,
+        "refinements": (),
+        "quality_policy_id": "quality@2",
+        "mesher_settings_version": "gmsh-settings@2",
+    }
+    assert set(changes) == set(MeshSpecification.model_fields)
+    for field_name, value in changes.items():
+        altered = baseline.model_copy(update={field_name: value})
+        assert mesh_specification_hash(altered) != mesh_specification_hash(baseline)
+
+
+def test_mesh_specification_rejects_unknown_volatile_named_fields():
+    with pytest.raises(ValidationError):
+        _identity_specification(timestamp="2026-09-13T00:00:00Z")

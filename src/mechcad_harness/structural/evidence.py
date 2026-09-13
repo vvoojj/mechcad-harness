@@ -19,6 +19,7 @@ from mechcad_harness.structural.models import (
     StructuralResultParserProvenance,
     StructuralVerificationResult,
     execution_manifest_hash,
+    mesh_specification_hash,
 )
 from mechcad_harness.structural.evidence_models import (
     CantileverGeometryObservation,
@@ -459,10 +460,6 @@ class StructuralRepeatabilityResult(_EvidenceModel):
         return tuple(comparison.field_id for comparison in self.comparisons)
 
 
-def structural_mesh_specification_hash(specification: MeshSpecification) -> str:
-    return _hash(specification)
-
-
 class StructuralMeshConvergenceStudy(_EvidenceModel):
     schema_version: Literal[STRUCTURAL_MESH_CONVERGENCE_SCHEMA_VERSION] = STRUCTURAL_MESH_CONVERGENCE_SCHEMA_VERSION
     policy_id: str = Field(min_length=1)
@@ -487,7 +484,7 @@ class StructuralMeshConvergenceStudy(_EvidenceModel):
             raise ValueError("mesh convergence study requires at least three mesh levels")
         if len(self.mesh_specifications) > self.max_levels:
             raise ValueError("mesh convergence study exceeds max_levels")
-        hashes = tuple(structural_mesh_specification_hash(spec) for spec in self.mesh_specifications)
+        hashes = tuple(mesh_specification_hash(spec) for spec in self.mesh_specifications)
         if len(set(hashes)) != len(hashes):
             raise ValueError("mesh specifications must be unique")
         if any(not identity.strip() for identity in self.required_runtime_identities) or len(
@@ -503,7 +500,7 @@ class StructuralMeshConvergenceStudy(_EvidenceModel):
 
     @property
     def mesh_specification_hashes(self) -> tuple[str, ...]:
-        return tuple(structural_mesh_specification_hash(spec) for spec in self.mesh_specifications)
+        return tuple(mesh_specification_hash(spec) for spec in self.mesh_specifications)
 
 
 class StructuralMeshConvergenceLevel(_EvidenceModel):

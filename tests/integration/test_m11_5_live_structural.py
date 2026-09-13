@@ -23,7 +23,6 @@ from mechcad_harness.structural.evidence import (
     StructuralRepeatabilityPolicy,
     StructuralRepeatabilityStatus,
     structural_mesh_convergence_study_hash,
-    structural_mesh_specification_hash,
     structural_repeatability_policy_hash,
 )
 from mechcad_harness.structural.evidence_service import (
@@ -36,6 +35,7 @@ from mechcad_harness.structural.models import (
     StructuralExecutionStatus,
     execution_manifest_hash,
     mesh_manifest_hash,
+    mesh_specification_hash,
 )
 from mechcad_harness.structural.mesh import _parse_msh_v2
 from mechcad_harness.structural.runtime import (
@@ -174,7 +174,7 @@ def _request_for_mesh_size(request, policy, mesh_size_mm: float):
     policy = policy.model_copy(
         update={
             "request_hash": None,
-            "mesh_specification_hash": structural_mesh_specification_hash(specification),
+            "mesh_specification_hash": mesh_specification_hash(specification),
         }
     )
     request_values = request.model_dump(mode="json")
@@ -399,7 +399,7 @@ def test_live_three_level_convergence_publication_and_reload(live_app, tmp_path:
             "target_mesh_size_mm": mesh_size,
             "evidence_id": evidence.id,
             "evidence_hash": evidence.structural_evidence_payload.semantic_hash,
-            "mesh_specification_hash": structural_mesh_specification_hash(request.mesh_specification),
+            "mesh_specification_hash": mesh_specification_hash(request.mesh_specification),
             "msh_artifact_id": mesh_artifact.artifact_id,
             "msh_sha256": hashlib.sha256(msh_bytes).hexdigest(),
             "node_count": len(nodes),
@@ -421,7 +421,7 @@ def test_live_three_level_convergence_publication_and_reload(live_app, tmp_path:
         assert manifest.mesh_manifest.boundary_element_count == boundary_count
         assert manifest.mesh_manifest_hash == computed_mesh_manifest_hash
         assert manifest.mesh_manifest.mesh_hash == mesh_artifact.sha256
-        assert manifest.mesh_specification_hash == structural_mesh_specification_hash(request.mesh_specification)
+        assert manifest.mesh_specification_hash == mesh_specification_hash(request.mesh_specification)
         assert manifest.case_manifests[0].mesh_artifact_id == manifest.mesh_artifact_id
         assert manifest.case_manifests[0].mesh_artifact_hash == manifest.mesh_artifact_hash
         assert evidence.structural_evidence_payload is not None

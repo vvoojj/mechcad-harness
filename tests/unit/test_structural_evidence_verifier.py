@@ -28,7 +28,6 @@ from mechcad_harness.structural.evidence import (
     StructuralPipelineProvenance,
     StructuralRepeatabilityPolicy,
     StructuralRepeatabilityStatus,
-    structural_mesh_specification_hash,
     structural_mesh_convergence_study_hash,
     structural_mesh_convergence_result_hash,
     structural_evidence_hash,
@@ -53,6 +52,7 @@ from mechcad_harness.structural.results import (
     StructuralResultInterpreter,
     StructuralVerificationService,
 )
+from mechcad_harness.structural.models import mesh_specification_hash
 from mechcad_harness.structural.models import structural_result_hash, structural_verification_hash
 from mechcad_harness.structural.models import StructuralCriterionStatus
 from mechcad_harness.structural.runtime import CALCULIX_IDENTITY, GMSH_IDENTITY
@@ -249,13 +249,13 @@ def _level_payload(
         request_values["execution_settings"]["max_elements"] = max_elements
     request_values["request_hash"] = "pending"
     request = StructuralAnalysisRequest.model_validate(request_values)
-    mesh_specification_hash = structural_mesh_specification_hash(request.mesh_specification)
+    mesh_spec_hash = mesh_specification_hash(request.mesh_specification)
     mesh_hash = "sha256:" + hashlib.sha256(f"mesh:{size}".encode()).hexdigest()
 
     manifest_values = base.execution_manifest.model_dump(mode="json")
     manifest_values.update(
         request_hash=request.request_hash,
-        mesh_specification_hash=mesh_specification_hash,
+        mesh_specification_hash=mesh_spec_hash,
         mesh_artifact_hash=mesh_hash,
         request_manifest_hash=None,
     )
@@ -264,7 +264,7 @@ def _level_payload(
     if runtime_update:
         manifest_values.update(runtime_update)
     manifest_values["mesh_manifest"].update(
-        mesh_specification_hash=mesh_specification_hash,
+        mesh_specification_hash=mesh_spec_hash,
         mesh_hash=mesh_hash,
     )
     manifest_values["case_manifests"][0].update(
@@ -316,7 +316,7 @@ def _level_payload(
             elastic_modulus_mpa=1000.0,
             poisson_ratio=0.3,
             resultant_force_n=(0.0, -15.0, 0.0),
-            mesh_specification_hash=mesh_specification_hash,
+            mesh_specification_hash=mesh_spec_hash,
             mesh_hash=mesh_hash,
             region_map_hash=manifest.region_map_hash,
             free_end_region_id="free",
