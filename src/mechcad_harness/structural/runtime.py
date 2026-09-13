@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mechcad_harness.backends.provenance import provenance_from_identity
-from mechcad_harness.backends.models import BackendIdentity, BackendProvenance
+from mechcad_harness.backends.models import FREECAD_PROVENANCE_IDENTITY, BackendIdentity, BackendProvenance
 
 FREECAD_BIN_DIR_ENV = "MECHCAD_FREECAD_BIN_DIR"
 FREECADCMD_ENV = "MECHCAD_FREECADCMD"
@@ -18,14 +18,8 @@ CCX_ENV = "MECHCAD_CCX"
 
 # Validated trusted runtime identities.  Provider/backend identity is owned by
 # composition, never supplied by agents or callers.
-FREECAD_IDENTITY = BackendIdentity(
-    name="freecad",
-    adapter_version="mechcad-freecad@2.1",
-    library_name="FreeCAD",
-    library_version="1.1.3",
-    library_source="bundled",
-    library_revision="freecad-1.1.3-bundled",
-    capabilities=("cad.geometry", "cad.step"),
+FREECAD_IDENTITY = FREECAD_PROVENANCE_IDENTITY.model_copy(
+    update={"capabilities": ("cad.geometry", "cad.step")}
 )
 
 GMSH_IDENTITY = BackendIdentity(

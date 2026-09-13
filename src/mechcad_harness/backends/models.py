@@ -36,6 +36,18 @@ class BackendIdentity(Model):
         return values
 
 
+FREECAD_PROVENANCE_IDENTITY = BackendIdentity(
+    name="freecad",
+    adapter_version="mechcad-freecad@2.1",
+    library_name="FreeCAD",
+    library_version="1.1.3",
+    library_source="bundled",
+    library_revision="freecad-1.1.3-bundled",
+    capabilities=("cad.step",),
+)
+FREECAD_ADAPTER_VERSION = FREECAD_PROVENANCE_IDENTITY.adapter_version
+
+
 class BackendProvenance(Model):
     model_config = ConfigDict(frozen=True, extra="forbid")
 

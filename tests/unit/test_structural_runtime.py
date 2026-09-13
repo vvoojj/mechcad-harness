@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import subprocess
 
+from mechcad_harness.backends.freecad import FREECAD_BACKEND_VERSION, FreeCADBackend, FreeCADDiscovery
+from mechcad_harness.backends.models import FREECAD_ADAPTER_VERSION, FREECAD_PROVENANCE_IDENTITY
+from mechcad_harness.backends.provenance import provenance_from_identity
 from mechcad_harness.structural.runtime import (
     FREECAD_IDENTITY,
     discover_calculix,
@@ -124,3 +127,24 @@ def test_calculix_discovery_rejects_forged_executable_version(monkeypatch):
 def test_trusted_freecad_identity_requires_complete_library_provenance():
     assert FREECAD_IDENTITY.library_source == "bundled"
     assert FREECAD_IDENTITY.library_revision == "freecad-1.1.3-bundled"
+
+
+def test_backend_provenance_and_structural_identity_share_freecad_adapter_authority(monkeypatch):
+    monkeypatch.setattr(
+        "mechcad_harness.backends.freecad.discover_freecad",
+        lambda: FreeCADDiscovery(available=True, version="1.1.3"),
+    )
+
+    assert FREECAD_BACKEND_VERSION == FREECAD_ADAPTER_VERSION
+    assert FreeCADBackend.identity.model_dump(exclude={"capabilities"}) == (
+        FREECAD_PROVENANCE_IDENTITY.model_dump(exclude={"capabilities"})
+    )
+    assert FreeCADBackend.identity.capabilities == (
+        "cad.document",
+        "cad.fcstd",
+        "cad.step",
+    )
+    assert FREECAD_IDENTITY.capabilities == ("cad.geometry", "cad.step")
+    assert FreeCADBackend().provenance() == provenance_from_identity(
+        FREECAD_IDENTITY
+    )

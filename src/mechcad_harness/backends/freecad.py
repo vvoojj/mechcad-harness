@@ -15,11 +15,11 @@ from typing import Any
 
 from pydantic import Field, model_validator
 
-from mechcad_harness.backends.models import BackendHealth, BackendHealthStatus, BackendIdentity, BackendProvenance
+from mechcad_harness.backends.models import FREECAD_ADAPTER_VERSION, FREECAD_PROVENANCE_IDENTITY, BackendHealth, BackendHealthStatus, BackendIdentity, BackendProvenance
 from mechcad_harness.models.common import Model
 
 
-FREECAD_BACKEND_VERSION = "mechcad-freecad@2.1"
+FREECAD_BACKEND_VERSION = FREECAD_ADAPTER_VERSION
 
 
 class FreeCADBackendError(Exception):
@@ -177,14 +177,8 @@ def freecad_provenance(project_id: str, run_id: str, revision: int, state_hash: 
 
 
 class FreeCADBackend:
-    identity = BackendIdentity(
-        name="freecad",
-        adapter_version=FREECAD_BACKEND_VERSION,
-        library_name="FreeCAD",
-        library_version="1.1.3",
-        library_source="bundled",
-        library_revision="freecad-1.1.3-bundled",
-        capabilities=("cad.document", "cad.fcstd", "cad.step"),
+    identity = FREECAD_PROVENANCE_IDENTITY.model_copy(
+        update={"capabilities": ("cad.document", "cad.fcstd", "cad.step")}
     )
 
     def healthcheck(self) -> BackendHealth:
