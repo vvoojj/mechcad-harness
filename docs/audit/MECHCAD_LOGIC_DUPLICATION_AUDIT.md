@@ -1135,3 +1135,68 @@ rewrite that finding or reclassify any other finding.
 - **Excluded findings:** this record does not resolve or reclassify F1, F2, F3,
   F4, F5, F6, F8, F11, or any P3/INFO finding. M13-2 generated-part behavior
   remains unchanged.
+
+## 19. F11 Remediation Record (post-acceptance)
+
+**Record date:** 2026-09-13
+
+This appended record documents the accepted F11 remediation. The historical F11
+finding above remains unchanged, including its P2 classification and its account
+of the former `analysis.structural` node overload. This record does not begin or
+resolve F3, and it does not modify `docs/reconstruction/**`.
+
+### Distinct Evidence Authorities
+
+- M5.5C section geometry, warping, and preliminary section-engineering tools
+  publish generic ToolBroker Evidence at `analysis.section`. The section family
+  covers `SectionGeometryResult`, `SectionWarpingResult`, and complete
+  `PreliminarySectionEngineeringResult` outputs; it is not typed structural-FEA
+  authority.
+- M11 typed structural-FEA Evidence remains at `analysis.structural`, with
+  `EvidenceSubject.STRUCTURAL_ANALYSIS` and the existing
+  `analysis.structural.convergence` node. `StructuralEvidenceVerifier` remains
+  typed-only and rejects generic section-tool Evidence.
+- The two families remain separately bound records in the shared EvidenceStore;
+  matching one node cannot satisfy readiness for the other authority.
+
+### Compatibility Decision
+
+The accepted policy is a clean namespace boundary for newly produced records.
+No repository-managed legacy Evidence record required migration, and no runtime
+classification or reclassification heuristic was added. The generic loader may
+parse an old record where the schema permits it, but an old generic
+`analysis.structural` section-like record is not treated as new section
+Evidence or as typed structural-FEA Evidence.
+
+M11 compatibility is preserved: `analysis.structural`, the typed subject
+discriminator, the structural payload semantic hash, and deterministic typed
+Evidence IDs remain unchanged. New section-tool Evidence IDs intentionally use
+the new `analysis.section` node identity.
+
+### Dependency And Invalidation Separation
+
+- `/materials/*` conservatively invalidates both `analysis.section` and
+  `analysis.structural`, because section engineering and structural FEA both
+  consume material authority.
+- `/structural_analysis_definitions/*` invalidates only
+  `analysis.structural`; it cannot stale section-tool Evidence.
+- Existing structural edges remain unchanged:
+  `analysis.loads -> analysis.structural -> validation.structural` and
+  `analysis.structural -> analysis.structural.convergence`.
+- No edge was added from `analysis.section` to structural validation or
+  convergence. The material rule is family-level conservative invalidation, not
+  per-ToolResult dependency precision.
+
+### Verification And Review Evidence
+
+| Evidence | Result |
+| --- | --- |
+| Focused F11 gate: `python -m pytest tests/unit/test_section_tools.py tests/unit/test_section_warping_tools.py tests/unit/test_section_engineering_tools.py tests/unit/test_dependency.py tests/unit/test_runs.py tests/unit/test_structural_evidence_models.py tests/unit/test_structural_evidence_verifier.py -q` | `181 passed, 2 skipped` |
+| Full unit suite: `python -m pytest tests/unit -q` | `2635 passed, 19 skipped, 5 failed`; the five failures match the accepted unrelated baseline: four README documentation-contract failures and one untracked Rotator V2 candidate-inventory failure |
+| Ordinary repository suite: `python -m pytest -q --durations=20` | Timed out at the 1800-second tool ceiling after reaching 80%; reported failures matched the same waived baseline, so this is not recorded as a green full-suite run |
+| Production compile check | `python -m compileall -q src/mechcad_harness/tools/sections.py src/mechcad_harness/tools/section_engineering.py` exited `0` |
+| Fresh independent review | `PASS_WITH_NOTES`; no F11 defect, authority crossover, M11 identity change, or scope expansion found. Notes were limited to optional `sectionproperties` skips and unrelated dirty worktree files. |
+| Implementation commit | `1806f34d43798b25b04fcd94c88d2e19bfd5d886` |
+
+**F11 STATUS:** ACCEPTED remediation. **F3 STATUS:** UNRESOLVED; no F3
+remediation was started by this change.

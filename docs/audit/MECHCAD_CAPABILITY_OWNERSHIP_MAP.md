@@ -45,7 +45,7 @@ Verification convention: `WIRED` = reachable from production composition;
 | --- | --- | --- | --- | --- | --- | --- |
 | 10 | Tool Broker / registry | M5 `6cbade0` | `tools/broker.py`, `tools/registry.py` (WIRED) | — | — | SINGLE_AUTHORITY |
 | 11 | Backend identity / provenance | M5.5A/B `6cbade0`/`b0d77e1` | `backends/provenance.py:provenance_from_identity` (WIRED) | direct construction in `backends/freecad.py`, `backends/gearworks_cad.py`; `FREECAD_IDENTITY` vs `FREECAD_BACKEND_VERSION` | F5, F21 | POSSIBLE_DUPLICATION |
-| 12 | Material / section / warping | M5.5C `4bc2310` | `backends/section_properties.py`, `tools/sections.py` (WIRED) | — | F11 | SINGLE_AUTHORITY (node overload: F11) |
+| 12 | Material / section / warping | M5.5C `4bc2310` | `backends/section_properties.py`, `tools/sections.py`, `tools/section_engineering.py` (WIRED; generic Evidence at `analysis.section`) | — | F11 | SINGLE_AUTHORITY |
 | 13 | Agent gateway | M6A-1 `e4f4c00` | `agents/gateway.py` (WIRED) | — | — | SINGLE_AUTHORITY |
 | 14 | OpenCode integration | M6A-2B `60ccc2d` | `agents/opencode.py` (WIRED) | — | — | SINGLE_AUTHORITY |
 | 15 | Tool-mediated reasoning / roundtrip | M6B `928be44` | `agents/roundtrip.py`, `agents/tool_mediation.py`, `tools/evidence.py` (WIRED) | — | — | LEGITIMATE_LAYERING |
@@ -96,7 +96,7 @@ Verification convention: `WIRED` = reachable from production composition;
 | 45 | Structural Evidence currentness | M11-5 `07950cd` | `structural/evidence_service.py:currentness` (WIRED) | candidate currentness enum+logic | F3 | SEMANTIC_DUPLICATION |
 | 46 | Mesh specification / input hashing | M11-2/M11-5 | `structural/models.py:mesh_input_hash` (WIRED) | `_mesh_specification_hash` ×4; `_mesh_input_hash` ×2 | F4 | SEMANTIC_DUPLICATION |
 | 47 | FreeCAD runtime identity | M7A / M11-2 | `backends/freecad.py:FREECAD_BACKEND_VERSION` (WIRED) | `structural/runtime.py:FREECAD_IDENTITY` | F5 | SEMANTIC_DUPLICATION |
-| 48 | `analysis.structural` dependency node | M5.5C `4bc2310` (tools) / M11-5 (structural) | dual producers | `tools/sections.py`, `tools/section_engineering.py` and `structural/evidence.py` | F11 | AUTHORITY_CONFLICT (node overload) |
+| 48 | `analysis.structural` dependency node / typed FEA Evidence | M11-5 `07950cd` | `structural/evidence.py:EvidenceSubject.STRUCTURAL_ANALYSIS`, `structural/evidence_service.py` (WIRED; typed Evidence at `analysis.structural`) | — | F11 | SINGLE_AUTHORITY |
 
 ## F. Candidate / promotion (M12–M13)
 
