@@ -198,3 +198,79 @@ def test_end_to_end_unrelated_then_material_change_and_replacement(tmp_path):
     replacement = make_evidence(manager, "PRJ-1", evidence_id="EVD-M-3", node="analysis.materials", revision=3, hash_value=manager._read_current("PRJ-1")["state_hash"])
     store.write_evidence("PRJ-1", replacement)
     assert store.get_evidence_freshness("PRJ-1", "EVD-M-3") is EvidenceFreshness.CURRENT
+
+
+def test_structural_only_evidence_does_not_make_section_ready(tmp_path):
+    manager = StateManager(tmp_path)
+    manager.create_project("PRJ-1", make_state())
+    graph = DependencyGraph.from_yaml("config/dependencies.yaml")
+    store = EvidenceStore(tmp_path, manager, graph)
+    structural = make_evidence(manager, "PRJ-1", node="analysis.structural")
+    store.write_evidence("PRJ-1", structural)
+
+    assert store.fresh_evidence_status("PRJ-1", "analysis.structural") == "fresh evidence exists"
+    assert store.fresh_evidence_status("PRJ-1", "analysis.section") == "fresh evidence missing"
+
+
+def test_section_and_structural_nodes_have_isolated_readiness_and_invalidation(tmp_path):
+    manager = StateManager(tmp_path)
+    manager.create_project("PRJ-1", make_state())
+    graph = DependencyGraph.from_yaml("config/dependencies.yaml")
+    store = EvidenceStore(tmp_path, manager, graph)
+    current = manager._read_current("PRJ-1")
+    section = make_evidence(
+        manager,
+        "PRJ-1",
+        evidence_id="EVD-SECTION",
+        node="analysis.section",
+        revision=current["revision"],
+        hash_value=current["state_hash"],
+    )
+    store.write_evidence("PRJ-1", section)
+
+    assert store.fresh_evidence_status("PRJ-1", "analysis.section") == "fresh evidence exists"
+    assert store.fresh_evidence_status("PRJ-1", "analysis.structural") == "fresh evidence missing"
+
+    structural = make_evidence(
+        manager,
+        "PRJ-1",
+        evidence_id="EVD-STRUCTURAL",
+        node="analysis.structural",
+        revision=current["revision"],
+        hash_value=current["state_hash"],
+    )
+    store.write_evidence("PRJ-1", structural)
+    assert store.fresh_evidence_status("PRJ-1", "analysis.structural") == "fresh evidence exists"
+
+    manager.create_revision("PRJ-1", make_state())
+    record = store.build_invalidation(
+        "PRJ-1",
+        2,
+        1,
+        ("/structural_analysis_definitions/DEF-1",),
+        "CS-STRUCTURAL",
+    )
+    store.record_invalidation(record)
+
+    assert store.get_evidence_freshness("PRJ-1", section.id) is EvidenceFreshness.CURRENT
+    assert store.get_evidence_freshness("PRJ-1", structural.id) is EvidenceFreshness.STALE
+
+    current = manager._read_current("PRJ-1")
+    structural_at_revision_2 = make_evidence(
+        manager,
+        "PRJ-1",
+        evidence_id="EVD-STRUCTURAL-2",
+        node="analysis.structural",
+        revision=current["revision"],
+        hash_value=current["state_hash"],
+    )
+    store.write_evidence("PRJ-1", structural_at_revision_2)
+    manager.create_revision("PRJ-1", make_state())
+    store.record_invalidation(
+        store.build_invalidation(
+            "PRJ-1", 3, 2, ("/materials/MAT-1/material",), "CS-MATERIAL"
+        )
+    )
+
+    assert store.get_evidence_freshness("PRJ-1", section.id) is EvidenceFreshness.STALE
+    assert store.get_evidence_freshness("PRJ-1", structural_at_revision_2.id) is EvidenceFreshness.STALE

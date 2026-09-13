@@ -185,6 +185,11 @@ configuration-space region.
 
 ## Structural Evidence Contract
 
+M5.5C section geometry, warping, and preliminary section-engineering ToolBroker
+Evidence uses `analysis.section`. It is generic tool Evidence and is not
+structural-FEA authority, structural readiness, or an input accepted by
+`StructuralEvidenceVerifier`.
+
 M11-5 adds a frozen `StructuralEvidencePayload` to the generic `Evidence`
 model. Ordinary structural Evidence is `analysis.structural`; convergence-study
 Evidence is `analysis.structural.convergence` and binds complete ordered level

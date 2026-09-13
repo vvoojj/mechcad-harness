@@ -5,6 +5,7 @@ rules:
       - /materials/*
     invalidates:
       - analysis.materials
+      - analysis.section
       - analysis.structural
       - analysis.fits
       - analysis.transmission_strength

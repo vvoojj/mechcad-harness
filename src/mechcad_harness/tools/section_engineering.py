@@ -81,4 +81,4 @@ def calc_preliminary_section_engineering(value: PreliminarySectionEngineeringToo
 class SectionEngineeringTools:
     @staticmethod
     def registrations():
-        return [ToolRegistration(name="mechcad-calc-preliminary-section-engineering-properties", version="1.0", input_model=PreliminarySectionEngineeringToolInput, output_model=PreliminarySectionEngineeringResult, handler=calc_preliminary_section_engineering, evidence_nodes=("analysis.structural",))]
+        return [ToolRegistration(name="mechcad-calc-preliminary-section-engineering-properties", version="1.0", input_model=PreliminarySectionEngineeringToolInput, output_model=PreliminarySectionEngineeringResult, handler=calc_preliminary_section_engineering, evidence_nodes=("analysis.section",))]

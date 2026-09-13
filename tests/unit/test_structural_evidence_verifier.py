@@ -205,6 +205,39 @@ def _fresh_verifier(persisted: SimpleNamespace) -> StructuralEvidenceVerifier:
     )
 
 
+def test_structural_verifier_rejects_section_tool_evidence(tmp_path, monkeypatch):
+    persisted = _persisted_evidence(tmp_path, monkeypatch)
+    graph = DependencyGraph(
+        [],
+        [
+            DependencyEdge(source="analysis.section", target="analysis.result"),
+            DependencyEdge(source="analysis.structural", target="analysis.result"),
+        ],
+    )
+    store = EvidenceStore(persisted.workspace, persisted.state_manager, graph)
+    section = Evidence(
+        id="EVD-SECTION-TOOL",
+        kind="analysis.section",
+        summary="section result",
+        revision=1,
+        state_hash=persisted.request.source_binding.source_state_hash,
+        producer_type="tool",
+        producer_name="mechcad-calc-rectangle-section-properties",
+        producer_version="1.0",
+    )
+    store.write_evidence("PRJ-1", section)
+    verifier = StructuralEvidenceVerifier(
+        workspace=persisted.workspace,
+        project_id="PRJ-1",
+        state_manager=persisted.state_manager,
+        artifact_store=ArtifactStore(persisted.workspace, project_id="PRJ-1", run_id="RUN-1"),
+        evidence_store=store,
+    )
+
+    with pytest.raises(StructuralEvidenceIntegrityError, match="not a supported structural analysis record"):
+        verifier.verify(section.id)
+
+
 def _mesh_convergence_study(**updates) -> StructuralMeshConvergenceStudy:
     values = {
         "policy_id": "study@1",
@@ -1283,6 +1316,15 @@ def test_verifier_rejects_noncanonical_id_and_outer_producer_tampering(tmp_path,
 
 def test_verifier_reloads_durable_evidence_and_reconstructs_result(tmp_path, monkeypatch):
     persisted = _persisted_evidence(tmp_path, monkeypatch)
+
+    store = EvidenceStore(persisted.workspace, persisted.state_manager, persisted.graph)
+    reloaded = store.load_evidence(persisted.project_id, persisted.evidence_id)
+    payload = reloaded.structural_evidence_payload
+    assert reloaded.kind == "analysis.structural"
+    assert reloaded.subject is EvidenceSubject.STRUCTURAL_ANALYSIS
+    assert payload is not None
+    assert payload.semantic_hash == structural_evidence_hash(payload)
+    assert reloaded.id == structural_evidence_id(payload)
 
     verified = _fresh_verifier(persisted).verify(persisted.evidence_id)
 

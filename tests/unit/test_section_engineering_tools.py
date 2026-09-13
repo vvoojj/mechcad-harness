@@ -25,7 +25,20 @@ def _controller(tmp_path):
     manager = StateManager(tmp_path)
     snapshot = manager.create_project("PRJ-1", DesignState(id="DES-1", revision=1, components=[Component(id="PRT-1", name="Part")]))
     graph_path = tmp_path / "dependencies.json"
-    graph_path.write_text(json.dumps({"rules": [{"when": ["/components/*/name"], "invalidates": ["analysis.structural"]}], "edges": []}), encoding="utf-8")
+    graph_path.write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "when": ["/components/*/name"],
+                        "invalidates": ["analysis.section"],
+                    }
+                ],
+                "edges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     evidence = EvidenceStore(tmp_path, manager, DependencyGraph.from_yaml(graph_path))
     return RunController(tmp_path, manager, ChangeEngine(manager, OwnershipPolicy([{"path": "/components/*", "owner": "actor"}])), evidence), snapshot
 
@@ -95,9 +108,12 @@ def test_complete_stiffness_result_creates_evidence_but_partial_result_does_not(
     task = TaskDefinition(task_id="TASK-INTEGRATION", run_id=run.run_id, task_type="tool", objective="integration", bound_revision=1, bound_state_hash=snapshot.state_hash, allowed_tools=("mechcad-calc-preliminary-section-engineering-properties@1.0",))
     controller.add_task(run.run_id, task)
     broker = ToolBroker(controller, ToolRegistry(SectionEngineeringTools.registrations()))
-    result = broker.execute(run.run_id, task.task_id, "mechcad-calc-preliminary-section-engineering-properties", "1.0", {"material_result_id": material_id, "section_geometry_result_id": geometry_id}, evidence_node="analysis.structural")
+    result = broker.execute(run.run_id, task.task_id, "mechcad-calc-preliminary-section-engineering-properties", "1.0", {"material_result_id": material_id, "section_geometry_result_id": geometry_id}, evidence_node="analysis.section")
     assert result.status is ToolResultStatus.SUCCEEDED
     assert result.evidence_id is not None
+    evidence = controller.evidence.load_evidence("PRJ-1", result.evidence_id)
+    assert evidence.kind == "analysis.section"
+    assert evidence.structural_evidence_payload is None
     assert result.backend_provenance is None
     assert result.output["source_records"][0]["task_id"] == "SOURCE-TASK"
 
@@ -106,7 +122,27 @@ def test_complete_stiffness_result_creates_evidence_but_partial_result_does_not(
     _write_result(tmp_path, controller, run, partial_id, "mechcad-material-typical-properties", partial_material)
     partial_task = TaskDefinition(task_id="TASK-INTEGRATION-PARTIAL", run_id=run.run_id, task_type="tool", objective="integration", bound_revision=1, bound_state_hash=snapshot.state_hash, allowed_tools=("mechcad-calc-preliminary-section-engineering-properties@1.0",))
     controller.add_task(run.run_id, partial_task)
-    partial = broker.execute(run.run_id, partial_task.task_id, "mechcad-calc-preliminary-section-engineering-properties", "1.0", {"material_result_id": partial_id, "section_geometry_result_id": geometry_id}, evidence_node="analysis.structural")
+    partial = broker.execute(run.run_id, partial_task.task_id, "mechcad-calc-preliminary-section-engineering-properties", "1.0", {"material_result_id": partial_id, "section_geometry_result_id": geometry_id}, evidence_node="analysis.section")
     assert partial.status is ToolResultStatus.SUCCEEDED
     assert partial.output["axial_rigidity_ea"]["status"] == "unavailable"
     assert partial.evidence_id is None
+
+
+def test_section_engineering_tool_rejects_old_structural_evidence_node(tmp_path):
+    from mechcad_harness.runs import TaskDefinition
+    from mechcad_harness.tools import SectionEngineeringTools, ToolBroker, ToolRegistry
+    from mechcad_harness.tools.errors import ToolExecutionError
+
+    controller, snapshot = _controller(tmp_path)
+    run = controller.create_run("PRJ-1")
+    task = TaskDefinition(task_id="TASK-1", run_id=run.run_id, task_type="tool", objective="integration", bound_revision=1, bound_state_hash=snapshot.state_hash, allowed_tools=("mechcad-calc-preliminary-section-engineering-properties@1.0",))
+    controller.add_task(run.run_id, task)
+    with pytest.raises(ToolExecutionError, match="not declared to produce evidence node"):
+        ToolBroker(controller, ToolRegistry(SectionEngineeringTools.registrations())).execute(
+            run.run_id,
+            task.task_id,
+            "mechcad-calc-preliminary-section-engineering-properties",
+            "1.0",
+            {},
+            evidence_node="analysis.structural",
+        )

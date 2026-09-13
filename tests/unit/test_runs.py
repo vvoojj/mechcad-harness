@@ -33,7 +33,7 @@ def make_state(name="Bracket", revision=1):
 def dependency_file(tmp_path, *, rules=None):
     path = tmp_path / "dependencies.json"
     path.write_text(json.dumps({"rules": rules or [
-        {"when": ["/components/*/name"], "invalidates": ["analysis.materials"]},
+        {"when": ["/components/*/name"], "invalidates": ["analysis.materials", "analysis.section"]},
         {"when": ["/components/*/description"], "invalidates": ["analysis.packaging"]},
     ], "edges": []}), encoding="utf-8")
     return path
@@ -264,6 +264,18 @@ def test_completion_requires_current_evidence_and_old_unrelated_evidence_reuses(
     controller.apply_approved_proposal(run.run_id, proposal)
     assert controller.evaluate_completion(run.run_id) is True
     assert controller.evidence.get_evidence_freshness("PRJ-1", "RES-TASK-A-analysis.materials") is EvidenceFreshness.CURRENT
+
+
+def test_completion_does_not_accept_section_evidence_for_structural_requirement(tmp_path):
+    controller, _ = make_controller(tmp_path)
+    run = controller.create_run("PRJ-1")
+    task(controller, run, "TASK-SECTION", produces=("analysis.section",))
+    controller.create_plan(run.run_id, required_evidence_nodes=("analysis.structural",))
+    controller.execute_ready_tasks(run.run_id, FakeTaskExecutor())
+
+    assert controller.evidence.fresh_evidence_status("PRJ-1", "analysis.section") == "fresh evidence exists"
+    assert controller.evidence.fresh_evidence_status("PRJ-1", "analysis.structural") == "fresh evidence missing"
+    assert controller.evaluate_completion(run.run_id) is False
 
 
 def test_revision_advancement_stales_pending_task_without_rebinding(tmp_path):

@@ -702,6 +702,9 @@ def test_structural_evidence_discriminators_bind_kind_subject_and_payload(eviden
 
     assert ordinary.subject is EvidenceSubject.STRUCTURAL_ANALYSIS
     assert ordinary.structural_evidence_payload is evidence_payload
+    assert EvidenceSubject.STRUCTURAL_ANALYSIS.value == "analysis.structural"
+    assert ordinary.kind == "analysis.structural"
+    assert ordinary.structural_evidence_payload.semantic_hash == structural_evidence_hash(evidence_payload)
     assert convergence.subject is EvidenceSubject.STRUCTURAL_CONVERGENCE_STUDY
     assert convergence.structural_evidence_payload is convergence_payload
 
