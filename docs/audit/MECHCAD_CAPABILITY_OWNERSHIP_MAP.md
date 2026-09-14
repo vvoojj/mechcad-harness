@@ -15,7 +15,7 @@ audit artifact, not normative architecture and not a historical record.
 - `STATUS` uses the audit vocabulary from section 9 of the task:
   `SINGLE_AUTHORITY`, `LEGITIMATE_LAYERING`, `LEGITIMATE_ADAPTER_VARIANTS`,
   `INTENTIONAL_SUPERSESSION`, `LEGACY_RESIDUE`, `BRIDGE_RESIDUE`,
-  `SEMANTIC_DUPLICATION`, `AUTHORITY_CONFLICT`, `POSSIBLE_DUPLICATION`,
+  `INTENTIONAL_INDEPENDENT_VERIFIER`, `SEMANTIC_DUPLICATION`, `AUTHORITY_CONFLICT`, `POSSIBLE_DUPLICATION`,
   `INTENTIONAL_COMPATIBILITY_DUPLICATION`, `UNKNOWN`.
 - `FIND` references findings in the main report (`F1`…`F21`). Every finding ID
   below refers to exactly one semantic finding; `—` means the row's
@@ -24,6 +24,31 @@ audit artifact, not normative architecture and not a historical record.
 
 Verification convention: `WIRED` = reachable from production composition;
 `TESTS` = only test reachable; `DEAD` = neither.
+
+## Current Synchronization Marker
+
+The current accepted production baseline is
+`b63d010c4ce0cc93fc556c4890606c5eeecb1e08`. The finding `STATUS` values in
+the capability rows describe ownership/duplication categories; the accepted
+final P3 dispositions below are the current status authority and preserve the
+historical finding IDs.
+
+| Finding | Accepted final disposition | Current status | Accepted implementation commit(s) |
+| --- | --- | --- | --- |
+| F9 | `KEEP_INTENTIONAL` | RETAINED | — |
+| F10 | `IMPLEMENTED / CLOSED` | CLOSED | `93167dc58406d273c8014a203dfeea8354317abc`; `8e8aa3e9bcacde9cead9fcb53a8027c2df324ceb` |
+| F12 | `IMPLEMENTED / CLOSED` | CLOSED | `a2b29e41522ed0e1db747c9a261c727c3f928e27`; `8e8aa3e9bcacde9cead9fcb53a8027c2df324ceb` |
+| F13 | `DEFER_LOW_RISK` | DEFERRED | — |
+| F14 | `KEEP_INTENTIONAL` | RETAINED | — |
+| F16 | `DEFER_LOW_RISK` | DEFERRED | — |
+| F17 | `KEEP_INTENTIONAL` | RETAINED | — |
+| F19 | `DEFER_LOW_RISK` | DEFERRED | — |
+| F20 | `KEEP_INTENTIONAL` | RETAINED | — |
+| F21 | `IMPLEMENTED / CLOSED` | CLOSED | `b63d010c4ce0cc93fc556c4890606c5eeecb1e08` |
+
+Current gate summary: no P0/P1/P2 finding remains open, no active P3
+remediation remains, and F13/F16/F19 remain explicitly deferred rather than
+resolved. The detailed current register is maintained in §25 of the main audit.
 
 ## A. State / change / run authority (M0–M4, M8B)
 
@@ -44,13 +69,13 @@ Verification convention: `WIRED` = reachable from production composition;
 | # | CAPABILITY | ORIG | CURRENT OWNER | OTHER IMPLS | FIND | STATUS |
 | --- | --- | --- | --- | --- | --- | --- |
 | 10 | Tool Broker / registry | M5 `6cbade0` | `tools/broker.py`, `tools/registry.py` (WIRED) | — | — | SINGLE_AUTHORITY |
-| 11 | Backend identity / provenance | M5.5A/B `6cbade0`/`b0d77e1` | `backends/models.py:FREECAD_PROVENANCE_IDENTITY`, `backends/provenance.py:provenance_from_identity` (WIRED) | distinct non-FreeCAD backend identities and adapters; no duplicate FreeCAD provenance authority | F5, F21 | LEGITIMATE_ADAPTER_VARIANTS (F5 resolved; F21 remains) |
+| 11 | Backend identity / provenance | M5.5A/B `6cbade0`/`b0d77e1` | `backends/models.py:FREECAD_PROVENANCE_IDENTITY`, `backends/provenance.py:provenance_from_identity` (WIRED) | distinct non-FreeCAD backend identities and adapters; no duplicate FreeCAD provenance authority | F5, F21 | LEGITIMATE_ADAPTER_VARIANTS (F5 resolved; F21 scoped closure, independent adapter checks retained) |
 | 12 | Material / section / warping | M5.5C `4bc2310` | `backends/section_properties.py`, `tools/sections.py`, `tools/section_engineering.py` (WIRED; generic Evidence at `analysis.section`) | — | F11 | SINGLE_AUTHORITY |
 | 13 | Agent gateway | M6A-1 `e4f4c00` | `agents/gateway.py` (WIRED) | — | — | SINGLE_AUTHORITY |
 | 14 | OpenCode integration | M6A-2B `60ccc2d` | `agents/opencode.py` (WIRED) | — | — | SINGLE_AUTHORITY |
 | 15 | Tool-mediated reasoning / roundtrip | M6B `928be44` | `agents/roundtrip.py`, `agents/tool_mediation.py`, `tools/evidence.py` (WIRED) | — | — | LEGITIMATE_LAYERING |
-| 16 | Constraint discovery / anchor map | M6B-3 `53fa6c4` | `agents/constraint_requests.py` (WIRED) | `agents/constraint_resolution_application.py:_anchor_for` | F10 | POSSIBLE_DUPLICATION |
-| 17 | Constraint resolution workflow | M6B-4C `4468a62` | — (no production caller) | `agents/constraint_resolution_workflow.py`, `..._application.py` (TESTS) | F10 | LEGACY_RESIDUE |
+| 16 | Constraint discovery / anchor map | M6B-3 `53fa6c4` | `agents/constraint_requests.py` (WIRED) | former duplicate anchor map retired by accepted F10 remediation; active materializer remains | F10 | SINGLE_AUTHORITY |
+| 17 | Constraint resolution workflow | M6B-4C `4468a62` | — (retired by accepted F10 remediation) | former `constraint_resolution_workflow.py` / `..._application.py` surfaces removed | F10 | INTENTIONAL_SUPERSESSION |
 
 ## C. CAD / assembly / geometry (M7A–M9, M10-MULTI-SHAPE)
 
@@ -92,7 +117,7 @@ Verification convention: `WIRED` = reachable from production composition;
 | 41 | CalculiX solver execution | M11-3 `682300b` | `structural/solver.py` (WIRED) | stray untracked duplicate `src/mechcad-harness/.../solver.py` | F13 | SINGLE_AUTHORITY + DEAD artifact |
 | 42 | FRD/DAT parsing / result interpretation | M11-4 `682300b` | `structural/results.py` (WIRED) | — | — | SINGLE_AUTHORITY |
 | 43 | Structural deck / load lowering | M11-3 `682300b` | `structural/deck.py` (WIRED) | independent verifier in `structural/results.py` | — | INTENTIONAL_INDEPENDENT_VERIFIER |
-| 44 | Structural Evidence publish/verify | M11-5 `07950cd` | `structural/evidence_service.py` (WIRED) | duplicate artifact-read/verify | F4, F21 | POSSIBLE_DUPLICATION (F21 only; F4 resolved) |
+| 44 | Structural Evidence publish/verify | M11-5 `07950cd` | `structural/evidence_service.py` (WIRED) | independent artifact-read/verification boundary retained; F21 construction duplication closed | F4, F21 | INTENTIONAL_INDEPENDENT_VERIFIER (F21 scoped closure; F4 resolved) |
 | 45 | Structural Evidence currentness | M11-5 `07950cd` | `structural/evidence_service.py:currentness` plus `core/currentness.py:Currentness` (WIRED) | candidate source-relevance evaluator shares status vocabulary only | F3 | SINGLE_AUTHORITY |
 | 46 | Mesh specification / input hashing | M11-2/M11-5 | `structural/models.py:mesh_specification_hash`, `structural/models.py:mesh_input_hash` (WIRED) | — | F4 | SINGLE_AUTHORITY |
 | 47 | FreeCAD runtime identity | M7A / M11-2 | `backends/models.py:FREECAD_PROVENANCE_IDENTITY` (WIRED) | `structural/runtime.py:FREECAD_IDENTITY` is a derived compatibility view | F5 | SINGLE_AUTHORITY |
@@ -108,10 +133,10 @@ Verification convention: `WIRED` = reachable from production composition;
 | 52 | Candidate comparison / selection | M12-4 `bae65cc` | `candidates/comparison.py`, `candidates/selection.py` (WIRED) | `candidates/multi_joint_selection.py` (WIRED, distinct family) | — | LEGITIMATE_LAYERING |
 | 53 | Promotion / canonical rebind | M12-5 `161986b` | `candidates/promotion.py`, `candidates/canonical_mechanism.py` (WIRED) | `candidates/promotion_artifacts.py` (post-apply verify) | — | SINGLE_AUTHORITY + independent verifier |
 | 54 | Canonical M10 verification | M12-5 `161986b` | `candidates/canonical_m10.py` (WIRED; canonical-stage contract) | `candidates/m10_result_validation.py` shared kernel; `candidates/m10_evaluation.py` separate candidate stage | F1 | LEGITIMATE_LAYERING |
-| 55 | M11 handoff eligibility | M12-5 `161986b` | `candidates/m11_handoff.py` (WIRED) | partial re-validation of `models/structural.py` | F21 | POSSIBLE_DUPLICATION |
+| 55 | M11 handoff eligibility | M12-5 `161986b` | `candidates/m11_handoff.py` (WIRED) | intentionally separate partial re-validation of `models/structural.py` retained | F21 | INTENTIONAL_INDEPENDENT_VERIFIER |
 | 56 | Supplied-component interface authority | M13-1 `f6d8124` | `models/supplied_component_interface.py` (WIRED) | — | — | SINGLE_AUTHORITY |
 | 57 | Candidate/canonical multi-joint M10 bridge | M13-3 `ca294e0` | `candidates/multi_joint_m10_bridge.py` (WIRED via service) | single shared lowering core | — | SINGLE_AUTHORITY |
-| 58 | Multi-joint canonical M10 verification | M13-3 `ca294e0` | `CanonicalMultiJointM10VerificationService` (`application.py:637`) | no `src/` caller (TESTS) | F12 | LEGACY_RESIDUE (composed-but-unused) |
+| 58 | Multi-joint canonical M10 verification | M13-3 `ca294e0` | `application.py:ProductionApplication.verify_current_canonical_multi_joint_m10()` (WIRED) | `CanonicalMultiJointM10VerificationService` remains the delegated verifier | F12 | SINGLE_AUTHORITY |
 | 59 | Multi-joint promotion Evidence contract | M13-4E `185a304` | `candidates/promotion_artifacts.py` (WIRED) | legacy M12-5 manifest family | F18 | INTENTIONAL_SUPERSESSION |
 | 60 | Promotion manifest verification | M12-5/M13-4E | `candidates/promotion_artifacts.py`, `candidates/promotion.py` (WIRED) | two manifest families | F18 | INTENTIONAL_SUPERSESSION |
 
@@ -123,16 +148,16 @@ report's `LEGACY_RESIDUES = 10`, which counts P3 **findings**, not rows.
 
 | Status | Count |
 | --- | --- |
-| SINGLE_AUTHORITY | 29 |
-| LEGITIMATE_LAYERING | 7 |
+| SINGLE_AUTHORITY | 31 |
+| LEGITIMATE_LAYERING | 8 |
 | LEGITIMATE_ADAPTER_VARIANTS | 4 |
-| INTENTIONAL_SUPERSESSION | 5 |
-| INTENTIONAL_INDEPENDENT_VERIFIER | 2 |
-| SEMANTIC_DUPLICATION | 2 |
-| POSSIBLE_DUPLICATION | 6 |
+| INTENTIONAL_SUPERSESSION | 6 |
+| INTENTIONAL_INDEPENDENT_VERIFIER | 4 |
+| SEMANTIC_DUPLICATION | 1 |
+| POSSIBLE_DUPLICATION | 3 |
 | INTENTIONAL_COMPATIBILITY_DUPLICATION | 1 |
 | AUTHORITY_CONFLICT (latent/overload) | 0 |
-| LEGACY_RESIDUE | 4 |
+| LEGACY_RESIDUE | 2 |
 | UNKNOWN | 0 |
 
 Total rows: 60.

@@ -2,10 +2,12 @@
 
 - **Audit type:** repository-wide semantic / architectural / authority duplication
   audit using the completed Historical Reconstruction as the temporal map.
-- **Baseline:** product endpoint M13-4 at
+- **Original audit baseline:** product endpoint M13-4 at
   `185a304796c17793519fb5f01dbf80cca73ab51e`; reconstruction synthesis
   `0cbb70e64c2efdc021f15d341bc043b574ff552b` (both verified locally against the
   reconstruction ledger).
+- **Current accepted production baseline:**
+  `b63d010c4ce0cc93fc556c4890606c5eeecb1e08`.
 - **Audit scope:** `src/mechcad_harness/**` tracked production code, current
   composition root, and applicable reconstruction/architecture/audit records.
 - **Not in scope / not modified:** `src/**`, `tests/**`,
@@ -96,7 +98,7 @@ Highest-traffic authority boundaries:
 | Capability | Current authoritative owner | Wiring |
 | --- | --- | --- |
 | Canonical state + revisions | `state/manager.py`, `models/design.py` | WIRED |
-| Revision hashing | `state/hashing.py:canonical_json` | WIRED (but re-implemented ~20×) |
+| Revision hashing | `core/canonical.py` (neutral canonical serialization); `state/hashing.py:canonical_json` delegates to it for state hashing | WIRED |
 | ChangeSet mutation | `changes/engine.py` | WIRED (sole canonical-revision caller) |
 | Invalidation | `dependency/graph.py:impact` | WIRED |
 | Evidence freshness | `dependency/storage.py` | WIRED |
@@ -108,9 +110,9 @@ Highest-traffic authority boundaries:
 
 Confirmed invariants (negative findings, important):
 - **Single canonical-revision writer.** Only `state/manager.py` writes
-  `revisions/` and `current.json`; `changes/engine.py` is the only production
-  caller of `create_revision`; `changes/provenance.py` writes sidecar records,
-  not canonical state. No second writer exists.
+  `revisions/` and `current.json`; `changes/engine.py` remains the ordinary
+  production mutation path and the only production caller of `create_revision`.
+  No second canonical revision writer exists.
 - **Single invalidation engine.** `DependencyGraph.impact` computes impact;
   storage persists it; no competing engine.
 - **Single FRD/DAT parser.** Structural result parsing is not duplicated in
@@ -519,6 +521,10 @@ Confirmed invariants (negative findings, important):
 
 This register defines the remaining finding IDs referenced by the ownership map.
 They are bounded, currently-equivalent, or dead; none reach P0–P2.
+This table is the preserved pre-closure audit snapshot. Current final
+dispositions are governed by §25; its `CLOSED`, `RETAINED`, and `DEFERRED`
+statuses supersede this table for the current accepted tree. The historical
+rows below are not rewritten as though the findings never existed.
 
 | ID | Category | Implementation | Origin | Reconciled status | Severity |
 | --- | --- | --- | --- | --- | --- |
@@ -619,6 +625,8 @@ disposition.
 ## 9. Suggested Remediation Order
 
 High-level direction only; no implementation is authorized by this audit.
+The ordered directions below are the original pre-remediation recommendations;
+current dispositions are recorded in §25 and do not rewrite this history.
 
 1. **`EXTRACT_NEUTRAL_CANONICAL_SERIALIZATION_CORE`** for canonical
    serialization (F2): a leaf module exporting the exact existing byte contract,
@@ -671,6 +679,8 @@ they do not reinterpret history and required no reconstruction edits.
 ## 11. Resolved Uncertainties and Remaining Questions
 
 All uncertainties that could change a P1/P2 classification are now resolved.
+The P3 questions below are the pre-closure audit snapshot. Current P3
+dispositions are recorded in §25 and do not rewrite this historical register.
 
 **Resolved (this closure pass):**
 
@@ -1024,6 +1034,7 @@ before the final focused rerun.
 
 - Historical baseline verified: M13-4 `185a304796c17793519fb5f01dbf80cca73ab51e`;
   synthesis `0cbb70e64c2efdc021f15d341bc043b574ff552b`.
+- Current accepted production baseline: `b63d010c4ce0cc93fc556c4890606c5eeecb1e08`.
 - Production composition root: `src/mechcad_harness/application.py:404` /
   `:775`.
 - Production code modified: NO.
@@ -1370,3 +1381,33 @@ The current F8 surfaces are reclassified as follows:
 **F8 STATUS:** CLOSED AS OPTION D / INTENTIONAL COMPATIBILITY AND DISTINCT
 SEMANTICS. The historical finding remains retained as pre-disposition evidence;
 the current ownership map records the corrected authority boundary.
+
+## 25. Current Finding Disposition Synchronization
+
+This section is the current status register for the accepted production baseline
+`b63d010c4ce0cc93fc556c4890606c5eeecb1e08`. The original finding entries,
+pre-remediation recommendations, and remediation records above remain retained
+as temporal evidence. They are not rewritten as though the findings never
+existed.
+
+| Finding | Accepted final disposition | Current status | Accepted implementation commit(s) | Current synchronization note |
+| --- | --- | --- | --- | --- |
+| F9 | `KEEP_INTENTIONAL` | RETAINED | — | Superseded v1 surfaces remain intentionally retained; no active remediation. |
+| F10 | `IMPLEMENTED / CLOSED` | CLOSED | `93167dc58406d273c8014a203dfeea8354317abc`; integrated at `8e8aa3e9bcacde9cead9fcb53a8027c2df324ceb` | Unused M6B-4C workflow and duplicate anchor-map route were retired; the active request materializer remains authoritative. |
+| F12 | `IMPLEMENTED / CLOSED` | CLOSED | `a2b29e41522ed0e1db747c9a261c727c3f928e27`; integrated at `8e8aa3e9bcacde9cead9fcb53a8027c2df324ceb` | Explicit canonical multi-joint application invocation now delegates to the existing verifier without auto-running during promotion or creating a second result authority. |
+| F13 | `DEFER_LOW_RISK` | DEFERRED | — | The stray duplicate artifact remains deferred and is not treated as resolved. |
+| F14 | `KEEP_INTENTIONAL` | RETAINED | — | Test-only and legacy surfaces remain intentionally retained; no active remediation. |
+| F16 | `DEFER_LOW_RISK` | DEFERRED | — | Path-matcher overlap remains deferred and is not treated as resolved. |
+| F17 | `KEEP_INTENTIONAL` | RETAINED | — | Legacy task-model exports remain intentionally retained; no active remediation. |
+| F19 | `DEFER_LOW_RISK` | DEFERRED | — | The duplicate pair-classification enums remain deferred and are not treated as resolved. |
+| F20 | `KEEP_INTENTIONAL` | RETAINED | — | Equivalent transform/quaternion primitives remain intentionally retained; no active remediation. |
+| F21 | `IMPLEMENTED / CLOSED` | CLOSED | `b63d010c4ce0cc93fc556c4890606c5eeecb1e08` | Analytical-observation construction is centralized; independent provenance/artifact verification and M11 handoff re-validation remain intentionally separate. |
+
+### Current Gate Summary
+
+- `P0_REMAINING`: NONE.
+- `P1_REMAINING`: NONE.
+- `P2_REMAINING`: NONE.
+- `ACTIVE_P3_REMEDIATIONS`: NONE.
+- `P3_DEFERRED`: F13, F16, F19.
+- `CURRENT_ACCEPTED_BASELINE_RECORDED`: YES (`b63d010c4ce0cc93fc556c4890606c5eeecb1e08`).
