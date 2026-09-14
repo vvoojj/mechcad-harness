@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
+import sys
+from pathlib import Path
 
 from mechcad_harness.candidates.canonical_cad import CanonicalPhysicalCadCompiler
 from mechcad_harness.candidates.canonical_mechanism import (
@@ -11,6 +14,7 @@ from mechcad_harness.candidates.canonical_mechanism import (
 from mechcad_harness.artifacts import ArtifactStore
 from mechcad_harness.candidates.multi_joint_m10_bridge import (
     CandidateCanonicalMultiJointEquivalence,
+    CanonicalMultiJointM10Verification,
     CanonicalMultiJointM10VerificationService,
     compare_candidate_canonical_multi_joint_semantics,
     compile_canonical,
@@ -20,10 +24,116 @@ from test_m13_3_fresh_canonical_bridge import _canonical_reconstruction
 from test_m13_3_promotion import _promotion_chain
 
 
+def _fresh_canonical_verification(tmp_path):
+    integration_path = str(Path(__file__).parents[1] / "integration")
+    if integration_path not in sys.path:
+        sys.path.insert(0, integration_path)
+    from test_m13_3_candidate_m10_production import _application
+
+    reconstruction = _canonical_reconstruction(tmp_path)
+    store = ArtifactStore(
+        tmp_path,
+        project_id=reconstruction.project_id,
+        run_id="f12-identity-test",
+    )
+    cad = CanonicalPhysicalCadCompiler(store).realize(reconstruction)
+    application = _application(
+        tmp_path,
+        [],
+        project_id=reconstruction.project_id,
+        create_state=False,
+    )
+    return reconstruction, cad, application.canonical_multi_joint_m10_verification_service.execute(
+        reconstruction, cad
+    )
+
+
 def test_task_16_public_symbols_exist():
     assert CandidateCanonicalMultiJointEquivalence is not None
     assert callable(compare_candidate_canonical_multi_joint_semantics)
     assert CanonicalMultiJointM10VerificationService is not None
+
+
+def test_canonical_m10_verification_exposes_canonical_identity(tmp_path):
+    reconstruction, cad, verification = _fresh_canonical_verification(tmp_path)
+    mechanism = reconstruction.canonical_mechanism
+
+    assert isinstance(verification, CanonicalMultiJointM10Verification)
+    assert verification.project_id == reconstruction.project_id
+    assert verification.revision == reconstruction.revision
+    assert verification.state_hash == reconstruction.state_hash
+    assert verification.mechanism_id == mechanism.id
+    assert verification.mechanism_hash == mechanism.mechanism_hash
+    assert verification.canonical_cad_realization_hash == cad.realization_hash
+    assert verification.normalized_projection_hash == reconstruction.normalized_projection_hash
+    assert verification.result.request_hash == verification.request.request_hash
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "project_id",
+        "state_hash",
+        "mechanism_id",
+        "mechanism_hash",
+        "canonical_cad_realization_hash",
+        "normalized_projection_hash",
+    ),
+)
+def test_canonical_m10_verification_rejects_blank_identity(field, tmp_path):
+    _, _, verification = _fresh_canonical_verification(tmp_path)
+
+    with pytest.raises(ValidationError):
+        CanonicalMultiJointM10Verification.model_validate(
+            verification.model_dump(mode="json") | {field: "   "}
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "state_hash",
+        "mechanism_hash",
+        "canonical_cad_realization_hash",
+        "normalized_projection_hash",
+    ),
+)
+def test_canonical_m10_verification_rejects_malformed_identity_hash(field, tmp_path):
+    _, _, verification = _fresh_canonical_verification(tmp_path)
+
+    with pytest.raises(ValidationError):
+        CanonicalMultiJointM10Verification.model_validate(
+            verification.model_dump(mode="json") | {field: "sha256:not-a-hash"}
+        )
+
+
+def test_canonical_m10_verification_rejects_nonpositive_revision(tmp_path):
+    _, _, verification = _fresh_canonical_verification(tmp_path)
+
+    with pytest.raises(ValidationError):
+        CanonicalMultiJointM10Verification.model_validate(
+            verification.model_dump(mode="json") | {"revision": 0}
+        )
+
+
+def test_canonical_m10_verification_rejects_result_request_mismatch(tmp_path):
+    _, _, verification = _fresh_canonical_verification(tmp_path)
+    result = verification.result.model_copy(
+        update={"request_hash": "sha256:" + "0" * 64}
+    )
+
+    with pytest.raises(ValidationError, match="request hash"):
+        CanonicalMultiJointM10Verification(
+            project_id=verification.project_id,
+            revision=verification.revision,
+            state_hash=verification.state_hash,
+            mechanism_id=verification.mechanism_id,
+            mechanism_hash=verification.mechanism_hash,
+            canonical_cad_realization_hash=verification.canonical_cad_realization_hash,
+            normalized_projection_hash=verification.normalized_projection_hash,
+            request=verification.request,
+            result=result,
+        )
 
 
 def test_equivalence_rejects_non_bridge_inputs():

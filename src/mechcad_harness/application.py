@@ -174,6 +174,7 @@ from mechcad_harness.candidates import (
     CandidateMultiJointPromotionRequest,
     CandidateMultiJointSelection,
     CandidateMultiJointSelectionService,
+    CanonicalMultiJointM10Verification,
     CanonicalMultiJointM10VerificationService,
     CandidateM10EvaluationRequest,
     CandidateM10EvaluationScope,
@@ -2261,6 +2262,34 @@ class ProductionApplication:
         return self.canonical_mechanism_compiler.reconstruct(
             self.project_id, revision, state_hash, mechanism_id
         )
+
+    def verify_current_canonical_multi_joint_m10(
+        self,
+        *,
+        mechanism_id: str,
+    ) -> CanonicalMultiJointM10Verification:
+        if not isinstance(mechanism_id, str) or not mechanism_id.strip():
+            raise CandidateIntegrityError("canonical mechanism ID must be nonblank")
+        snapshot = self.load_state()
+        reconstruction = self.reconstruct_promoted_mechanism(
+            revision=snapshot.revision,
+            state_hash=snapshot.state_hash,
+            mechanism_id=mechanism_id,
+        )
+        cad = self.canonical_cad_compiler.realize(reconstruction)
+        verification = self.canonical_multi_joint_m10_verification_service.execute(
+            reconstruction, cad
+        )
+        if (
+            verification.project_id != self.project_id
+            or verification.revision != snapshot.revision
+            or verification.state_hash != snapshot.state_hash
+            or verification.mechanism_id != mechanism_id
+        ):
+            raise CandidateIntegrityError(
+                "canonical multi-joint verification binding mismatch"
+            )
+        return verification
 
     def verify_promoted_mechanism(self, application_result):
         request = getattr(application_result, "request", None)

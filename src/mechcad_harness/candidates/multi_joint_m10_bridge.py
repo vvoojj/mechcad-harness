@@ -458,13 +458,57 @@ def compare_candidate_canonical_multi_joint_semantics(
     )
 
 
+def _require_final_hash(value: str) -> str:
+    if (
+        len(value) != 71
+        or not value.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in value[7:])
+    ):
+        raise ValueError("must be a sha256 hash")
+    return value
+
+
 class CanonicalMultiJointM10Verification(Model):
-    """Transient fresh canonical M10 request/result pair."""
+    """Transient fresh canonical M10 request/result pair with source identity."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    project_id: str = Field(min_length=1)
+    revision: int = Field(gt=0)
+    state_hash: str = Field(min_length=1)
+    mechanism_id: str = Field(min_length=1)
+    mechanism_hash: str = Field(min_length=1)
+    canonical_cad_realization_hash: str = Field(min_length=1)
+    normalized_projection_hash: str = Field(min_length=1)
     request: MultiJointCollisionSweepRequestV2
     result: MultiJointCollisionSweepResultV2
+
+    @field_validator(
+        "project_id",
+        "state_hash",
+        "mechanism_id",
+        "mechanism_hash",
+        "canonical_cad_realization_hash",
+        "normalized_projection_hash",
+    )
+    @classmethod
+    def validate_nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be empty")
+        return value
+
+    _validate_hashes = field_validator(
+        "state_hash",
+        "mechanism_hash",
+        "canonical_cad_realization_hash",
+        "normalized_projection_hash",
+    )(_require_final_hash)
+
+    @model_validator(mode="after")
+    def validate_result_request_binding(self):
+        if self.result.request_hash != self.request.request_hash:
+            raise ValueError("result request hash does not match request")
+        return self
 
 
 class CanonicalMultiJointM10VerificationService:
@@ -541,17 +585,17 @@ class CanonicalMultiJointM10VerificationService:
             or result.result_hash != multi_joint_collision_sweep_result_v2_hash(result)
         ):
             raise ValueError("fresh canonical M10 result binding mismatch")
-        return CanonicalMultiJointM10Verification(request=request, result=result)
-
-
-def _require_final_hash(value: str) -> str:
-    if (
-        len(value) != 71
-        or not value.startswith("sha256:")
-        or any(character not in "0123456789abcdef" for character in value[7:])
-    ):
-        raise ValueError("must be a sha256 hash")
-    return value
+        return CanonicalMultiJointM10Verification(
+            project_id=reconstruction.project_id,
+            revision=reconstruction.revision,
+            state_hash=reconstruction.state_hash,
+            mechanism_id=mechanism.id,
+            mechanism_hash=mechanism.mechanism_hash,
+            canonical_cad_realization_hash=cad.realization_hash,
+            normalized_projection_hash=reconstruction.normalized_projection_hash,
+            request=request,
+            result=result,
+        )
 
 
 def _require_hash_or_pending(value: str) -> str:
