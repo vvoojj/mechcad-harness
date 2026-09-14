@@ -77,6 +77,637 @@ def build_application(tmp_path: Path, adapter: CountingAdapter):
     )
 
 
+def _analytical_observation_inputs(tmp_path: Path):
+    from test_structural_service import _definition
+
+    from mechcad_harness.artifacts.models import ArtifactType
+    from mechcad_harness.artifacts.storage import ArtifactStore
+    from mechcad_harness.backends.provenance import provenance_from_identity
+    from mechcad_harness.models.structural import (
+        StructuralResultField,
+        structural_definition_hash,
+    )
+    from mechcad_harness.structural.geometry import GeometryRealization
+    from mechcad_harness.structural.models import (
+        REGION_RESOLVER_IDENTITY,
+        ResolvedRegionMap,
+        ResolvedStructuralRegion,
+        resolved_region_hash,
+        region_map_hash,
+        StructuralArtifactRef,
+    )
+    from mechcad_harness.structural.runtime import FREECAD_IDENTITY
+    from mechcad_harness.structural_request import (
+        MeshSpecification,
+        StructuralAnalysisRequest,
+        StructuralExecutionSettings,
+        StructuralSourceBinding,
+    )
+
+    application = build_application(tmp_path, CountingAdapter())
+    definition = _definition()
+    source = application.load_state()
+    source_program_hash = "sha256:" + "p" * 64
+    store = ArtifactStore(
+        application.state_manager.workspace,
+        project_id=application.project_id,
+        run_id="RUN-F21-OBS",
+    )
+    artifact = store.publish(
+        "STEP-F21-OBS",
+        ArtifactType.STEP,
+        "source.step",
+        b"ISO-10303-21;\nEND-ISO-10303-21;\n",
+        "mechcad-freecad",
+        FREECAD_IDENTITY.adapter_version,
+        source.revision,
+        source.state_hash,
+        backend_provenance=provenance_from_identity(FREECAD_IDENTITY),
+        input_hash=source_program_hash,
+    )
+    request = StructuralAnalysisRequest(
+        source_binding=StructuralSourceBinding(
+            project_id=application.project_id,
+            source_revision=source.revision,
+            source_state_hash=source.state_hash,
+            definition_id=definition.id,
+            definition_hash=structural_definition_hash(definition),
+            target_body_id=definition.target_body_id,
+            source_program_hash=source_program_hash,
+            geometry_identity="fixture",
+            geometry_artifact_id=artifact.artifact_id,
+            geometry_artifact_hash=artifact.sha256,
+        ),
+        selected_load_case_ids=("LC-1",),
+        mesh_specification=MeshSpecification(
+            global_target_size_mm=5.0,
+            quality_policy_id="f21-quality",
+            mesher_settings_version="f21-mesher",
+        ),
+        requested_result_fields=(StructuralResultField.DISPLACEMENT,),
+        execution_settings=StructuralExecutionSettings(
+            max_elements=1000,
+            max_runtime_seconds=30,
+            max_output_bytes=100000,
+            retain_raw_artifacts=True,
+        ),
+    )
+    region = ResolvedStructuralRegion(
+        region_id="free",
+        source_geometry_hash=request.source_binding.geometry_artifact_hash,
+        resolver_identity="f21-resolver",
+        resolver_version="1",
+        geometry_kind="planar_face",
+        exact_brep_area_mm2=200.0,
+        exact_brep_centroid_mm=(100.0, 10.0, 5.0),
+        plane_normal=(1.0, 0.0, 0.0),
+        bounding_box_mm=(100.0, 0.0, 0.0, 100.0, 20.0, 10.0),
+        expected_cardinality=1,
+        actual_cardinality=1,
+        semantic_descriptor="free",
+        region_realization_hash="pending",
+    )
+    region = region.model_copy(update={"region_realization_hash": resolved_region_hash(region)})
+    region_map = ResolvedRegionMap(
+        source_geometry_hash=request.source_binding.geometry_artifact_hash,
+        resolver_identity="f21-resolver",
+        resolver_version="1",
+        match_policy_id="f21-policy",
+        regions=(region,),
+        region_map_hash=region_map_hash(
+            (region,),
+            source_geometry_hash=request.source_binding.geometry_artifact_hash,
+            match_policy_id="f21-policy",
+        ),
+    )
+    realization = GeometryRealization(
+        shape_valid=True,
+        solid_count=1,
+        faces=[],
+        bounding_box=(0.0, 0.0, 0.0, 100.0, 20.0, 10.0),
+    )
+    manifest = SimpleNamespace(
+        run_id="RUN-F21-OBS",
+        project_id=application.project_id,
+        revision=source.revision,
+        state_hash=source.state_hash,
+        definition_id=definition.id,
+        definition_hash=request.source_binding.definition_hash,
+        request_hash=request.request_hash,
+        geometry_artifact_id=artifact.artifact_id,
+        geometry_artifact_hash=artifact.sha256,
+        geometry_provider_provenance=provenance_from_identity(FREECAD_IDENTITY),
+        resolver_identity=REGION_RESOLVER_IDENTITY,
+        resolver_version="1",
+        artifacts=(
+            StructuralArtifactRef(
+                artifact_type=ArtifactType.STEP.value,
+                artifact_id=artifact.artifact_id,
+                sha256=artifact.sha256,
+                producer_identity=artifact.producer_tool_name,
+                producer_version=artifact.producer_tool_version,
+            ),
+        ),
+    )
+    return SimpleNamespace(
+        application=application,
+        artifact=artifact,
+        definition=definition,
+        manifest=manifest,
+        realization=realization,
+        region_map=region_map,
+        request=request,
+    )
+
+
+def _record_observation_construction(monkeypatch, application_module):
+    calls = []
+    original_geometry = application_module.cantilever_geometry_observation
+    original_material = application_module.cantilever_material_observation
+
+    def geometry(*args):
+        calls.append(("geometry", args))
+        return original_geometry(*args)
+
+    def material(*args):
+        calls.append(("material", args))
+        return original_material(*args)
+
+    monkeypatch.setattr(application_module, "cantilever_geometry_observation", geometry)
+    monkeypatch.setattr(application_module, "cantilever_material_observation", material)
+    return calls
+
+
+def _assert_observation_pair(actual_geometry, actual_material, expected_geometry, expected_material):
+    assert actual_geometry == expected_geometry
+    assert actual_material == expected_material
+    assert actual_geometry.model_dump(mode="json") == expected_geometry.model_dump(mode="json")
+    assert actual_material.model_dump(mode="json") == expected_material.model_dump(mode="json")
+    assert actual_material.material_assignment_id == expected_material.material_assignment_id
+    assert (
+        actual_material.elastic_modulus_source_identity
+        == expected_material.elastic_modulus_source_identity
+    )
+    assert (
+        actual_material.poisson_ratio_source_identity
+        == expected_material.poisson_ratio_source_identity
+    )
+
+
+def _configure_path_a_characterization(application, application_module, inputs, monkeypatch):
+    captured = {}
+
+    class RecordingValidator:
+        def validate(self, *args, **kwargs):
+            captured.update(kwargs)
+            return "validation"
+
+    monkeypatch.setattr(application_module, "parse_trusted_msh_bytes", lambda _bytes: object())
+    monkeypatch.setattr(application, "_assert_composed_structural_dependencies", lambda *_args: None)
+    monkeypatch.setattr(
+        application.structural_service.geometry_adapter,
+        "realize_geometry",
+        lambda _path: inputs.realization,
+    )
+    monkeypatch.setattr(
+        application.structural_service.region_resolver,
+        "resolve",
+        lambda *_args, **_kwargs: inputs.region_map,
+    )
+    monkeypatch.setattr(application_module, "StructuralAnalyticalValidator", RecordingValidator)
+    return captured
+
+
+def _configure_path_b_characterization(application, application_module, inputs, monkeypatch):
+    from mechcad_harness.structural.evidence_models import RectangularCantileverValidationPolicy
+    from mechcad_harness.structural.results import StructuralAnalysisEvaluation
+    from mechcad_harness.structural.models import mesh_specification_hash
+
+    captured = {}
+    result = SimpleNamespace(result_hash="f21-result-hash")
+    evaluation = StructuralAnalysisEvaluation(result=result, verification=object())
+    policy = RectangularCantileverValidationPolicy(
+        material_identity=inputs.definition.material_assignment.material_identity,
+        length_mm=100.0,
+        width_mm=20.0,
+        height_mm=10.0,
+        elastic_modulus_mpa=70000.0,
+        poisson_ratio=0.33,
+        resultant_force_n=(0.0, -1.0, 0.0),
+        mesh_specification_hash=mesh_specification_hash(inputs.request.mesh_specification),
+        free_end_region_id="free",
+        fixed_end_region_id="fixed",
+        free_end_area_mm2=200.0,
+        displacement_relative_tolerance=0.1,
+        reaction_relative_tolerance=0.1,
+    )
+
+    class FakeInterpreter:
+        _is_trusted_freecad_provenance = staticmethod(lambda _provenance: True)
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def interpret(self, *_args, **_kwargs):
+            return result
+
+        def load_trusted_mesh(self, *_args, **_kwargs):
+            return object(), b"mesh"
+
+    class RecordingValidator:
+        def validate(self, *args, **kwargs):
+            captured.update(kwargs)
+            return "validation"
+
+    monkeypatch.setattr(application, "_reload_structural_execution_manifest", lambda *_args: inputs.manifest)
+    monkeypatch.setattr(application, "_assert_composed_structural_dependencies", lambda *_args: None)
+    monkeypatch.setattr(application_module, "StructuralResultInterpreter", FakeInterpreter)
+    monkeypatch.setattr(application_module, "structural_result_hash", lambda _result: "f21-result-hash")
+    monkeypatch.setattr(application_module, "StructuralAnalyticalValidator", RecordingValidator)
+    monkeypatch.setattr(
+        application.structural_service.geometry_adapter,
+        "realize_geometry",
+        lambda _path: inputs.realization,
+    )
+    monkeypatch.setattr(
+        application.structural_service.region_resolver,
+        "resolve",
+        lambda *_args, **_kwargs: inputs.region_map,
+    )
+    return captured, result, evaluation, policy
+
+
+def _fixed_f21_analytical_payload():
+    from test_structural_evidence_models import _payload
+
+    from mechcad_harness.backends.provenance import provenance_from_identity
+    from mechcad_harness.structural.evidence import (
+        StructuralEvidencePayload,
+        StructuralPipelineProvenance,
+    )
+    from mechcad_harness.structural.evidence_models import (
+        AnalyticalValidationCheck,
+        CantileverGeometryObservation,
+        CantileverMaterialObservation,
+        RectangularCantileverValidationPolicy,
+        StructuralAnalyticalValidationResult,
+        cantilever_validation_policy_hash,
+    )
+    from mechcad_harness.structural.models import execution_manifest_hash
+    from mechcad_harness.structural.runtime import CALCULIX_IDENTITY, GMSH_IDENTITY
+
+    base = _payload()
+    policy = RectangularCantileverValidationPolicy(
+        request_hash=base.request.request_hash,
+        geometry_artifact_hash=base.request.source_binding.geometry_artifact_hash,
+        material_identity="test-material",
+        length_mm=100.0,
+        width_mm=20.0,
+        height_mm=10.0,
+        elastic_modulus_mpa=70000.0,
+        poisson_ratio=0.33,
+        resultant_force_n=(0.0, -1.0, 0.0),
+        mesh_specification_hash=base.execution_manifest.mesh_specification_hash,
+        mesh_hash=base.execution_manifest.mesh_artifact_hash,
+        region_map_hash=base.execution_manifest.region_map_hash,
+        free_end_region_id="free",
+        fixed_end_region_id="fixed",
+        free_end_area_mm2=200.0,
+        displacement_relative_tolerance=0.1,
+        reaction_relative_tolerance=0.1,
+    )
+    checks = tuple(
+        AnalyticalValidationCheck(
+            check_id=check_id,
+            expected_value=0.0,
+            observed_value=0.0,
+            absolute_error=0.0,
+            relative_error=0.0,
+            tolerance=1.0,
+            status="pass",
+        )
+        for check_id in (
+            "geometry",
+            "material",
+            "load",
+            "tip_displacement",
+            "reaction_force",
+            "reaction_moment",
+        )
+    )
+    analytical = StructuralAnalyticalValidationResult(
+        policy=policy,
+        policy_hash=cantilever_validation_policy_hash(policy),
+        source_result_hash=base.result.result_hash,
+        source_request_hash=base.request.request_hash,
+        source_execution_manifest_hash=execution_manifest_hash(base.execution_manifest),
+        status="pass",
+        checks=checks,
+    )
+    binding = base.request.source_binding
+    geometry = CantileverGeometryObservation(
+        project_id=binding.project_id,
+        source_revision=binding.source_revision,
+        source_state_hash=binding.source_state_hash,
+        definition_id=binding.definition_id,
+        definition_hash=binding.definition_hash,
+        geometry_artifact_id=binding.geometry_artifact_id,
+        geometry_artifact_hash=binding.geometry_artifact_hash,
+        length_mm=100.0,
+        width_mm=20.0,
+        height_mm=10.0,
+        free_end_area_mm2=200.0,
+    )
+    material = CantileverMaterialObservation(
+        project_id=binding.project_id,
+        source_revision=binding.source_revision,
+        source_state_hash=binding.source_state_hash,
+        definition_id=binding.definition_id,
+        definition_hash=binding.definition_hash,
+        geometry_artifact_id=binding.geometry_artifact_id,
+        geometry_artifact_hash=binding.geometry_artifact_hash,
+        material_identity="test-material",
+        elastic_modulus_mpa=70000.0,
+        poisson_ratio=0.33,
+        material_assignment_id="MAT-1",
+        elastic_modulus_source_identity="test",
+        poisson_ratio_source_identity="test",
+    )
+    values = base.model_dump(mode="json")
+    values.update(
+        analytical_validation=analytical.model_dump(mode="json"),
+        analytical_geometry_observation=geometry.model_dump(mode="json"),
+        analytical_material_observation=material.model_dump(mode="json"),
+        aggregate_provenance=StructuralPipelineProvenance(
+            pipeline_identity="mechcad-structural-pipeline@1",
+            geometry_provenance=base.execution_manifest.geometry_provider_provenance,
+            mesh_provenance=provenance_from_identity(GMSH_IDENTITY),
+            solver_provenance=provenance_from_identity(CALCULIX_IDENTITY),
+            parser_provenance=base.result.parser_provenance,
+        ).model_dump(mode="json"),
+        semantic_hash="pending",
+    )
+    expected_payload = StructuralEvidencePayload.model_validate(values)
+    return base, expected_payload, analytical, geometry, material
+
+
+def test_f21_preextraction_path_a_observations_and_order(tmp_path, monkeypatch):
+    import mechcad_harness.application as application_module
+    from mechcad_harness.structural.validation import (
+        cantilever_geometry_observation,
+        cantilever_material_observation,
+    )
+
+    inputs = _analytical_observation_inputs(tmp_path)
+    expected_geometry = cantilever_geometry_observation(
+        inputs.request, inputs.definition, inputs.realization, inputs.region_map,
+    )
+    expected_material = cantilever_material_observation(inputs.request, inputs.definition)
+    calls = _record_observation_construction(monkeypatch, application_module)
+    captured = _configure_path_a_characterization(inputs.application, application_module, inputs, monkeypatch)
+
+    validation, geometry, material = inputs.application._publish_structural_analytical_validation(
+        execution_manifest=inputs.manifest,
+        request=inputs.request,
+        definition=inputs.definition,
+        result=object(),
+        verification=object(),
+        analytical_policy=object(),
+        mesh_artifact_bytes=b"mesh",
+    )
+
+    assert validation == "validation"
+    _assert_observation_pair(geometry, material, expected_geometry, expected_material)
+    _assert_observation_pair(
+        captured["geometry_observation"],
+        captured["material_observation"],
+        expected_geometry,
+        expected_material,
+    )
+    assert [call[0] for call in calls] == ["geometry", "material"]
+    assert calls[0][1] == (
+        inputs.request,
+        inputs.definition,
+        inputs.realization,
+        inputs.region_map,
+    )
+    assert calls[1][1] == (inputs.request, inputs.definition)
+
+
+def test_f21_preextraction_path_b_rebuilds_observations_and_ignores_forged_inputs(
+    tmp_path, monkeypatch
+):
+    import mechcad_harness.application as application_module
+    from mechcad_harness.structural.validation import (
+        cantilever_geometry_observation,
+        cantilever_material_observation,
+    )
+
+    inputs = _analytical_observation_inputs(tmp_path)
+    expected_geometry = cantilever_geometry_observation(
+        inputs.request, inputs.definition, inputs.realization, inputs.region_map,
+    )
+    expected_material = cantilever_material_observation(inputs.request, inputs.definition)
+    calls = _record_observation_construction(monkeypatch, application_module)
+    captured, result, evaluation, policy = _configure_path_b_characterization(
+        inputs.application, application_module, inputs, monkeypatch,
+    )
+    evidence_dir = (
+        inputs.application.state_manager.workspace
+        / "projects"
+        / inputs.application.project_id
+        / "evidence"
+    )
+    evidence_before = tuple(sorted(path.name for path in evidence_dir.glob("*.json")))
+    publication_calls = []
+    monkeypatch.setattr(
+        inputs.application._structural_evidence_publisher,
+        "publish",
+        lambda **kwargs: publication_calls.append(kwargs),
+    )
+    forged_geometry = expected_geometry.model_copy(update={"length_mm": 999.0})
+    forged_material = expected_material.model_copy(update={"elastic_modulus_mpa": 999.0})
+
+    validation = inputs.application.evaluate_structural_analytical_validation(
+        execution_manifest=inputs.manifest,
+        evaluation=evaluation,
+        policy=policy,
+        mesh=object(),
+        geometry_observation=forged_geometry,
+        material_observation=forged_material,
+        request=inputs.request,
+        definition=inputs.definition,
+    )
+
+    assert validation == "validation"
+    _assert_observation_pair(
+        captured["geometry_observation"],
+        captured["material_observation"],
+        expected_geometry,
+        expected_material,
+    )
+    assert captured["geometry_observation"] != forged_geometry
+    assert captured["material_observation"] != forged_material
+    assert publication_calls == []
+    assert tuple(sorted(path.name for path in evidence_dir.glob("*.json"))) == evidence_before
+    assert [call[0] for call in calls] == ["geometry", "material"]
+    assert calls[0][1] == (
+        inputs.request,
+        inputs.definition,
+        inputs.realization,
+        inputs.region_map,
+    )
+    assert calls[1][1] == (inputs.request, inputs.definition)
+
+
+def test_f21_preextraction_path_a_translates_constructor_failure(tmp_path, monkeypatch):
+    import mechcad_harness.application as application_module
+
+    inputs = _analytical_observation_inputs(tmp_path)
+    captured = _configure_path_a_characterization(
+        inputs.application, application_module, inputs, monkeypatch,
+    )
+    sentinel = RuntimeError("geometry constructor sentinel")
+    monkeypatch.setattr(
+        application_module,
+        "cantilever_geometry_observation",
+        lambda *_args: (_ for _ in ()).throw(sentinel),
+    )
+
+    with pytest.raises(ValueError, match="trusted analytical source observations are unavailable") as raised:
+        inputs.application._publish_structural_analytical_validation(
+            execution_manifest=inputs.manifest,
+            request=inputs.request,
+            definition=inputs.definition,
+            result=object(),
+            verification=object(),
+            analytical_policy=object(),
+            mesh_artifact_bytes=b"mesh",
+        )
+
+    assert raised.value.__cause__ is sentinel
+    assert captured == {}
+
+
+def test_f21_preextraction_path_a_publisher_preserves_fixed_payload_hashes(
+    tmp_path, monkeypatch
+):
+    from mechcad_harness.artifacts.storage import ArtifactStore
+    from mechcad_harness.structural.evidence_service import StructuralEvidencePublisher
+    from mechcad_harness.structural_request import StructuralAnalysisRequest
+    import mechcad_harness.structural.evidence_service as evidence_service_module
+
+    base, expected_payload, analytical, geometry, material = _fixed_f21_analytical_payload()
+    written = []
+
+    class RecordingEvidenceStore:
+        def write_evidence(self, project_id, evidence):
+            written.append((project_id, evidence))
+
+    class FakeVerifier:
+        def _load_bound_definition(self, request):
+            return object()
+
+        def _load_durable_manifest_for_publication(self, *args):
+            return (
+                base.execution_manifest,
+                object(),
+                b"manifest",
+                SimpleNamespace(artifact_id="MANIFEST-1", sha256="sha256:" + "n" * 64),
+            )
+
+        def _verify_direct_manifest_provenance(self, manifest):
+            return None
+
+        def _verify_all_artifacts(self, store, request, definition, manifest):
+            return {"msh": b"mesh"}
+
+        def _reconstruct_result(self, request, definition, manifest):
+            return base.result
+
+        def _verify_result_and_criteria(self, *args):
+            return None
+
+        def _verify_analytical_validation(self, *args):
+            return None
+
+        def _verify_pipeline_provenance(self, *args):
+            return None
+
+    publisher = StructuralEvidencePublisher(
+        workspace=tmp_path,
+        project_id=base.request.source_binding.project_id,
+        state_manager=object(),
+        artifact_store=ArtifactStore(tmp_path, project_id="PRJ-1", run_id="RUN-1"),
+        evidence_store=RecordingEvidenceStore(),
+        analytical_validation_factory=lambda **kwargs: (analytical, geometry, material),
+    )
+    monkeypatch.setattr(publisher, "_verifier", lambda: FakeVerifier())
+    monkeypatch.setattr(
+        publisher,
+        "_fresh_verifier",
+        lambda _run_id: SimpleNamespace(verify=lambda _evidence_id: None),
+    )
+    monkeypatch.setattr(
+        evidence_service_module,
+        "StructuralVerificationService",
+        lambda: SimpleNamespace(evaluate=lambda _result, _definition: base.verification),
+    )
+    monkeypatch.setattr(StructuralAnalysisRequest, "validate_against", lambda self, definition: None)
+
+    evidence = publisher.publish(
+        execution_manifest=base.execution_manifest,
+        request=base.request,
+        analytical_policy=analytical.policy,
+    )
+
+    assert len(written) == 1
+    assert written[0][0] == base.request.source_binding.project_id
+    assert evidence.structural_evidence_payload.analytical_geometry_observation == (
+        expected_payload.analytical_geometry_observation
+    )
+    assert evidence.structural_evidence_payload.analytical_material_observation == (
+        expected_payload.analytical_material_observation
+    )
+    assert evidence.structural_evidence_payload.semantic_hash == (
+        "sha256:d0f148f232ea27b0a7f2754921cbf7d2ad68cd6653c2a734c44f12e172e5a947"
+    )
+    assert evidence.output_hash == evidence.structural_evidence_payload.semantic_hash
+    assert evidence.structural_evidence_payload.analytical_validation.validation_hash == (
+        "sha256:437cbf1dc8bd630a26f10ab1def0135682bbd05bdd9bfdb6c51273ba87a1495f"
+    )
+
+
+def test_f21_preextraction_path_b_translates_constructor_failure(tmp_path, monkeypatch):
+    import mechcad_harness.application as application_module
+
+    inputs = _analytical_observation_inputs(tmp_path)
+    captured, _result, evaluation, policy = _configure_path_b_characterization(
+        inputs.application, application_module, inputs, monkeypatch,
+    )
+    sentinel = RuntimeError("geometry constructor sentinel")
+    monkeypatch.setattr(
+        application_module,
+        "cantilever_geometry_observation",
+        lambda *_args: (_ for _ in ()).throw(sentinel),
+    )
+
+    with pytest.raises(ValueError, match="trusted analytical source observations are unavailable") as raised:
+        inputs.application.evaluate_structural_analytical_validation(
+            execution_manifest=inputs.manifest,
+            evaluation=evaluation,
+            policy=policy,
+            mesh=object(),
+            geometry_observation=None,
+            material_observation=None,
+            request=inputs.request,
+            definition=inputs.definition,
+        )
+
+    assert raised.value.__cause__ is sentinel
+    assert captured == {}
+
+
 def test_production_application_constructs_real_graph_without_invoking_adapter(tmp_path):
     from mechcad_harness.agents import AgentRegistry
     from mechcad_harness.agents.gateway import AgentGateway

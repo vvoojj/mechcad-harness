@@ -1692,6 +1692,20 @@ class ProductionApplication:
         ):
             raise StateIntegrityError(f"source revision/state changed during {operation}")
 
+    def _build_cantilever_analytical_observations(
+        self,
+        *,
+        request: StructuralAnalysisRequest,
+        definition,
+        realization,
+        region_map,
+    ) -> tuple[CantileverGeometryObservation, CantileverMaterialObservation]:
+        geometry_observation = cantilever_geometry_observation(
+            request, definition, realization, region_map,
+        )
+        material_observation = cantilever_material_observation(request, definition)
+        return geometry_observation, material_observation
+
     def _publish_structural_analytical_validation(
         self,
         *,
@@ -1728,10 +1742,14 @@ class ProductionApplication:
                 realization,
                 source_geometry_hash=request.source_binding.geometry_artifact_hash,
             )
-            geometry_observation = cantilever_geometry_observation(
-                request, definition, realization, region_map,
+            geometry_observation, material_observation = (
+                self._build_cantilever_analytical_observations(
+                    request=request,
+                    definition=definition,
+                    realization=realization,
+                    region_map=region_map,
+                )
             )
-            material_observation = cantilever_material_observation(request, definition)
             validation = StructuralAnalyticalValidator().validate(
                 result,
                 analytical_policy,
@@ -1991,10 +2009,14 @@ class ProductionApplication:
                 realization,
                 source_geometry_hash=request.source_binding.geometry_artifact_hash,
             )
-            trusted_geometry_observation = cantilever_geometry_observation(
-                request, definition, realization, region_map,
+            trusted_geometry_observation, trusted_material_observation = (
+                self._build_cantilever_analytical_observations(
+                    request=request,
+                    definition=definition,
+                    realization=realization,
+                    region_map=region_map,
+                )
             )
-            trusted_material_observation = cantilever_material_observation(request, definition)
         except Exception as exc:
             raise ValueError("trusted analytical source observations are unavailable") from exc
         validation = StructuralAnalyticalValidator().validate(
