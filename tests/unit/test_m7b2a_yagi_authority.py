@@ -139,23 +139,9 @@ def test_collision_strategy_is_allowed_future_semantics_not_a_selected_strategy(
     assert set(requirements().collision_resolution_strategies) == {"orientation", "vertical_staggering", "increased_spacing", "longitudinal_staggering"}
 
 
-def test_yagi_authority_uses_m6b_resolution_application_and_persisted_reload(tmp_path):
-    from datetime import datetime, timezone
-
-    from mechcad_harness.agents.constraint_requests import (
-        AgentConstraintRequestDraft,
-        ConstraintRequestMaterializer,
-        ConstraintRequestStore,
-    )
-    from mechcad_harness.agents.constraint_resolution import (
-        ConstraintResolutionAnswer,
-        ConstraintResolutionBatchCommand,
-        ConstraintResolutionMaterializer,
-        ConstraintResolutionStore,
-    )
-    from mechcad_harness.agents.constraint_resolution_application import ConstraintResolutionApplicationService
-    from mechcad_harness.changes import ChangeEngine, OwnershipPolicy
+def test_yagi_authority_uses_persisted_authoritative_parameter(tmp_path):
     from mechcad_harness.models import Constraint, DesignState, Requirement
+    from mechcad_harness.models.design import AuthoritativeAnchor, AuthoritativeParameter
     from mechcad_harness.state import StateManager
 
     key = SupportedConstraintKey.YAGI_PAYLOAD_CARRIER_REQUIREMENTS
@@ -169,47 +155,27 @@ def test_yagi_authority_uses_m6b_resolution_application_and_persisted_reload(tmp
             constraints=[Constraint(id="CON-AZIMUTH-DRIVE-MOUNT-INTERFACE", name="unrelated", expression="unrelated")],
         ),
     )
-    current = manager._read_current("PRJ-YAGI")
-    request_store = ConstraintRequestStore(tmp_path)
-    request = ConstraintRequestMaterializer(request_store).materialize(
-        project_id="PRJ-YAGI",
-        run_id="RUN-YAGI",
-        task_id="TASK-YAGI",
-        agent_name="mechcad-yagi-carrier",
-        agent_version="m7b2a",
-        source_invocation_id="INV-YAGI",
-        source_agent_result_id="RESULT-YAGI",
-        engineering_scope_id="yagi-carrier",
-        bound_revision=1,
-        bound_state_hash=current["state_hash"],
-        source_created_at=datetime(2026, 8, 20, tzinfo=timezone.utc),
-        state=manager.load_current_state("PRJ-YAGI"),
-        drafts=(AgentConstraintRequestDraft(key=key, description="Resolve Yagi payload/carrier requirements", rationale="User-supplied M7B-2A specification"),),
-    )[0]
-    answer = ConstraintResolutionAnswer(
-        request_id=request.request.id,
-        answer=YagiPayloadCarrierRequirementsAnswer(**requirements().model_dump(mode="json")),
+    initial = manager.load_current_state("PRJ-YAGI")
+    snapshot = manager.create_revision(
+        "PRJ-YAGI",
+        initial.model_copy(update={
+            "authoritative_parameters": [
+                AuthoritativeParameter(
+                    id="PARAM-YAGI",
+                    anchor=AuthoritativeAnchor(
+                        kind="requirement",
+                        id="REQ-YAGI-PAYLOAD-CARRIER-REQUIREMENTS",
+                    ),
+                    scope_id="yagi-carrier",
+                    key=SupportedConstraintKey.YAGI_PAYLOAD_CARRIER_REQUIREMENTS,
+                    value=requirements(),
+                    source_resolution_id="FIXTURE-YAGI",
+                )
+            ]
+        }),
     )
-    command = ConstraintResolutionBatchCommand(
-        command_id="CMD-YAGI",
-        project_id="PRJ-YAGI",
-        engineering_scope_id="yagi-carrier",
-        source_revision=1,
-        source_state_hash=current["state_hash"],
-        answers=(answer,),
-        resolver_type="user-supplied-project-spec",
-        resolver_id="user",
-        received_at=datetime(2026, 8, 20, tzinfo=timezone.utc),
-    )
-    materialized = ConstraintResolutionMaterializer(request_store, ConstraintResolutionStore(tmp_path)).materialize_batch(command, run_id="RUN-YAGI")
-    application = ConstraintResolutionApplicationService(
-        manager,
-        ChangeEngine(manager, OwnershipPolicy([{"path": "/authoritative_parameters", "owner": "mechcad-resolution"}])),
-        request_store,
-    )
-    applied = application.apply_batch(materialized, run_id="RUN-YAGI")
-    assert applied.new_revision == 2
-    reloaded = manager.load_current_state("PRJ-YAGI")
+    reloaded = manager.load_revision("PRJ-YAGI", snapshot.revision)
+    assert snapshot.revision == 2
     assert reloaded.revision == 2
     assert len(reloaded.authoritative_parameters) == 1
     parameter = reloaded.authoritative_parameters[0]

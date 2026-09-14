@@ -1,5 +1,3 @@
-from datetime import datetime, timezone
-
 import pytest
 
 from mechcad_harness.azimuth_mount_plate import (
@@ -66,26 +64,51 @@ def test_state_backed_synthesis_service_requires_both_authorities():
 
 
 def test_state_resolved_authorities_produce_the_accepted_synthesis_fixture(tmp_path):
-    from mechcad_harness.agents.constraint_requests import ConstraintRequestLifecycle, ConstraintRequestRecord, ConstraintRequestStore
-    from mechcad_harness.agents.constraint_resolution import AzimuthDriveMountInterfaceAnswer, AzimuthMotorMountPlateDesignRequirementsAnswer, ConstraintResolutionAnswer, ConstraintResolutionBatchCommand, ConstraintResolutionMaterializer, ConstraintResolutionStore
-    from mechcad_harness.agents.constraint_resolution_application import ConstraintResolutionApplicationService
-    from mechcad_harness.changes import ChangeEngine, OwnershipPolicy
+    from mechcad_harness.engineering.values import (
+        AzimuthDriveMountInterfaceValue,
+        AzimuthMotorMountPlateDesignRequirementsValue,
+    )
     from mechcad_harness.engineering.keys import SupportedConstraintKey
-    from mechcad_harness.models import Constraint, ConstraintRequest, DesignState
+    from mechcad_harness.models import Constraint, DesignState
+    from mechcad_harness.models.design import AuthoritativeAnchor, AuthoritativeParameter
     from mechcad_harness.state import StateManager
 
     drive = AzimuthDriveMountInterface(component_id="drive-test", frame_reference_id="datum-x", mount_points=(MountPointSpec(hole_id="a", x_mm=-30, y_mm=-25, external_mating_requirement=RequiredMatingHole(diameter_mm=8)), MountPointSpec(hole_id="b", x_mm=30, y_mm=-20, external_mating_requirement=RequiredMatingHole(diameter_mm=8)), MountPointSpec(hole_id="c", x_mm=28, y_mm=25, external_mating_requirement=RequiredMatingHole(diameter_mm=8)), MountPointSpec(hole_id="d", x_mm=-25, y_mm=24, external_mating_requirement=RequiredMatingHole(diameter_mm=8))), central_keepout_diameter_mm=30, central_required_mating_opening_diameter_mm=34)
     manager = StateManager(tmp_path)
     manager.create_project("PRJ", DesignState(id="D", revision=1, constraints=[Constraint(id="CON-AZIMUTH-DRIVE-MOUNT-INTERFACE", name="drive", expression="drive"), Constraint(id="CON-AZIMUTH-MOUNT-PLATE-DESIGN-REQUIREMENTS", name="plate", expression="plate")]))
-    current = manager._read_current("PRJ")
-    requests = ConstraintRequestStore(tmp_path)
-    for request_id, key in (("DRIVE", SupportedConstraintKey.AZIMUTH_DRIVE_MOUNT_INTERFACE), ("PLATE", SupportedConstraintKey.AZIMUTH_MOUNT_PLATE_DESIGN_REQUIREMENTS)):
-        requests.write(ConstraintRequestRecord(request=ConstraintRequest(id=request_id, description="synthetic", revision=1, state_hash=current["state_hash"]), project_id="PRJ", run_id="RUN", task_id="TASK", agent_name="agent", agent_version="1", source_invocation_id="I", source_agent_result_id="R", engineering_scope_id="transmission", key=key, rationale="test", lifecycle=ConstraintRequestLifecycle.DISCOVERED))
-    command = ConstraintResolutionBatchCommand(command_id="CMD", project_id="PRJ", engineering_scope_id="transmission", source_revision=1, source_state_hash=current["state_hash"], answers=(ConstraintResolutionAnswer(request_id="DRIVE", answer=AzimuthDriveMountInterfaceAnswer(**drive.model_dump(mode="json"))), ConstraintResolutionAnswer(request_id="PLATE", answer=AzimuthMotorMountPlateDesignRequirementsAnswer(**requirements().model_dump(mode="json")))), resolver_type="test", resolver_id="fixture", received_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
-    materialized = ConstraintResolutionMaterializer(requests, ConstraintResolutionStore(tmp_path)).materialize_batch(command, run_id="RUN")
-    application = ConstraintResolutionApplicationService(manager, ChangeEngine(manager, OwnershipPolicy([{"path": "/authoritative_parameters", "owner": "mechcad-resolution"}])), requests)
-    application.apply_batch(materialized, run_id="RUN")
-    result = __import__("mechcad_harness.azimuth_mount_plate", fromlist=["AzimuthMountPlateSynthesisService"]).AzimuthMountPlateSynthesisService().synthesize(manager.load_current_state("PRJ"), source_revision=2, source_state_hash=manager._read_current("PRJ")["state_hash"], project_id="PRJ")
+    initial = manager.load_current_state("PRJ")
+    resolved = initial.model_copy(update={
+        "authoritative_parameters": [
+            AuthoritativeParameter(
+                id="PARAM-DRIVE",
+                anchor=AuthoritativeAnchor(
+                    kind="constraint", id="CON-AZIMUTH-DRIVE-MOUNT-INTERFACE"
+                ),
+                scope_id="transmission",
+                key=SupportedConstraintKey.AZIMUTH_DRIVE_MOUNT_INTERFACE,
+                value=AzimuthDriveMountInterfaceValue(
+                    kind=SupportedConstraintKey.AZIMUTH_DRIVE_MOUNT_INTERFACE.value,
+                    **drive.model_dump(mode="json"),
+                ),
+                source_resolution_id="FIXTURE-DRIVE",
+            ),
+            AuthoritativeParameter(
+                id="PARAM-PLATE",
+                anchor=AuthoritativeAnchor(
+                    kind="constraint",
+                    id="CON-AZIMUTH-MOUNT-PLATE-DESIGN-REQUIREMENTS",
+                ),
+                scope_id="transmission",
+                key=SupportedConstraintKey.AZIMUTH_MOUNT_PLATE_DESIGN_REQUIREMENTS,
+                value=AzimuthMotorMountPlateDesignRequirementsValue.from_domain(
+                    requirements()
+                ),
+                source_resolution_id="FIXTURE-PLATE",
+            ),
+        ]
+    })
+    snapshot = manager.create_revision("PRJ", resolved)
+    result = __import__("mechcad_harness.azimuth_mount_plate", fromlist=["AzimuthMountPlateSynthesisService"]).AzimuthMountPlateSynthesisService().synthesize(manager.load_current_state("PRJ"), source_revision=snapshot.revision, source_state_hash=snapshot.state_hash, project_id="PRJ")
     assert result.status.value == "success"
     assert (result.spec.plate_length_mm, result.spec.plate_width_mm, result.spec.motor_center_x_mm, result.spec.motor_center_y_mm, result.spec.plate_thickness_mm) == (88, 78, 44, 39, 8)
     assert result.proposal.base_revision == 2

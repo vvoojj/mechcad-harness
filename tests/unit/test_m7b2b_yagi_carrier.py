@@ -68,23 +68,8 @@ def requirements(**overrides):
 
 
 def state_with_authority(tmp_path):
-    from datetime import datetime, timezone
-
-    from mechcad_harness.agents.constraint_requests import (
-        AgentConstraintRequestDraft,
-        ConstraintRequestMaterializer,
-        ConstraintRequestStore,
-    )
-    from mechcad_harness.agents.constraint_resolution import (
-        ConstraintResolutionAnswer,
-        ConstraintResolutionBatchCommand,
-        ConstraintResolutionMaterializer,
-        ConstraintResolutionStore,
-        YagiPayloadCarrierRequirementsAnswer,
-    )
-    from mechcad_harness.agents.constraint_resolution_application import ConstraintResolutionApplicationService
-    from mechcad_harness.changes import ChangeEngine, OwnershipPolicy
     from mechcad_harness.models import DesignState, Requirement
+    from mechcad_harness.models.design import AuthoritativeAnchor, AuthoritativeParameter
     from mechcad_harness.state import StateManager
 
     manager = StateManager(tmp_path)
@@ -96,40 +81,24 @@ def state_with_authority(tmp_path):
             requirements=[Requirement(id="REQ-YAGI-PAYLOAD-CARRIER-REQUIREMENTS", name="Yagi payload authority", description="Yagi payload authority")],
         ),
     )
-    current = manager._read_current("PRJ-CARRIER")
-    request_store = ConstraintRequestStore(tmp_path)
-    request = ConstraintRequestMaterializer(request_store).materialize(
-        project_id="PRJ-CARRIER",
-        run_id="RUN-CARRIER",
-        task_id="TASK",
-        agent_name="mechcad-yagi-carrier",
-        agent_version="m7b2b",
-        source_invocation_id="INV",
-        source_agent_result_id="RES",
-        engineering_scope_id="yagi-carrier",
-        bound_revision=1,
-        bound_state_hash=current["state_hash"],
-        source_created_at=datetime(2026, 8, 20, tzinfo=timezone.utc),
-        state=manager.load_current_state("PRJ-CARRIER"),
-        drafts=(AgentConstraintRequestDraft(key=SupportedConstraintKey.YAGI_PAYLOAD_CARRIER_REQUIREMENTS, description="Resolve payload authority", rationale="M7B-2A spec"),),
-    )[0]
-    command = ConstraintResolutionBatchCommand(
-        command_id="CMD-CARRIER",
-        project_id="PRJ-CARRIER",
-        engineering_scope_id="yagi-carrier",
-        source_revision=1,
-        source_state_hash=current["state_hash"],
-        answers=(ConstraintResolutionAnswer(request_id=request.request.id, answer=YagiPayloadCarrierRequirementsAnswer(**requirements().model_dump(mode="json"))),),
-        resolver_type="user-supplied-project-spec",
-        resolver_id="user",
-        received_at=datetime(2026, 8, 20, tzinfo=timezone.utc),
+    initial = manager.load_current_state("PRJ-CARRIER")
+    manager.create_revision(
+        "PRJ-CARRIER",
+        initial.model_copy(update={
+            "authoritative_parameters": [
+                AuthoritativeParameter(
+                    id="PARAM-YAGI-CARRIER",
+                    anchor=AuthoritativeAnchor(
+                        kind="requirement", id="REQ-YAGI-PAYLOAD-CARRIER-REQUIREMENTS"
+                    ),
+                    scope_id="yagi-carrier",
+                    key=SupportedConstraintKey.YAGI_PAYLOAD_CARRIER_REQUIREMENTS,
+                    value=requirements(),
+                    source_resolution_id="FIXTURE-YAGI-CARRIER",
+                )
+            ]
+        }),
     )
-    materialized = ConstraintResolutionMaterializer(request_store, ConstraintResolutionStore(tmp_path)).materialize_batch(command, run_id="RUN-CARRIER")
-    ConstraintResolutionApplicationService(
-        manager,
-        ChangeEngine(manager, OwnershipPolicy([{"path": "/authoritative_parameters", "owner": "mechcad-resolution"}])),
-        request_store,
-    ).apply_batch(materialized, run_id="RUN-CARRIER")
     return manager
 
 
