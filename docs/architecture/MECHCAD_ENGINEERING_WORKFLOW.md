@@ -57,6 +57,9 @@ Reasoning Result           Semantic / Typed Engineering Request
                        ChangeSet
                            |
                            v
+                      ChangeEngine
+                           |
+                           v
                   Immutable Revision
                            |
                            v
@@ -74,7 +77,7 @@ Reasoning Result           Semantic / Typed Engineering Request
 
 ## Authority Boundaries
 
-Authority enters at requirements and accepted state. Agents may reason, identify missing inputs, and propose changes. Deterministic tools calculate derived values. Only `ChangeEngine` may apply an accepted change to canonical state. CAD, analysis, artifacts, and evidence are derived outputs. Verification can reject or mark outputs unresolved, but does not silently promote them.
+Authority enters at requirements and canonical state. Agents may reason, identify missing inputs, and propose changes. Deterministic tools calculate derived values. Accepted production mutation flows use `RunController` where applicable and `ChangeEngine`; the trusted route enforces source/currentness where applicable, ownership, operation validity and preconditions, and resulting-state validation. `proposal.status` is not an enforced approval gate. `StateManager` remains a lower-level persistence primitive, not a documented alternative production authority route. CAD, analysis, artifacts, and evidence are derived outputs. Verification can reject or mark outputs unresolved, but does not silently promote them.
 
 The current production entrypoints that turn accepted state into derived CAD/assembly/analysis are owned by `ProductionApplication` (M8B/M8C/M10): `compile_design_spec` (source-bound `DesignSpec` -> `CadPartProgram`), `build_assembly_with_imported_components` (generated + trusted imported -> `CadAssemblyProgram` -> FreeCAD), `analyze_assembly_kinematics` (discrete exact sweep), `evaluate_multi_joint_configuration` (deterministic FK), `analyze_multi_joint_collision_sweep` (exact discrete multi-joint collision), and `prove_continuous_multi_joint_path_clearance` (explicit-path conservative proof). M11-5 adds `publish_structural_evidence`, `verify_structural_evidence`, `check_structural_evidence_currentness`, `compare_structural_repeatability`, and `evaluate_structural_mesh_convergence` for the bounded source-bound structural path. M9, M10, and M11 live-verified these paths on real FreeCAD where applicable; they remain derived outputs and never mutate canonical state.
 
@@ -106,6 +109,31 @@ declared and hashed before comparison, and convergence is a separate bounded
 study over at least three ordered structural Evidence levels for the supported
 free-end displacement-magnitude metric.
 
+## Candidate Evaluation and Promotion
+
+The bounded M12/M13 lifecycle adds derived candidate work without changing
+canonical authority:
+
+```text
+canonical state
+-> source-bound candidate and publication
+-> candidate CAD/M10/evaluation
+-> optional comparison
+-> explicit selection
+-> explicit promotion
+-> N+1 canonical state
+-> fresh canonical reconstruction and required CAD/M10 verification
+-> bound result/Evidence
+```
+
+Candidates, publication, CAD, M10 results, evaluations, comparisons, and
+selections are noncanonical. Selection does not imply promotion; promotion does
+not make candidate results canonical. Promotion is the accepted production
+transition only after current feasible selection and validated compilation.
+M13 adds typed supplied-component interface authority, generated-part semantic
+authority, and bounded multi-joint physical-mechanism lowering. Its M11 handoff
+assesses eligibility only and does not execute structural analysis.
+
 ## Generic Examples
 
 **Gearbox:** output speed and torque are authoritative requirements; ratio, tooth counts, and packaging are design variables; py_gearworks calculates candidate geometry; an owner proposes accepted transmission paths.
@@ -114,7 +142,7 @@ free-end displacement-magnitude metric.
 
 **Camera pan/tilt:** angular range, payload, and mounting envelope flow through the same state, proposal, CAD, and sweep boundaries. AZ/EL terminology is not required by the generic model.
 
-**Structural frame:** member sections and material candidates feed section properties and preliminary mass/stiffness. Stress and safety approval require a future controlled load/structural contract.
+**Structural frame:** member sections and material candidates feed section properties and preliminary mass/stiffness. The bounded M11 source-bound single-solid linear-static path can assess a declared structural definition; broad stress and safety approval remain outside that contract.
 
 **Antenna rotator:** a reference domain can reuse packaging, transmission, CAD, collision, and kinematic services. Its domain names do not define those services.
 
@@ -124,7 +152,7 @@ Missing data returns `ConstraintRequest`; conflicting authority returns `Issue`;
 
 ## Universal Acceptance Stages
 
-**Stage A - Current baseline:** audit the accepted state, change, ownership, dependency, run, tool, Evidence, bounded agent, provider, CAD, exact analysis, transient, discrete kinematic, and bounded structural Evidence foundations independently.
+**Stage A - Current baseline:** audit the accepted state, change, ownership, dependency, run, tool, Evidence, bounded agent, provider, CAD, exact analysis, transient, discrete kinematic, bounded structural Evidence, and bounded M12/M13 candidate-to-canonical promotion foundations independently.
 
 **Stage B - Connected readiness:** use a motor-driven rotary bracket to prove requirements -> bounded agent -> deterministic tool/provider -> Evidence -> proposal -> new revision -> part CAD -> assembly -> discrete kinematic verification. This stage audits selected `TARGET_NEXT` wiring without assuming it already exists.
 

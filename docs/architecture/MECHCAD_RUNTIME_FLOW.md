@@ -9,7 +9,8 @@ All diagrams are generic. Each boundary is labeled: `A` authority, `R` reasoning
 ```text
 A Requirements -> DesignState -> Dependency/readiness -> RunController task
 -> AgentGateway [R] -> AgentResult -> ConstraintRequest or ChangeProposal [P]
--> ChangeEngine -> immutable revision -> CAD/analysis [D,X] -> validation [V]
+-> ChangeSet -> ChangeEngine -> immutable revision -> CAD/analysis [D,X]
+-> validation [V]
 ```
 
 ## B. Agent Execution Flow
@@ -34,6 +35,13 @@ Agent/service -> ChangeProposal -> ChangeSet -> ChangeEngine [P]
 -> stale check -> ownership check -> Pydantic state validation
 -> StateManager -> immutable revision/hash
 ```
+
+Accepted production mutation flows use this trusted route through
+`RunController` where applicable. `proposal.status` is not an enforced approval
+gate; source/currentness where applicable, ownership, operation validity and
+preconditions, and resulting-state validation are enforced. `StateManager` is a
+lower-level persistence primitive and does not constitute a second production
+authority flow.
 
 ## E. Dependency Invalidation
 
@@ -269,6 +277,65 @@ Evidence record containing the complete ordered level IDs and hashes. Level
 Evidence is not mutated. The supported study metric is the declared free-end
 displacement magnitude; the result is not adaptive, generic, stress, or global
 convergence.
+
+## Q. Candidate CAD and M10 Evaluation (M12)
+
+```text
+canonical source state [A]
+-> source-bound noncanonical candidate
+-> explicit candidate publication [X]
+-> bounded realization [D]
+-> candidate CAD from trusted source artifacts [D,X]
+-> candidate M10 request/proof [V]
+-> bound evaluation [V]
+-> optional comparison [V]
+-> explicit noncanonical selection
+```
+
+Candidate publication, CAD, M10 results, evaluation, comparison, and selection
+are derived records. Comparison does not select, and selection does not promote.
+The accepted M12-6 direct-drive and external-spur flows are bounded realization
+paths, not generic mechanism synthesis, catalog search, or optimization.
+
+## R. Promotion and Fresh Canonical Verification (M12)
+
+```text
+selected current feasible candidate / selection record [X]
+-> validated promotion compilation [V]
+-> decision manifest [X]
+-> RunController / ChangeEngine [P]
+-> N+1 canonical physical mechanism [A]
+-> result manifest [X]
+-> fresh canonical reconstruction [D]
+-> fresh canonical CAD [D,X]
+-> fresh required canonical M10 [V]
+-> bound result / Evidence [V]
+```
+
+Promotion rechecks integrity, currentness, feasibility, selection, trusted
+artifact bindings, and target absence before mutation. Candidate CAD and M10
+identities remain distinct from canonical CAD and M10 identities. Restart
+verification resolves durable manifests and reconstructs the N+1 state without
+candidate objects. The post-promotion M11 handoff is eligibility-only and does
+not run structural analysis.
+
+## S. Supplied/Generated Parts and Multi-Joint Promotion (M13)
+
+```text
+typed supplied interface facts + generated-part semantic specification [A]
+-> trusted supplied STEP or derived generated CAD [D,X]
+-> physical bodies, joints, placements, and obligations [A]
+-> candidate or canonical M10 v2 lowering [D]
+-> bounded multi-joint verification [V]
+-> explicit promotion and durable decision/result verification [P,V]
+```
+
+Supplied interfaces and generated-part specifications are semantic authority;
+CAD geometry is derived realization and does not infer that authority. M10 v2
+uses explicit rigid-body groups for the bounded physical-mechanism bridge. It
+does not imply coupled gear motion, a general trajectory planner, or
+configuration-space certification. This section describes the M13-4 accepted
+production composition, not post-M13 current-only entrypoints.
 
 ## M5. Conservative Continuous Multi-Joint Path Proof (M10-4)
 

@@ -7,7 +7,7 @@ Maturity values are normative expectations, not audit verdicts. Definitions are 
 | canonical DesignState | state | state authority | requirements/domain authority | typed state | Pydantic | schema and authority separation | FOUNDATION | M0/M1 |
 | immutable revision/hash | StateManager | state authority | DesignState | snapshot/hash/current pointer | SHA-256/filesystem | canonical serialization, reload, tamper, no overwrite | REQUIRED_CURRENT | M1/project description |
 | ChangeProposal | changes | domain owner | bounded result/decision | proposal | none | source binding and typed operations | FOUNDATION | M2 |
-| ChangeSet/ChangeEngine | changes | harness authority | accepted proposal | new revision/receipt | StateManager | stale, ownership, atomic validation | REQUIRED_CURRENT | M2 |
+| ChangeSet/ChangeEngine | changes | harness authority | proposal plus source binding | new revision/receipt | StateManager | source/currentness where applicable, ownership, operation, and resulting-state validation; proposal status is not an approval gate | REQUIRED_CURRENT | M2 |
 | ownership enforcement | changes | policy owner | path/identity | allow/reject | ownership policy | unowned/unrelated fail closed | REQUIRED_CURRENT | M2 |
 | dependency graph/invalidation | dependency | harness | changed paths | invalidated nodes/record | graph | deterministic transitive impact | REQUIRED_CURRENT | M3 |
 | Evidence freshness | dependency/evidence | harness | evidence plus revision history | CURRENT/STALE/UNKNOWN | EvidenceStore | exact binding and complete history | REQUIRED_CURRENT | M3 |
@@ -56,77 +56,76 @@ Maturity values are normative expectations, not audit verdicts. Definitions are 
 | multi-axis kinematic chain | kinematics | kinematics owner | parent/joints/frames | chain result | deterministic core (M10-2) or future backend | frame/joint composition; M10-2 delivers discrete forward kinematics only | REQUIRED_CURRENT | M10-2 (discrete FK); project description Phase F (continuous/trajectory future) |
 | structural analysis | structural | structural owner | source-bound single-body linear-static definition/request | typed displacement/stress/reaction result and bounded criterion outcomes | FreeCAD + Gmsh + CalculiX | exact source/artifact/runtime provenance; trusted FRD/DAT interpretation; fixed cantilever analytical checks | REQUIRED_CURRENT (bounded M11-3/M11-4 scope) | M11-2/M11-3/M11-4 |
 | FEA | structural backend | structural owner | source-bound single-body mesh/material/load execution | trusted raw execution manifest plus interpreted FRD/DAT result | Gmsh C3D10 + CalculiX 2.22 | byte-verified artifacts, solver/case provenance, parser integrity, analytical validation; bounded declared displacement-metric convergence only; no global safety claim | REQUIRED_CURRENT (bounded M11-3/M11-4/M11-5 scope) | M11-3/M11-4/M11-5 |
+| candidate authority/currentness/publication | candidates | candidate service | source-bound candidate, request, policy, trusted artifacts | noncanonical candidate/publication/currentness decision | candidate services / ArtifactStore | full hash/binding verification; relevant source drift, tampered, missing, or foreign artifacts fail closed; publication creates no canonical authority | REQUIRED_CURRENT (bounded M12) | M12-2/M12-6 |
+| bounded revolute-drive realization | candidates | candidate service | supplied direct-drive or external-spur authority | noncanonical realization/candidate | revolute-drive services | declared admissibility only; no generic generation, catalog search, or optimization | REQUIRED_CURRENT (bounded M12-3) | M12-3/M12-6 |
+| candidate CAD/M10/evaluation | candidates/CAD/kinematics | candidate services | current candidate, trusted source STEP, mapping, declared M10 scope | candidate CAD/M10/evaluation | FreeCAD/M10 services | complete bindings; collision is infeasible and `NOT_PROVEN` unresolved; candidate result is noncanonical | REQUIRED_CURRENT (bounded M12-4) | M12-4/M12-6 |
+| comparison and explicit selection | candidates | production caller | current feasible evaluations and optional comparison | comparison or noncanonical selection | candidate services | sole declared metric only; comparison does not select; selection is explicit and does not promote | REQUIRED_CURRENT (bounded M12-4) | M12-4/M12-6 |
+| promotion and canonical rebinding | candidates/changes | ProductionApplication | selected current feasible candidate and validated compilation | N+1 physical mechanism plus durable manifests | RunController / ChangeEngine | one target operation; candidate facts do not become canonical by selection; replay/conflict fail closed | REQUIRED_CURRENT (bounded M12-5/6) | M12-5/M12-6 |
+| fresh canonical promotion verification | candidates/CAD/kinematics | promotion verifier | N+1 revision, manifests, trusted artifacts | fresh reconstruction/CAD/M10 and bound result | canonical CAD/M10 services | distinct from candidate identities; durable restart/reload; required scope comparison | REQUIRED_CURRENT (bounded M12-6) | M12-6 |
+| M11 promotion handoff | candidates/structural | handoff service | promoted canonical mechanism and mappings | eligibility assessment | M11 handoff service | no structural definition, mesh, solve, or structural Evidence | REQUIRED_CURRENT (bounded M12-6) | M12-6 |
+| supplied-component interface authority | physical mechanisms | physical-mechanism services | typed supplied interface facts, frames, trusted component | source-bound interface authority | typed models | geometry/labels/filenames do not infer authority; unit-verified at this boundary | REQUIRED_CURRENT (bounded M13-1) | M13-1/M13-4 |
+| generated-part authority and CAD | physical mechanisms/CAD | physical-mechanism and CAD services | bound semantic generated-part specification | derived generated CAD/placement | canonical CAD services | current cylindrical stock plus axial-bore scope; exactness is semantic, not manufacturing truth | REQUIRED_CURRENT (bounded M13-2) | M13-2/M13-4 |
+| M10 v2 rigid-body groups/multi-joint bridge | physical mechanisms/kinematics | bridge services | physical bodies, joints, placements, CAD universe | source-bound grouped-body M10 request/result | M10 services | complete non-overlapping groups and placement agreement; no general trajectory/configuration-space proof | REQUIRED_CURRENT (bounded M13-3) | M13-3P/M13-3/M13-4 |
+| multi-joint promotion/production composition | candidates/production | ProductionApplication | selected multi-joint candidate and compilation | N+1 promotion receipts plus fresh canonical verification | RunController / ChangeEngine / canonical services | explicit, one obligation, durable decision/result verification; no authority bypass | REQUIRED_CURRENT (bounded M13-4) | M13-4 |
 | dynamics/simulation | dynamics | kinematics owner | mechanism/trajectory | dynamic result | MuJoCo if accepted | solver/version/binding | FUTURE | project description |
 | manufacturing output | manufacturing | manufacturing owner | verified design | manufacturing package | future tools | tolerances/BOM/review | FUTURE | project description |
 
-## M6B Traceability
+## Traceability Pointers
 
-The project description supplies later completion/maturity evidence where no dedicated Superpowers specification or plan exists. That evidence defines the normative baseline but does not replace implementation audit.
+The capability rows above own current normative scope, maturity, and limits.
+Historical chronology, missing-record qualifications, and retained execution
+boundaries belong to `docs/reconstruction/` and accepted audits.
 
-| M6B milestone | Spec | Plan | Accepted completion evidence | Primary capability | Current normative maturity | Reason |
-|---|---|---|---|---|---|---|
-| M6B-1 transmission reasoning | `2026-08-19-mechcad-m6b1-transmission-reasoning-agent-design.md` | matching transmission plan | project description sections 13 and 18 | bounded real transmission agent | REQUIRED_CURRENT | Accepted first engineering-agent contract; no direct mutation. |
-| M6B-1 validated structured output | `2026-08-19-m6b1-validated-json-text-design.md` | matching validated-text plan and Task 1 report | project description sections 12 and 18 | strict native/validated JSON transport | REQUIRED_CURRENT | Current accepted transport behavior is fail-closed. |
-| M6B-2A semantic tool mediation | `2026-08-19-mechcad-m6b2a-tool-mediation-design.md` | no dedicated plan found | M6B-2B explicitly calls M6B-2A accepted baseline; project description section 18 | semantic torque request -> exact tool | REQUIRED_CURRENT | Later accepted document supersedes ambiguity in plan status. |
-| M6B-2B first tool/Evidence round trip | `2026-08-19-mechcad-m6b2b-first-tool-roundtrip-design.md` | no dedicated plan found | design marked closed but design-only; project description sections 13 and 18 record the foundation established | ToolResult -> Evidence -> Invocation B | FOUNDATION | Contract is part of baseline; audit must resolve implementation/connection versus the design-only source caveat. |
-| M6B-3 constraint discovery | no dedicated Superpowers spec found | no dedicated plan found | project description section 17 records established/implemented capabilities | typed discovery, persistence, satisfaction suppression | FOUNDATION | Accepted current project baseline, with independent audit required. |
-| M6B-4 constraint resolution | no dedicated Superpowers spec found | no dedicated plan found | project description section 17 says implemented and accepted | trusted answer -> proposal/ChangeSet/revision/invalidation | REQUIRED_CURRENT | Supersedes the earlier “future/unfinished” status. |
+### M6B
 
-## M7 Traceability
+Current bounded agent, strict structured-output, mediated-tool, Evidence
+round-trip, and constraint capabilities are defined by the matrix and System
+Contract. The round-trip provenance caveat and constraint traceability gaps
+remain audit concerns, not different current contracts. See
+`../reconstruction/milestones/M6B.md`, `M6B-3.md`, and `M6B-4A.md`.
 
-| Milestone | Spec / plan evidence | Accepted completion evidence | Architectural capability | Generic vs domain | Normative treatment |
-|---|---|---|---|---|---|
-| M7A | no single dedicated spec/plan found | project description sections 18 and 20 record complete foundation | generic part programs, rigid assemblies, FreeCAD realization, exact geometry | Generic | REQUIRED_CURRENT |
-| M7B | No umbrella or sub-milestone M7B spec/plan found. Exact filename searches for `docs/superpowers/{specs,plans}/**/*m7b*.md` returned none; content search found only an M7B regression reference in `2026-08-20-m7c1-transient-freecad-measurement.md`. | project description sections 18 and 26: done for current reference scope, unresolved physical/structural details | first substantial domain authority/synthesis/CAD exercise | Domain reference | FOUNDATION |
-| M7C | `2026-08-20-m7c1-transient-freecad-measurement.md`; plan checklist remains open | project description section 18 records complete; explicit closure evidence exists in history | generic transient exact measurement and discrete single-axis sweep | Generic | REQUIRED_CURRENT |
-| M7D-1 | M7D-1 spec and plan | project description section 18 records complete domain reference | EL reference over generic `RevoluteAxis` | Domain reference | FOUNDATION |
-| M7D-2 | M7D-2 spec and plan | project description section 18 records complete domain integration proof | thin domain adapter over generic M7C/FreeCAD transient path | Domain reference | FOUNDATION |
-| M7E-2 | preliminary concept spec and plan | `PRELIMINARY_CONCEPT_ONLY`, `NOT_VERIFIED`, `NOT_READY` | exploratory domain concept | Domain reference | Documentary reference only; no capability maturity or audit gate |
+### M7
 
-Source-file or artifact existence does not by itself establish any audit verdict.
+Current generic CAD, assembly, exact-geometry, and discrete-sweep semantics are
+defined by the matrix and System Contract. Reference-domain evidence remains
+non-generic, and preliminary concepts remain documentary only. See
+`../reconstruction/milestones/` and
+`../audit/MECHCAD_POST_M8_M9_DOCUMENTATION_RECONCILIATION.md`.
 
-## M8 / M9 / M10 Traceability
+### M8 / M9 / M10
 
-| Milestone | Spec / plan evidence | Accepted completion evidence | Architectural capability | Generic vs domain | Normative treatment |
-|---|---|---|---|---|---|
-| M8B (production orchestration) | `2026-08-21-m8b1-production-orchestration-foundation-design.md`, M8B-2 vertical-slice spec | M8B closure (`M8B_PRODUCTION_ORCHESTRATION_COMPLETE`); M8C closure audit §2/§5 | `ProductionApplication` composition root; trusted service graph | Generic | REQUIRED_CURRENT (production-connected) |
-| M8C-1 (DesignSpec → CadPartProgram) | `2026-08-21-m8c1-generic-cad-production-ingress-design.md` | `M8C_1_COMPLETE_WITH_PREACCEPTED_SPEC_BOUNDARY`; M8C closure audit §2/§4 | source-bound `MountingPlateDesignSpec` → `CadCompilationService` → `CadPartProgram` | Generic | REQUIRED_CURRENT |
-| M8C-2 (trusted imported + mixed assembly) | `2026-08-21-m8c2-imported-component-assembly-bridge-design.md` | `M8C_2_FINAL_CLOSURE_COMPLETE`; M8C closure audit §2/§5 | `ArtifactStore` → `ImportedCadComponent` → `CadAssemblyProgram` | Generic | REQUIRED_CURRENT |
-| M8C-3 (production kinematic entrypoint) | `2026-08-22-m8c3-production-kinematic-vertical-slice-design.md` | `M8C_3_FINAL_CLOSURE_COMPLETE`; M8C closure audit §2/§5/§8 | `ProductionApplication.analyze_assembly_kinematics` → `CadKinematicSweepService` → `TransientAssemblyAnalysisService` → `CadKinematicSweepResult` | Generic | REQUIRED_CURRENT |
-| M8C closure | `MECHCAD_M8C_SYSTEM_CLOSURE_AUDIT.md` | `M8C_ARCHITECTURALLY_CLOSED_RUNTIME_GATED` (historical) | all M8C edges implemented/connected; live FreeCAD gated | Generic | Historical closure status |
-| M9-1 (live FreeCAD backend) | `2026-08-22-m9-1-freecad-runtime-live-verification.md` | `M9_1_LIVE_FREECAD_BACKEND_VERIFIED` | real FreeCAD 1.1.3 realizes generic `CadPartProgram`; FCStd/STEP; fresh reload | Generic | REQUIRED_CURRENT (live-verified) |
-| M9-2 (real trusted imported artifact) | `2026-08-22-m9-2-real-trusted-imported-artifact-production.md` | `M9_2_LIVE_TRUSTED_IMPORTED_ARTIFACT_VERIFIED`, `M9_2_FINAL_CLOSURE_COMPLETE` | real `mechcad-build-spur-gear-cad@1.0` STEP → `ArtifactStore` → `ImportedCadComponent` | Generic (gear is fixture only) | REQUIRED_CURRENT (live-verified) |
-| M9-3 (live mixed assembly + exact kinematics) | `2026-08-22-m9-3-live-mixed-assembly-exact-kinematic-proof.md` | `M9_3_LIVE_EXACT_VERTICAL_SLICE_VERIFIED`, `M9_3_FINAL_CLOSURE_COMPLETE` | live mixed FreeCAD assembly; real `common().Volume` / `distToShape()`; real discrete sweep | Generic | REQUIRED_CURRENT (live-verified) |
-| M9-4 (trusted analysis provenance) | `2026-08-22-m9-4-trusted-analysis-backend-provenance.md` | `M9_4_TRUSTED_ANALYSIS_PROVENANCE_VERIFIED` | durable `AnalysisExecutionProvenance` / `Evidence` bound to live result | Generic | REQUIRED_CURRENT (live-verified) |
-| M9 system acceptance | `MECHCAD_M9_SYSTEM_ACCEPTANCE.md` | `M9_FULLY_CLOSED_LIVE_VERIFIED` | whole live chain verified; full suite green | Generic | Current final acceptance marker |
-| M10-1 (continuous single-axis clearance proof) | `2026-08-22-m10-1-continuous-single-axis-collision-proof.md` | `M10_1_CONTINUOUS_SINGLE_AXIS_CLEARANCE_PROOF_VERIFIED` | conservative bisection proof with chord-displacement bound; `ContinuousSingleAxisProofStatus` (VERIFIED_CLEAR / COLLISION_WITNESS / NOT_PROVEN) | Generic (single-axis only) | REQUIRED_CURRENT (unit-verified) |
-| M10-2 (generic multi-joint kinematic model) | `2026-08-22-m10-2-generic-multi-joint-kinematic-model.md` | `M10_2_GENERIC_MULTI_JOINT_KINEMATICS_VERIFIED` | deterministic forward kinematics over a rooted acyclic tree of revolute joints; config/model/transformed-assembly identity hashes; fail-closed topology; `ProductionApplication.evaluate_multi_joint_configuration`; core FK has no FreeCAD dependency | Generic (discrete FK only) | REQUIRED_CURRENT (unit-verified) |
-| M10-3 (exact discrete multi-joint collision sweep) | `2026-08-22-m10-3-multi-joint-exact-discrete-collision-sweep.md` | `M10_3_MULTI_JOINT_EXACT_DISCRETE_COLLISION_VERIFIED` | ordered multi-joint configurations evaluated through transformed assemblies; real FreeCAD `common().Volume` / `distToShape()` pair measurement; deterministic request/result identities; trusted provider/backend/runtime provenance; atomic Evidence persistence | Generic (discrete collision evaluation only) | REQUIRED_CURRENT (live-verified) |
-| M10-4 (continuous multi-joint path clearance proof) | `2026-08-22-m10-4-continuous-multi-joint-path-clearance-proof.md` | `M10_4_CONTINUOUS_MULTI_JOINT_PATH_CLEARANCE_PROOF_VERIFIED` | explicit typed ordered path; trusted local geometry extent boundary; pure topology-derived invariant reach bounds; hierarchical telescoping and pair-relative motion certificates; real FreeCAD exact waypoint/midpoint measurement; `VERIFIED_CLEAR` / `COLLISION_WITNESS` / `NOT_PROVEN` | Generic (explicit path only; no configuration-space region claim) | REQUIRED_CURRENT (live-verified) |
-| M10-5 system acceptance | `MECHCAD_M10_SYSTEM_ACCEPTANCE.md` | `M10_FULLY_CLOSED_LIVE_VERIFIED` | coherent M10-1 through M10-4 production chain; shared FK/discrete/continuous configuration equality; durable M10-4 typed-result reload; trusted provenance; source immutability; M9 and full-suite regression safety | Generic motion-system acceptance | REQUIRED_CURRENT (live-verified) |
+Current production composition, source-bound CAD, trusted imported artifacts,
+live FreeCAD realization, exact measurement, and motion semantics are defined
+by the matrix and System Contract. Ordinary discrete sweeps retain
+`continuous_sweep_verified = False`; M10-4 proves only one explicitly requested
+path and does not certify a configuration-space region. See
+`../audit/MECHCAD_M9_SYSTEM_ACCEPTANCE.md`,
+`../audit/MECHCAD_M10_SYSTEM_ACCEPTANCE.md`, and reconstruction milestones
+`M8C.md`, `M9.md`, and `M10.md`.
 
-`continuous_sweep_verified = False` remains explicit for ordinary discrete sweeps
-(M8C-3 / M9). M10-1 adds a separate continuous proof entrypoint
-(`prove_continuous_single_axis_clearance`) that does not modify the discrete
-sweep result. M10-2 adds discrete multi-joint forward kinematics and M10-3 adds
-exact discrete multi-joint collision evaluation. M10-4 adds explicit-path
-continuous proof; whole configuration-space proof, FEA, and manufacturing proof
-remain future capability.
+### M11
 
-## M11 Traceability
+The current path is source-bound, single-solid, homogeneous, linear-static
+structural analysis with durable Evidence, declared repeatability, and bounded
+free-end displacement-magnitude mesh-convergence studies. It does not imply
+assembly FEA, nonlinear/fatigue/dynamics/thermal analysis, global convergence,
+or general safety or manufacturing approval. See
+`../audit/MECHCAD_M11_SYSTEM_ACCEPTANCE.md` and reconstruction milestones
+`M11-2.md` through `M11-6.md`.
 
-| Milestone | Accepted completion evidence | Current bounded capability | Normative treatment |
+## M12 Traceability
+
+| Milestone | Accepted evidence | Current bounded capability | Normative treatment |
 |---|---|---|---|
-| M11-2 | `M11_2_STRUCTURAL_AUTHORITY_MODEL_VERIFIED` | Typed source-bound single-body linear-static definitions and requests with semantic regions, material authority, loads, supports, criteria, mesh/output settings, and deterministic identities; no solving or result acceptance. | REQUIRED_CURRENT |
-| M11-3 | `M11_3_STRUCTURAL_MESH_SOLVER_FOUNDATION_VERIFIED` | Trusted FreeCAD source geometry and semantic-region realization, Gmsh C3D10 mesh, deterministic CalculiX deck lowering, per-case solver execution, shared-mesh multi-case manifests, and raw artifact provenance. | REQUIRED_CURRENT (bounded) |
-| M11-4 | `M11_4_REAL_FEA_RESULT_ANALYTICAL_VALIDATION_VERIFIED` | Trusted FRD/DAT/LOG interpretation, typed PASS/FAIL/NOT_EVALUABLE criteria, and a separate production analytical-validation API for a predeclared fixed rectangular cantilever policy. | REQUIRED_CURRENT (bounded) |
-| M11-5 | `M11_5_DURABLE_STRUCTURAL_EVIDENCE_VERIFIED` | Durable source-bound structural Evidence through the existing EvidenceStore; fresh historical verification/currentness; trusted PASS/FAIL/NOT_EVALUABLE outcomes; bounded repeatability; and explicitly declared ordered displacement-magnitude mesh-convergence studies. | REQUIRED_CURRENT (bounded) |
-| M11-6 | `M11_FULLY_CLOSED_LIVE_VERIFIED` | Final system acceptance and live closure of the complete M11 structural production chain, from canonical authority through real execution, interpretation, evaluation, analytical validation, durable Evidence, fresh verification, repeatability, and bounded mesh convergence. Distinct-mesh anti-regression closed. | REQUIRED_CURRENT (bounded) |
+| M12-2 through M12-4 | M12-6 system acceptance | source-bound noncanonical candidates; bounded direct-drive/external-spur realization; candidate CAD, M10, evaluation, comparison, and explicit selection | REQUIRED_CURRENT within declared candidate and M10 scopes; not general synthesis or optimization |
+| M12-5 | M12-6 system acceptance | validated promotion compilation/application, N→N+1 canonical rebinding, durable manifests, and fresh canonical reconstruction | REQUIRED_CURRENT within one selected feasible candidate and one obligation |
+| M12-6 | `M12_6_LIVE_END_TO_END_PHYSICAL_MECHANISM_ACCEPTANCE_VERIFIED` | production-composed direct-drive and external-spur flows through fresh canonical CAD/M10 and restart verification | REQUIRED_CURRENT (bounded live-verified flow); M11 handoff remains eligibility-only |
 
-The M11 rows do not claim general structural approval. Assemblies, nonlinear
-analysis, fatigue, dynamics, thermal stress, tolerances, optimization,
-manufacturing approval, global convergence, adaptive refinement, generic mesh
-correspondence, global yield/safety certification, and automatic
-synthesis/selection remain future or out of scope. M11-5 structural Evidence
-and bounded convergence are current only within the stated source-bound
-single-solid linear-static scope.
+## M13 Traceability
+
+| Milestone | Accepted evidence | Current bounded capability | Normative treatment |
+|---|---|---|---|
+| M13-1 | M13-4 accepted baseline | typed supplied-component interface facts, bindings, and frames | REQUIRED_CURRENT; unit-verified interface boundary, not fit/clearance/manufacturing authority |
+| M13-2 | M13-4 accepted baseline | semantic generated-part authority and derived CAD placement | REQUIRED_CURRENT; generated CAD remains within declared part scope |
+| M13-3P / M13-3 | M13-4 accepted baseline | M10 v2 rigid-body groups and candidate/canonical multi-joint lowering | REQUIRED_CURRENT; bounded verification only, not general trajectory proof |
+| M13-4 | `M13_4_INDEPENDENT_FINAL_ACCEPTED` | durable multi-joint promotion verification and ProductionApplication composition | REQUIRED_CURRENT (bounded current accepted terminal baseline) |

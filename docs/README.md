@@ -13,6 +13,7 @@ This is the documentation entry point for MechCAD. Do not preload every document
 | Add or review a deterministic tool | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md) | M5/M5.5 specs, provider source, relevant tests |
 | Add or review CAD | [Runtime Flow](architecture/MECHCAD_RUNTIME_FLOW.md) | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md), M8C-1/M8C-2 records, CAD source/tests |
 | Add or review kinematics | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md) | [Runtime Flow](architecture/MECHCAD_RUNTIME_FLOW.md), M8C-3/M9-3/M10-2 records |
+| Add or review M12/M13 candidate, promotion, or physical mechanism work | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md), [Capability Matrix](architecture/MECHCAD_CAPABILITY_MATRIX.md) | `docs/audit/MECHCAD_M12_6_SYSTEM_ACCEPTANCE.md`, `docs/audit/MECHCAD_M13_4_INDEPENDENT_FINAL_ACCEPTANCE.md`, [Runtime Flow](architecture/MECHCAD_RUNTIME_FLOW.md), [Subsystem Contracts](architecture/MECHCAD_SUBSYSTEM_CONTRACTS.md), relevant `src/mechcad_harness/**` and `tests/**` |
 | Add a mechanical domain | [Domain Extension Guide](architecture/MECHCAD_DOMAIN_EXTENSION_GUIDE.md) | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md), [Capability Matrix](architecture/MECHCAD_CAPABILITY_MATRIX.md) |
 | Determine capability maturity | [Capability Matrix](architecture/MECHCAD_CAPABILITY_MATRIX.md) | [Documentation Gaps](architecture/MECHCAD_DOCUMENTATION_GAPS.md), cited specs/plans |
 | Perform the independent integration audit | [Integration Audit](audit/MECHCAD_INTEGRATION_AUDIT.md) | [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md), [Capability Matrix](architecture/MECHCAD_CAPABILITY_MATRIX.md), cited implementation/tests |
@@ -39,22 +40,29 @@ For an implementation/integration audit, load:
 1. [Integration Audit Procedure](audit/MECHCAD_INTEGRATION_AUDIT.md)
 2. [System Contract](architecture/MECHCAD_SYSTEM_CONTRACT.md)
 3. [Capability Matrix](architecture/MECHCAD_CAPABILITY_MATRIX.md)
-4. [M9 System Acceptance](audit/MECHCAD_M9_SYSTEM_ACCEPTANCE.md), [M10-2 Completion](audit/MECHCAD_M10_2_COMPLETION_REPORT.md), and [M8C Closure](audit/MECHCAD_M8C_SYSTEM_CLOSURE_AUDIT.md)
+4. Applicable accepted evidence: [M8C Closure](audit/MECHCAD_M8C_SYSTEM_CLOSURE_AUDIT.md), [M9 System Acceptance](audit/MECHCAD_M9_SYSTEM_ACCEPTANCE.md), [M10 System Acceptance](audit/MECHCAD_M10_SYSTEM_ACCEPTANCE.md), [M11 System Acceptance](audit/MECHCAD_M11_SYSTEM_ACCEPTANCE.md), [M12-6 System Acceptance](audit/MECHCAD_M12_6_SYSTEM_ACCEPTANCE.md), and [M13-4 Final Acceptance](audit/MECHCAD_M13_4_INDEPENDENT_FINAL_ACCEPTANCE.md)
 5. Only the source files, tests, manifests, and accepted specs named by the capability under review
 
 Do not treat this guide, a filename, an import, or an isolated test as runtime integration evidence. Leave audit verdict fields as `TO_BE_AUDITED` until the audit is actually performed.
 
-## Source Precedence
+## Source Roles
 
-When documents disagree, use this order:
+Use the source that can prove the question being asked; there is no single
+global precedence order.
 
-1. Accepted specifications in `docs/superpowers/specs/`
-2. Accepted plans and completion records in `docs/superpowers/plans/`
-3. Current architecture contracts in `docs/architecture/`
-4. Current production implementation and tests
-5. Historical/current project description in `MechCAD_Harness_Project_Description.md`
+| Question | Primary source | What it establishes |
+|---|---|---|
+| Intended current contract | `docs/architecture/**` | Normative architecture and maturity within documented scope |
+| Current production implementation | `src/mechcad_harness/**` | Implemented behavior and production wiring |
+| Guarded current behavior | `tests/**` | Test contract only, not historical execution |
+| Capability/wiring inventory | `docs/reference/MECHCAD_IMPLEMENTED_CAPABILITIES.md` | Current inventory and composition status |
+| Accepted runtime/live verification | `docs/audit/**` plus retained output | Bounded acceptance and execution evidence |
+| Historical truth | `docs/reconstruction/**` | Milestone chronology and historical evidence |
+| Applicable milestone/epic intent | `docs/superpowers/specs/**` and `docs/superpowers/plans/**` | Intended work, not automatically current runtime truth |
 
-Historical material preserves intent and explains superseded roadmap statements. It does not replace current contracts or runtime audit evidence.
+When sources disagree, preserve the distinction: architecture is intended
+contract, source is current behavior, audits are acceptance evidence, and
+reconstruction is historical truth.
 
 ## Maturity Vocabulary
 
@@ -78,4 +86,4 @@ Domain labels such as `Domain reference`, `Yagi example`, and `Reference adapter
 
 ## Historical Reference
 
-[MechCAD Harness Project Description](MechCAD_Harness_Project_Description.md) is a historical + evolving project overview. Read it for mission, milestone reconciliation, and current project status. Do not use it alone as implementation or integration proof.
+`docs/MechCAD_Harness_Project_Description.md` is a historical + evolving project overview. Read it for mission, milestone reconciliation, and current project status. Do not use it alone as implementation or integration proof.

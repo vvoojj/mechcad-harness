@@ -8,7 +8,8 @@ take precedence.
 Do not read this document for every task. Read it when planning a milestone,
 checking whether a capability already exists, avoiding duplicate implementation,
 investigating production wiring, integrating providers or tools, extending
-CAD/kinematics/FEA/synthesis, or reviewing older M1-M11 functionality.
+CAD/kinematics/FEA/synthesis, or reviewing M1-M13 and later current-head
+functionality.
 
 ## Purpose And Usage
 
@@ -19,7 +20,7 @@ system contracts.
 
 - Architecture and authority: [Project Overview](../architecture/MECHCAD_PROJECT_OVERVIEW.md), [System Contract](../architecture/MECHCAD_SYSTEM_CONTRACT.md), and [Capability Matrix](../architecture/MECHCAD_CAPABILITY_MATRIX.md).
 - Runtime composition: [Runtime Flow](../architecture/MECHCAD_RUNTIME_FLOW.md) and [Subsystem Contracts](../architecture/MECHCAD_SUBSYSTEM_CONTRACTS.md).
-- Accepted runtime evidence: [M9](../audit/MECHCAD_M9_SYSTEM_ACCEPTANCE.md), [M10](../audit/MECHCAD_M10_SYSTEM_ACCEPTANCE.md), [M10 multi-shape closure](../audit/MECHCAD_M10_MULTI_SHAPE_TRANSIENT_GEOMETRY_CLOSURE.md), and [M11](../audit/MECHCAD_M11_SYSTEM_ACCEPTANCE.md).
+- Accepted runtime evidence: [M9](../audit/MECHCAD_M9_SYSTEM_ACCEPTANCE.md), [M10](../audit/MECHCAD_M10_SYSTEM_ACCEPTANCE.md), [M10 multi-shape closure](../audit/MECHCAD_M10_MULTI_SHAPE_TRANSIENT_GEOMETRY_CLOSURE.md), [M11](../audit/MECHCAD_M11_SYSTEM_ACCEPTANCE.md), [M12-6](../audit/MECHCAD_M12_6_SYSTEM_ACCEPTANCE.md), and [M13-4](../audit/MECHCAD_M13_4_INDEPENDENT_FINAL_ACCEPTANCE.md).
 
 ## Capability Status Vocabulary
 
@@ -59,14 +60,16 @@ are separately bound records. See the normative [System Contract](../architectur
 
 ## M12 Candidate Foundation
 
-`EXISTS_PRODUCTION_UNVERIFIED`: `candidates/` provides immutable source-bound,
+`EXISTS_PRODUCTION_VERIFIED`: `candidates/` provides immutable source-bound,
 noncanonical mechanical candidate definitions; per-property component authority
 snapshots; typed physical mechanism topology and M10-joint realization bindings;
 integrity/currentness verification; and explicit `ArtifactStore` publication /
 fresh reload. `ProductionApplication` composes those verification and publication
-services. This is not candidate generation, sizing, catalog lookup, or a second
-canonical store. The bounded M12-4 CAD/evaluation/comparison/selection path and
-the explicit M12-5 promotion path are listed separately below.
+services. M12-6 live-verified this bounded composition for direct-drive and
+independent external-spur flows. This is not candidate generation, sizing,
+catalog lookup, or a second canonical store. The bounded M12-4
+CAD/evaluation/comparison/selection path and explicit promotion are listed
+separately below.
 
 ## Agent / Orchestration Infrastructure
 
@@ -77,17 +80,16 @@ the explicit M12-5 promotion path are listed separately below.
 - Production composition root: `application.py:ProductionApplication.create` constructs state, change, run, evidence, tool, agent, CAD, kinematic, and structural service boundaries.
 - The bounded `mechcad-transmission` workflow is production-wired through `ProductionApplication.run_transmission_round_trip`; it is reasoning-only and does not automatically mutate canonical state.
 
-`EXISTS_UNWIRED` or `TEST_ONLY` workflow boundaries include
-`agents/constraint_resolution_workflow.py:ConstraintResolutionWorkflow` and
-the deterministic fake agent transport. Their existence does not mean an agent
-workflow is selected by the default application path.
+`TEST_ONLY` workflow boundaries include the deterministic fake agent transport.
+Its existence does not mean an agent workflow is selected by the default
+application path.
 
 ## Engineering Provider Inventory
 
 | Provider / capability | Status and implementation | Composition and limitation |
 |---|---|---|
 | Built-in torque, spur-gear geometry, envelope, and compensation tools | `EXISTS_PRODUCTION_UNVERIFIED`; `tools/builtins.py:BuiltinTools` | Default registered and production-available. The bounded torque vertical slice is live verified through `ProductionApplication.run_transmission_round_trip`; default registration alone does not live-verify the other tools. |
-| py_gearworks / build123d external spur geometry and gear CAD | `EXISTS_UNWIRED`; `tools/gearworks.py:GearworksTools`, `backends/adapters/py_gearworks.py:PyGearworksAdapter` | Registrations require `additional_tool_registrations`; live M9/M10 fixtures prove the explicit path. Spur geometry/CAD only, not strength, life, efficiency, or gearbox design. |
+| py_gearworks / build123d external spur geometry and gear CAD | `EXISTS_UNWIRED`; `tools/gearworks.py:GearworksTools`, `backends/adapters/py_gearworks.py:PyGearworksAdapter` | Registrations require `additional_tool_registrations`; live M9/M10 fixtures prove the explicit path. Spur geometry/CAD only, not strength, life, efficiency, or gearbox design. Artifacts/results separately record `build123d` runtime provenance; deterministic-replay sufficiency and a separate registered provider identity remain audit items. |
 | bd-materials typical properties | `EXISTS_UNWIRED`; `tools/materials.py:MaterialTools`, `backends/bd_materials.py:BdMaterialsAdapter` | Explicit optional registration only; values retain typical-reference authority and do not select materials. |
 | sectionproperties geometry/warping | `EXISTS_UNWIRED`; `tools/sections.py:SectionTools`, `tools/section_engineering.py:SectionEngineeringTools` | Explicit optional registration only; supports bounded section properties/preliminary integration, not general structural approval. When materialized, their Evidence node is `analysis.section`, distinct from M11 typed structural-FEA Evidence. |
 | NumPy / SciPy | `PARTIAL` dependency support | Optional provider dependencies; no generic numerical search or optimization production service. |
@@ -138,6 +140,14 @@ persisted assemblies: [M10 multi-shape closure](../audit/MECHCAD_M10_MULTI_SHAPE
 - M10-2 deterministic multi-joint forward kinematics: `ProductionApplication.evaluate_multi_joint_configuration`, `multi_joint_kinematics.py:MultiJointKinematicsService`.
 - M10-3 exact discrete multi-joint collision: `ProductionApplication.analyze_multi_joint_collision_sweep`.
 - M10-4 continuous clearance proof over one explicit piecewise-linear multi-joint path: `ProductionApplication.prove_continuous_multi_joint_path_clearance`.
+- `EXISTS_PRODUCTION_UNVERIFIED`: current post-M13 canonical multi-joint M10 v2
+  replay: `ProductionApplication.verify_current_canonical_multi_joint_m10`.
+  It captures one current `DesignState` snapshot, accepts only `mechanism_id`,
+  reconstructs fresh canonical authority/CAD, and delegates to the canonical
+  verifier. It requires one canonical obligation and does not auto-run during
+  promotion, accept candidate data, support historical replay, or create
+  F12-specific persistence. This has committed source and focused tests, but no
+  accepted live-execution audit.
 
 The current model is rigid revolute bodies. It does not provide dynamics,
 compliance, backlash, inverse kinematics, trajectory planning, swept-solid
@@ -169,21 +179,21 @@ convergence, global yield, safety, or manufacturing approval. Accepted status:
 | Generic `Component` metadata | `PARTIAL` | `models/design.py:Component`; canonical component metadata remains intentionally separate from noncanonical candidate snapshots. |
 | `MotorCharacteristicsValue` | `PARTIAL` | `engineering/values.py`; authority input only, not motor selection/sizing. |
 | Generic component catalog/search | `MISSING` | No catalog, supplier API, marketplace search, or component selection workflow. |
-| Candidate component property authority | `EXISTS_PRODUCTION_UNVERIFIED` | `candidates/models.py:ComponentPropertySnapshot` and `ComponentSpecificationSnapshot` remain immutable noncanonical snapshots; M12-3 consumes explicit property hashes and authorities in bounded drive checks, with no catalog lookup or canonical promotion. |
-| Bounded motor admissibility | `EXISTS_PRODUCTION_UNVERIFIED` | `revolute_drive.calculations:evaluate_motor_checks`, composed by `ProductionApplication.realize_and_evaluate_revolute_drive`; direct-drive and external-spur torque, optional peak torque, scalar speed-range, and optional voltage checks only. No motor catalog or selection. |
+| Candidate component property authority | `EXISTS_PRODUCTION_VERIFIED` | `candidates/models.py:ComponentPropertySnapshot` and `ComponentSpecificationSnapshot` remain immutable noncanonical snapshots; M12-6 exercised their explicit property hashes and authorities in bounded drive checks, with no catalog lookup or canonical promotion. |
+| Bounded motor admissibility | `EXISTS_PRODUCTION_VERIFIED` | `revolute_drive.calculations:evaluate_motor_checks`, composed by `ProductionApplication.realize_and_evaluate_revolute_drive`; M12-6 live-verified bounded direct-drive and external-spur checks only. No motor catalog or selection. |
 | Gearbox sizing | `PARTIAL` | M12-3 evaluates supplied external-spur compatibility, nominal ratio/speed, and efficiency-bound torque transfer; pure `calculate_spur_loads` is available and explicitly tested, but production mesh-derived `Ft`/`Fr` shaft-plane loading remains `UNRESOLVED` because the template lacks explicit plane mapping. Production shaft sizing supports explicit transverse load vectors only; no gearbox selection, gear strength, life, or CAD. |
-| Solid-shaft static sizing and support reactions | `EXISTS_PRODUCTION_UNVERIFIED` | `revolute_drive.calculations:calculate_shaft_static_sizing`, composed through the M12-3 production path; static homogeneous solid circular shaft, explicit equilibrium/support reactions, one load plane, and exactly two simple radial supports. No fatigue, buckling, critical-speed, tolerance, or general shaft design. |
+| Solid-shaft static sizing and support reactions | `EXISTS_PRODUCTION_VERIFIED` | `revolute_drive.calculations:calculate_shaft_static_sizing`, composed through the M12-6 production path; static homogeneous solid circular shaft, explicit equilibrium/support reactions, one load plane, and exactly two simple radial supports. No fatigue, buckling, critical-speed, tolerance, or general shaft design. |
 | Bearing sizing | `MISSING` | No bearing model, life calculation, or selection. |
 | Fastener sizing | `MISSING` | No fastener model or sizing. |
-| Typed physical mechanism topology | `EXISTS_PRODUCTION_UNVERIFIED` | `candidates/models.py:PhysicalMechanismRealization`, `PhysicalComponentInstance`, and `MechanicalConnection` are now populated deterministically by the M12-3 service for the two explicit supplied-component templates; topology remains noncanonical and bounded. |
-| Typed physical-joint realization binding | `EXISTS_PRODUCTION_UNVERIFIED` | `candidates/models.py:JointPhysicalRealizationBinding` is deterministically created for exactly one scoped joint with shaft, actuator/transmission path, two supports, hub, mounts, and axis/frame reference; it does not bridge to M10 or prove CAD/structural suitability. |
-| Bounded physical-joint realization and sizing | `EXISTS_PRODUCTION_UNVERIFIED` | `RevoluteDriveRealizationService.construct_candidate/evaluate` and `ProductionApplication.realize_and_evaluate_revolute_drive` compose direct-drive or external-spur construction plus bounded admissibility and static sizing from supplied snapshots. Incomplete topology is unresolved without a candidate; no generic synthesis, catalog, selection, or promotion. |
+| Typed physical mechanism topology | `EXISTS_PRODUCTION_VERIFIED` | `candidates/models.py:PhysicalMechanismRealization`, `PhysicalComponentInstance`, and `MechanicalConnection` are populated deterministically by the M12-6 live-verified supplied-component templates; topology remains noncanonical and bounded. |
+| Typed physical-joint realization binding | `EXISTS_PRODUCTION_VERIFIED` | `candidates/models.py:JointPhysicalRealizationBinding` binds each declared output joint to shaft, actuator/transmission path, supports, hub, mounts, and axis/frame reference; M12-6 proved the bounded candidate/canonical M10 path, not CAD/structural suitability in general. |
+| Bounded physical-joint realization and sizing | `EXISTS_PRODUCTION_VERIFIED` | `RevoluteDriveRealizationService.construct_candidate/evaluate` and `ProductionApplication.realize_and_evaluate_revolute_drive` compose direct-drive or external-spur construction plus bounded admissibility and static sizing from supplied snapshots. Incomplete topology is unresolved without a candidate; no generic synthesis, catalog, selection, or promotion. |
 
 ## Candidate / Design Generation Capability
 
 - Narrow domain synthesis: `PARTIAL` / `EXISTS_UNWIRED`; see [Existing Narrow Synthesis Capabilities](#existing-narrow-synthesis-capabilities).
-- Immutable source-bound `MechanicalDesignCandidate`: `EXISTS_PRODUCTION_UNVERIFIED`; candidate model, integrity/currentness services, and the bounded M12-3 template construction path are composed, but candidates remain noncanonical and are not published automatically.
-- Candidate explicit publication/provenance: `EXISTS_PRODUCTION_UNVERIFIED`; publication and fresh resolution use `ArtifactStore` with deterministic identity/source binding. Publication is explicit, not automatic persistence, not a `CandidateStore`, not canonical authority, and not Evidence by itself.
+- Immutable source-bound `MechanicalDesignCandidate`: `EXISTS_PRODUCTION_VERIFIED`; candidate model, integrity/currentness services, and the bounded M12-3 template construction path are production-composed and M12-6 live verified, but candidates remain noncanonical and are not published automatically.
+- Candidate explicit publication/provenance: `EXISTS_PRODUCTION_VERIFIED`; M12-6 live verified publication and fresh resolution through `ArtifactStore` with deterministic identity/source binding. Publication is explicit, not automatic persistence, not a `CandidateStore`, not canonical authority, and not Evidence by itself.
 - Generic candidate generation: `MISSING`.
 - Bounded candidate-to-M10 execution bridge: `EXISTS_PRODUCTION_VERIFIED`; `ProductionApplication.evaluate_candidate` evaluates declared constituent pairs through unchanged M10 continuous single-axis proof and exact zero-angle home checks, with complete pair inventory and explicit unmodeled-motion boundaries.
 - Bounded candidate evaluation: `EXISTS_PRODUCTION_VERIFIED`; immutable source-bound `CandidateEvaluation` with `FEASIBLE`, `INFEASIBLE`, and `UNRESOLVED` outcomes and the single trusted `verified_clearance_lower_bound_mm` metric.
@@ -211,8 +221,9 @@ or M11 execution.
   classifications, and compiles one complete canonical physical mechanism into
   exactly one `add /physical_mechanisms/<id>` operation.
 - `models/physical_mechanism.py` and `models/design.py:DesignState` provide the
-  typed canonical physical-mechanism collection. The existing ownership policy,
-  project lock, `ChangeEngine`, and `RunController` are the only mutation path.
+  typed canonical physical-mechanism collection. Accepted production promotion
+  uses the ownership policy, project lock, `ChangeEngine`, and `RunController`;
+  this does not claim lower-level revision persistence is API-exclusive.
 - `candidates/promotion_artifacts.py:PromotionManifestService` publishes and
   strictly reloads immutable pre-application decision and post-application result
   manifests through the ordinary run-scoped `ArtifactStore`. Run IDs are storage
@@ -233,12 +244,54 @@ or M11 execution.
 
 This capability consumes one explicitly selected current feasible candidate. It
 does not add general synthesis, automatic selection, candidate stores, rollback,
-M12-6 behavior, assembly or broad structural verification, or M11 execution.
+assembly or broad structural verification, or M11 execution. The accepted M12-6
+composition is described below.
+
+## M12-6 End-To-End Physical-Mechanism Acceptance
+
+`EXISTS_PRODUCTION_VERIFIED`: M12-6 live accepted the composed source-bound
+candidate, candidate-CAD, M10 evaluation, explicit selection, promotion, fresh
+canonical reconstruction, canonical CAD/M10 verification, restart, and durable
+artifact flow for direct-drive and independent external-spur scenarios. This is
+acceptance of existing explicit `ProductionApplication` entrypoints, not a new
+synthesis API.
+
+The external-spur path retains `INTERNAL_MOTION_UNMODELED`. It does not prove
+coupled gear kinematics, tooth contact, phase, backlash, counter-rotation, or
+transmission-internal clearance. The M11 handoff remains non-gating and M12-6
+does not execute FEA.
+
+## M13 Physical Multi-Joint Capability
+
+- `EXISTS_PRODUCTION_UNVERIFIED`: M13-1 supplied-component interface authority:
+  `models/supplied_component_interface.py` and typed axis-source records in
+  `candidates/models.py`. Its own boundary is unit-verified; geometry, labels,
+  and filenames do not confer semantic interface authority.
+- `EXISTS_PRODUCTION_VERIFIED`: M13-2 generated cylindrical stock plus axial
+  bore and source-bound placement realization: `models/generated_part.py`,
+  `models/generated_placement.py`, and `candidates/cad_realization.py`.
+  Exactness is relative to the bound semantic specification, not manufacturing
+  truth.
+- `EXISTS_PRODUCTION_VERIFIED`: M13-3P rigid-body groups preserve the M10 v1
+  compatibility boundary; M13-3 provides candidate/canonical multi-joint M10 v2
+  lowering and fresh candidate-free canonical replay through
+  `candidates/multi_joint_m10_evaluation.py`,
+  `candidates/multi_joint_m10_bridge.py`, `candidates/canonical_mechanism.py`,
+  and `candidates/canonical_cad.py`.
+- `EXISTS_PRODUCTION_VERIFIED`: M13-4 provides explicit multi-joint promotion,
+  durable decision/result artifacts, fresh canonical CAD/M10 verification, and
+  production composition through
+  `ProductionApplication.promote_selected_multi_joint_candidate` and
+  `verify_multi_joint_promotion_application`.
+
+M13-4 independently accepted the bounded representative full stack. Discrete
+M10 v2 results retain `continuous_path_verified = False`; M10-4 proves only an
+explicitly supplied path. This does not add automatic promotion, general
+synthesis, whole-configuration-space certification, or M11 execution.
 
 ## Implemented But Unwired
 
 - `GearworksTools`, `MaterialTools`, `SectionTools`, and `SectionEngineeringTools`: tested optional tool registration families, not `ProductionApplication.create` defaults.
-- `ConstraintResolutionWorkflow`: implemented workflow boundary, not default production composition.
 - M7 azimuth/Yagi synthesis services: tested narrow direct-service paths, not generic production synthesis.
 - `analysis_service.py:CadAssemblyAnalysisService`: implemented/tested assembly analysis service, not a default `ProductionApplication` entry point.
 
@@ -247,6 +300,11 @@ M12-6 behavior, assembly or broad structural verification, or M11 execution.
 - Pre-M8 claims that no `ProductionApplication` or production CAD/kinematic path exists are superseded by `application.py:ProductionApplication` and M8-M10 acceptance.
 - Historical `RUNTIME_GATED` wording is not current status when later live acceptance exists.
 - M11-1 is architecture/design history; the implemented M11 path is live closed through M11-6.
+- `SUPERSEDED`: F10 retired the unused M6B-4C `ConstraintResolutionWorkflow`,
+  `ConstraintResolutionApplicationService`, state-application provenance route,
+  and associated ownership route. They are no longer unwired/test-only
+  capabilities; retained M6B-4A typed resolution and `ConstraintRequestMaterializer`
+  remain active.
 
 ## Known Integration Boundaries
 
@@ -267,11 +325,14 @@ M12-6 behavior, assembly or broad structural verification, or M11 execution.
 | Generic/mixed CAD and imported STEP | `EXISTS_PRODUCTION_VERIFIED` | Assembly/CAD application services | Yes | Plate compiler is narrow; external gear CAD requires optional registration | [CAD Capability](#cad-capability) |
 | M10 kinematics/collision/clearance | `EXISTS_PRODUCTION_VERIFIED` | M10 `ProductionApplication` methods | Yes | Rigid revolute model; bounded paths | [Kinematics / Collision / Clearance](#kinematics--collision--clearance) |
 | M11 structural analysis | `EXISTS_PRODUCTION_VERIFIED` | Structural application methods | Yes | Single-solid linear static | [Structural Analysis](#structural-analysis) |
-| M12 candidate authority/topology/publication | `EXISTS_PRODUCTION_UNVERIFIED` | `ProductionApplication` candidate integrity/currentness/publication services plus `realize_and_evaluate_revolute_drive` | Focused M12-3 tests verified; full-suite/live status pending | Immutable noncanonical candidate model, explicit ArtifactStore publication remains separate, and bounded two-template realization/sizing; no generic generation, CAD, M10/M11 execution, ranking, selection, or promotion | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
-| M12 bounded revolute-drive realization and sizing | `EXISTS_PRODUCTION_UNVERIFIED` | `ProductionApplication.realize_and_evaluate_revolute_drive` | Focused production integration verified; no separate live-runtime acceptance | Supplied direct-drive or external-spur inputs only; nominal ratio/load, motor admissibility, two-support solid-shaft sizing, no catalog, arbitrary synthesis, strength, life, CAD, M10/M11 bridge, comparison, selection, promotion, Evidence, or artifact publication | [Physical Component / Mechanism Capability](#physical-component--mechanism-capability) |
+| M12 candidate authority/topology/publication | `EXISTS_PRODUCTION_VERIFIED` | Candidate services plus `realize_and_evaluate_revolute_drive` | Yes, M12-6 | Immutable noncanonical candidate/publication and bounded two-template realization; no generic generation | [M12-6 End-To-End Physical-Mechanism Acceptance](#m12-6-end-to-end-physical-mechanism-acceptance) |
+| M12 bounded revolute-drive realization and sizing | `EXISTS_PRODUCTION_VERIFIED` | `ProductionApplication.realize_and_evaluate_revolute_drive` | Yes, M12-6 | Supplied direct-drive/external-spur inputs; no catalog, general synthesis, strength, or life | [Physical Component / Mechanism Capability](#physical-component--mechanism-capability) |
 | M12-4 bounded candidate CAD and M10 evaluation | `EXISTS_PRODUCTION_VERIFIED` | `ProductionApplication.realize_candidate_cad` / `evaluate_candidate` | Yes | Candidate-bound generated/trusted representations; one output-joint M10 scope; explicit pair inventory; no internal spur-motion proof or promotion | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
 | M12-4 comparison and explicit selection | `EXISTS_PRODUCTION_VERIFIED` | `ProductionApplication.compare_candidates` / `select_candidate` | Yes | One certified clearance metric; compatible feasible evaluations only; noncanonical selection; no optimization or promotion | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
 | M12-5 explicit promotion, canonical rebinding, and M11 eligibility handoff | `EXISTS_PRODUCTION_VERIFIED` | `ProductionApplication.promote_selected_candidate` / `verify_promoted_mechanism` | Yes, bounded live capstones | Explicit selected feasible candidate only; one ChangeEngine add; fresh canonical CAD/M10; M11 eligibility only, no structural execution | [M12-5 Promotion And Canonical Rebinding](#m12-5-promotion-and-canonical-rebinding) |
+| M12-6 end-to-end physical-mechanism flow | `EXISTS_PRODUCTION_VERIFIED` | Existing candidate, promotion, and verification entrypoints | Yes, M12-6 | Bounded direct-drive/external-spur obligations; no coupled gear motion or FEA | [M12-6 End-To-End Physical-Mechanism Acceptance](#m12-6-end-to-end-physical-mechanism-acceptance) |
+| M13 physical multi-joint candidate/canonical M10 and promotion | `EXISTS_PRODUCTION_VERIFIED` | Multi-joint evaluation, selection, promotion, and receipt verification entrypoints | Yes, M13-4 | Bounded explicit configurations/pair policy; no automatic synthesis or continuous/global proof | [M13 Physical Multi-Joint Capability](#m13-physical-multi-joint-capability) |
+| Post-M13 current canonical multi-joint M10 replay | `EXISTS_PRODUCTION_UNVERIFIED` | `verify_current_canonical_multi_joint_m10` | No accepted live audit | Current snapshot and one obligation only; explicit invocation, no historical replay or auto-promotion | [Kinematics / Collision / Clearance](#kinematics--collision--clearance) |
 | Generic candidate generation | `MISSING` | None | No | Candidate model exists, but no generation/search/ranking workflow | [Candidate / Design Generation Capability](#candidate--design-generation-capability) |
 
 ## When To Read Which Document
@@ -284,6 +345,7 @@ M12-6 behavior, assembly or broad structural verification, or M11 execution.
 | Exact M10 motion behavior | [M10 System Acceptance](../audit/MECHCAD_M10_SYSTEM_ACCEPTANCE.md) |
 | Imported multi-shape STEP consistency closure | [M10 multi-shape closure](../audit/MECHCAD_M10_MULTI_SHAPE_TRANSIENT_GEOMETRY_CLOSURE.md) |
 | Structural/FEA accepted behavior | [M11 System Acceptance](../audit/MECHCAD_M11_SYSTEM_ACCEPTANCE.md) |
+| M12/M13 candidate, promotion, or physical-mechanism behavior | [System Contract](../architecture/MECHCAD_SYSTEM_CONTRACT.md), [M12-6 acceptance](../audit/MECHCAD_M12_6_SYSTEM_ACCEPTANCE.md), and [M13-4 acceptance](../audit/MECHCAD_M13_4_INDEPENDENT_FINAL_ACCEPTANCE.md) |
 | Milestone implementation detail | Only the relevant completion report, specification, or plan after identifying the capability |
 
 Do not load the entire historical milestone tree for routine work.

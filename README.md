@@ -20,10 +20,10 @@ in the accepted [historical reconstruction](docs/reconstruction/README.md).
 | Reconstruction synthesis | `0cbb70e` |
 | Live CAD runtime verified at acceptance | FreeCAD 1.1.3 |
 
-Commits after the accepted M13-4 product commit through the reconstruction
-synthesis are documentation-only. For later repository changes, inspect the
-current code/tests and applicable accepted audits rather than assuming this
-snapshot describes unreviewed future work.
+Commits from the accepted M13-4 product commit through the reconstruction
+synthesis are documentation-only. Current HEAD also contains later implementation
+changes; inspect current code/tests and applicable accepted audits rather than
+treating those changes as M13-4 accepted behavior.
 
 ## Documentation Map
 
@@ -46,11 +46,10 @@ Start with [`docs/README.md`](docs/README.md) for task-sized context bundles.
   - [Milestone Catalog](docs/reconstruction/MILESTONE_CATALOG.json)
   - [Unresolved Gaps](docs/reconstruction/UNRESOLVED_GAPS.md)
 
-> **Documentation freshness:** the normative `docs/architecture/*` set still
-> describes the M8–M11 baseline, while the implemented-capability reference
-> covers M12 but not M13. Accepted M12/M13 behavior is therefore established by
-> the committed implementation/tests together with the accepted audit records.
-> See `docs/reconstruction/UNRESOLVED_GAPS.md` (G-12).
+> **Documentation freshness:** `docs/architecture/**` is reconciled through the
+> accepted M13-4 baseline. `docs/reference/MECHCAD_IMPLEMENTED_CAPABILITIES.md`
+> describes current implementation and wiring, including clearly labeled
+> post-M13 behavior; accepted runtime claims remain owned by `docs/audit/**`.
 
 ## Current Accepted Capability Surface
 
@@ -134,10 +133,12 @@ Important production entrypoints include:
 - **Structural:** the bounded M11 analysis / interpretation path and
   `publish_structural_evidence`.
 - **Candidate / promotion:** `realize_and_evaluate_revolute_drive`,
-  `realize_candidate_cad`, `evaluate_candidate`, `compare_candidates`,
-  `select_candidate`, `compile_candidate_promotion`,
-  `promote_selected_candidate`, `promote_selected_multi_joint_candidate`, and
-  `verify_multi_joint_promotion_application`.
+   `realize_candidate_cad`, `evaluate_candidate`, `compare_candidates`,
+   `select_candidate`, `compile_candidate_promotion`,
+   `promote_selected_candidate`, `promote_selected_multi_joint_candidate`, and
+   `verify_multi_joint_promotion_application`.
+- **Current post-M13:** `verify_current_canonical_multi_joint_m10` is a composed
+  replay entrypoint, not M13-4 accepted/live-verified behavior.
 
 Providers, solvers, CAD backends, and agent transports are bounded participants;
 none is canonical engineering authority.

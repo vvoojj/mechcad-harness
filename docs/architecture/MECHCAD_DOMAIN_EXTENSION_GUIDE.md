@@ -1,6 +1,6 @@
 # MechCAD Domain Extension Guide
 
-**Maturity:** The extension boundary is a `FOUNDATION` and therefore mandatory baseline audit scope. A domain capability may be `REQUIRED_CURRENT` when its accepted contract is required by the current baseline. Broader connected domain services are `TARGET_NEXT`; structural, dynamics, manufacturing, and optimization extensions are `FUTURE` unless separately accepted.
+**Maturity:** The extension boundary is a `FOUNDATION` and therefore mandatory baseline audit scope. A domain capability may be `REQUIRED_CURRENT` when its accepted contract is required by the current baseline. Broader connected domain services are `TARGET_NEXT`; broad structural approval and unrestricted FEA beyond the bounded M11 path, dynamics, manufacturing, and optimization are `FUTURE` unless separately accepted.
 
 ## Extension Contract
 
@@ -17,7 +17,7 @@ To add an arbitrary mechanical domain:
 9. Apply accepted changes through `ChangeSet` and `ChangeEngine`.
 10. Compile accepted specs into generic CAD programs.
 11. Use generic CAD backends and assembly services.
-12. Use generic collision, transient, kinematic, and future structural analysis.
+12. Use generic collision, transient, kinematic, and accepted bounded structural analysis.
 13. Persist state-bound evidence and hashed artifacts.
 14. Iterate through dependency invalidation.
 
@@ -33,7 +33,7 @@ Domain modules must not put domain assumptions into generic CAD primitives or ge
 
 **Camera pan/tilt:** two domain joints over generic frames and transforms; no requirement that core code call them AZ/EL.
 
-**Structural mounting frame:** frame authority, section/material facts, generic part programs, future load/stress analysis.
+**Structural mounting frame:** frame authority, section/material facts, generic part programs, and bounded M11 source-bound single homogeneous solid linear-static structural analysis.
 
 **Antenna rotator:** payload and carrier are domain records; they reuse generic layout, CAD, collision, and kinematics. They are not the universal model.
 

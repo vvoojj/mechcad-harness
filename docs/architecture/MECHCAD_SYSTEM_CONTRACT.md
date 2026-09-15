@@ -34,10 +34,14 @@ MechCAD is a deterministic, provenance-aware, multi-agent mechanical-engineering
 13. **Production Orchestration (M8B):** `ProductionApplication.create(...)` is the trusted composition root that owns the production service graph (`StateManager`, `EvidenceStore`, `OwnershipPolicy`, `ChangeEngine`, `RunController`, `ToolRegistry` → `ToolBroker`, `AgentRegistry` → injected adapter, `ContextBuilder` → `AgentGateway` → `AgentToolMediator` → `ToolBroker`). It owns trusted identities/permissions and the composition of analysis providers; it does not add a second canonical-mutation API.
 14. **Production CAD / Assembly / Kinematics (M8C → M9):** M8 connected source-bound `DesignSpec` → `CadPartProgram` compilation, trusted `ImportedCadComponent` resolution through `ArtifactStore`, generic mixed `CadAssemblyProgram`, and the `ProductionApplication.analyze_assembly_kinematics` entrypoint. M9 live-verified the runtime edges on real FreeCAD: `CadPartProgram` realization, real trusted imported STEP, live mixed assembly, fresh reload, exact `common().Volume` / `distToShape()`, real discrete kinematic sweep, and durable trusted analysis-execution provenance (`M9_FULLY_CLOSED_LIVE_VERIFIED`).
 15. **Durable Structural Evidence (M11-5):** the bounded source-bound single-solid linear-static structural path can publish immutable structural Evidence through the existing `EvidenceStore`, independently reload it, and preserve trusted PASS, FAIL, and NOT_EVALUABLE engineering outcomes. Exact source, artifact, result, criterion, material, analytical, and provider/parser bindings are required; bounded repeatability and explicitly declared displacement-metric mesh-convergence studies are supported.
+16. **Candidate Evaluation (M12):** source-bound candidates, their publication records, CAD, M10 results, evaluations, comparisons, and selections are derived, noncanonical records. They support bounded realization and decision-making but do not establish canonical engineering authority.
+17. **Promotion and Physical Mechanisms (M12 → M13):** the accepted production route promotes one selected current feasible candidate through validated compilation and trusted mutation into a new canonical `physical_mechanisms` revision. Fresh canonical reconstruction and required CAD/M10 verification are distinct from candidate work. Supplied-component interfaces, generated parts, and physical-mechanism semantics provide bounded typed authority for this route; they do not create a universal mechanical ontology.
 
 ## Authority Rules
 
-`DesignState` is canonical. Agents do not mutate it directly. The trusted path is `AgentResult -> ChangeProposal -> ChangeSet -> ChangeEngine -> immutable DesignState revision`. Libraries and backends are not authority: `py_gearworks`, `build123d`, `bd_materials`, FreeCAD, MuJoCo, FEA solvers, and numerical libraries cannot approve requirements or silently write state. Agent prose, CAD files, temporary solver state, evidence, and passing tests are not design decisions.
+`DesignState` is canonical. Agents do not mutate it directly. Accepted production mutation flows use `RunController` where applicable and `ChangeProposal -> ChangeSet -> ChangeEngine -> immutable DesignState revision`. That trusted route enforces applicable source/currentness binding, ownership, operation validity and preconditions, and resulting-state validation while holding the project lock. `proposal.status` is not an enforced approval gate.
+
+`StateManager` exposes the lower-level revision persistence primitive used by the trusted route. Its public API does not by itself make alternative revision creation impossible; this is an enforcement-boundary limitation, not a separate accepted production authority path. Libraries and backends are not authority: `py_gearworks`, `build123d`, `bd_materials`, FreeCAD, MuJoCo, FEA solvers, and numerical libraries cannot approve requirements or silently write state. Agent prose, CAD files, temporary solver state, evidence, and passing tests are not design decisions.
 
 ## Authority Taxonomy
 
@@ -58,7 +62,7 @@ MechCAD is a deterministic, provenance-aware, multi-agent mechanical-engineering
 
 ## Canonical State and Memory
 
-Project identity, revision identity, state hash, source binding, and canonical serialization are mandatory for reproducibility. Evidence and artifacts bind to source state and become stale when dependency inputs change. Replay uses immutable records and exact identities; recovery must not guess or overwrite. A CAD artifact, analysis result, temporary solver state, or evidence record becomes canonical only if a trusted, accepted proposal explicitly promotes an authoritative value through change machinery.
+Project identity, revision identity, state hash, source binding, and canonical serialization are mandatory for reproducibility. Evidence and artifacts bind to source state and become stale when dependency inputs change. Replay uses immutable records and exact identities; recovery must not guess or overwrite. A CAD artifact, analysis result, temporary solver state, or evidence record gains accepted canonical engineering authority only through the required trusted production mutation route; it is not promoted merely by being published, selected, or verified.
 
 ## Ownership
 
@@ -103,7 +107,7 @@ Agent -> semantic typed request -> ToolBroker -> registered tool -> ToolResult
       -> optional trusted Evidence / Agent context
 ```
 
-The broker checks typed input/output, resolves a concrete exact tool name/version, applies task and state binding, records backend/tool provenance and deterministic hashes, and fails closed on errors. The general M5 permission wording permits a compatibility form that may be broader than a concrete `name@version` entry; individual workflows may impose a stricter exact `name@version` permission policy, as M6B-2A/B does. Agents must not silently import arbitrary engineering libraries in place of brokered execution.
+The broker checks typed input/output, resolves a concrete exact tool name/version, applies task and state binding, records backend/tool provenance and deterministic hashes, and fails closed on errors. The M5 permission wording permits a compatibility form that may be broader than a concrete `name@version` entry; individual workflows may impose a stricter exact `name@version` permission policy, as M6B-2A/B does. The current `ToolBroker` implementation and the M6B mediator both enforce the exact `name@version` task permission and reject a bare tool name; reconciling whether the broader general M5 compatibility form must be restored or formally retired belongs to the independent audit. Agents must not silently import arbitrary engineering libraries in place of brokered execution.
 
 ## Engineering Provider Identity
 
@@ -112,7 +116,7 @@ All accepted providers use normalized MechCAD models. `BackendProvenance` always
 | Capability | Adapter/module | Package contract | Backend identity | Normalized input -> output | Runtime verification | Expected consumer |
 |---|---|---|---|---|---|---|
 | Spur gear and gear-pair calculation | `PyGearworksAdapter`, `backends/adapters/py_gearworks.py` | `py_gearworks==0.0.18`, Git revision `2fc2a13d82a9997a65f30c870498f0bb3be62318`; profile includes `build123d==0.11.1`, NumPy `>=2,<2.4`, SciPy `>=1.10.1` | `py-gearworks@0.1.0` adapter | `SpurGearGeometryInput -> SpurGearGeometryResult`; `SpurGearPairInput -> SpurGearPairResult` | metadata health check before calculation; missing is unavailable, mismatch incompatible | gear tools, engineering evaluation, narrow gear CAD |
-| Specialized gear solid generation | `backends/gearworks_cad.py`; no standalone Build123dAdapter | `build123d==0.11.1` | no independent backend identity; artifact currently carries py-gearworks adapter provenance | `SpurGearCadInput -> SpurGearCadResult`; pair equivalents | verified indirectly by py-gearworks profile; lazy import; shape validity, volume, bounds, thickness, and export checks | ArtifactStore, optional later assembly/import verification |
+| Specialized gear solid generation | `backends/gearworks_cad.py`; no standalone registered Build123dAdapter | `build123d==0.11.1` | separate `build123d` runtime provenance recorded alongside the py-gearworks adapter provenance | `SpurGearCadInput -> SpurGearCadResult`; pair equivalents | build123d runtime version captured from package metadata; lazy import; shape validity, volume, bounds, thickness, and export checks | ArtifactStore, optional later assembly/import verification |
 | Typical material properties and mass estimate | `BdMaterialsAdapter`, `backends/bd_materials.py` | `bd-materials==0.2.4` | `bd-materials@0.1.0` adapter | `TypicalMaterialPropertiesInput -> TypicalMaterialPropertiesResult`; `MaterialMassInput -> MaterialMassResult` | exact distribution version and required dependency metadata | material tools and preliminary section integration |
 | Section geometry and warping | `SectionPropertiesAdapter`, `backends/section_properties.py` | `sectionproperties==3.10.2`; NumPy `>=2,<2.4`; structural profile pins SciPy `1.18.0` and supporting packages | `section-properties@0.2.0` adapter | rectangle/circle/hollow inputs -> `SectionGeometryResult` or `SectionWarpingResult` | package/profile health; direct solver; coarse/fine convergence; analytic oracles where normative | section tools and preliminary section engineering |
 | General persisted project CAD | `FreeCADBackend`, `FreeCADAssemblyBackend`, transient measurement provider | FreeCAD `UNPINNED_BY_CONTRACT` | `freecad` / `mechcad-freecad@2.1`; assembly producer `mechcad-freecad-assembly@1.0` | `CadPartProgram -> FreeCADGenerationResult`; `CadAssemblyProgram -> FreeCADAssemblyGenerationResult`; transient request -> exact measurements | executable/import discovery; runtime `FreeCAD.Version()` capture; FCStd/STEP existence, reload, manifest, shape, solid, placement, and measurement checks | CAD/assembly services, analysis, ArtifactStore, kinematics |
@@ -121,7 +125,7 @@ NumPy and SciPy are numerical infrastructure with versions governed by the provi
 
 Actual adapter existence or optional dependency installation does not prove that a production caller reaches the library. That question belongs to the independent audit.
 
-The build123d path has no standalone backend identity. The independent audit must verify its exact runtime version, whether artifact/result provenance represents that version sufficiently for deterministic replay, whether indirect py-gearworks adapter provenance is sufficient, and whether a separate provider identity is required. This contract does not decide those questions.
+The build123d path has no standalone registered adapter or provider registration. Current artifacts and results separately record `build123d` runtime provenance (backend identity plus package runtime version) alongside the py-gearworks adapter provenance, and M12-6 live-observed build123d 0.11.1 in verified spur artifact provenance. The independent audit must still verify whether that recorded provenance is sufficient for deterministic replay and whether a separate registered provider identity is required. This contract does not decide those questions.
 
 ## Evidence Contract
 
@@ -216,9 +220,52 @@ least three mesh levels for the supported free-end displacement-magnitude
 metric. This is not adaptive refinement, generic mesh correspondence, stress
 convergence, or a global convergence claim.
 
+## Candidate, Promotion, and Physical-Mechanism Contract
+
+A candidate is a source-bound, noncanonical derived record. Candidate
+publication preserves hash-verified records and referenced artifacts; it does
+not create canonical authority. Candidate CAD, M10 results, evaluation, and
+comparison remain derived records. Comparison does not imply selection, and
+selection is explicit, noncanonical, and does not imply promotion.
+
+The accepted bounded promotion route is:
+
+```text
+selected current feasible candidate
+-> validated promotion compilation
+-> trusted canonical mutation
+-> N+1 canonical DesignState
+-> fresh canonical reconstruction
+-> fresh required canonical CAD/M10 verification
+-> bound result and Evidence where required
+```
+
+Promotion is explicit and must revalidate candidate integrity, source
+currentness, feasibility, selection, required trusted artifacts, and the
+canonical target before mutation. Candidate-derived CAD, M10 results, and facts
+do not become canonical merely because the candidate is selected. The promoted
+state is reconstructed from the exact resulting revision; required canonical
+CAD/M10 work is fresh and must not reuse candidate identities as canonical
+proof. Promotion manifests preserve the decision/result linkage, while
+`EvidenceStore` remains responsible for invalidation-aware Evidence.
+
+The current bounded M12/M13 route supports one selected feasible candidate and
+one canonical obligation in the relevant flow. It is not generic candidate
+generation, catalog selection, multi-objective optimization, or automatic
+promotion. Its M11 handoff is post-promotion eligibility assessment only; it
+does not create a structural definition, mesh, solve, or structural Evidence.
+
+Supplied-component use requires typed accepted interface facts, source binding,
+and declared reference frames; CAD/STEP geometry, labels, or filenames do not
+infer semantic authority. Generated-part authority is the bound semantic part
+specification, with CAD as a derived realization. Physical mechanisms bind
+typed bodies, joints, interfaces, placements, and obligations. M10 v2 lowering
+uses explicit rigid-body groups and bounded multi-joint verification; it does
+not certify general trajectories or a configuration-space region.
+
 ## Maturity
 
-**FOUNDATION / REQUIRED_CURRENT:** state/revision/change/ownership/dependency/run/tool/Evidence foundations; AgentGateway, fake and OpenCode adapters, bounded transmission reasoning, strict structured response, tool mediation, torque/Evidence round-trip foundation, constraint discovery/materialization/satisfaction/resolution; narrow engineering providers; generic CAD programs and rigid assemblies; exact collision, transient measurement, discrete single-axis kinematics, single-axis continuous proof, generic multi-joint discrete forward kinematics, exact discrete multi-joint collision evaluation, explicit-path continuous multi-joint clearance proof, and durable bounded structural Evidence/repeatability/convergence.
+**FOUNDATION / REQUIRED_CURRENT:** state/revision/change/ownership/dependency/run/tool/Evidence foundations; AgentGateway, fake and OpenCode adapters, bounded transmission reasoning, strict structured response, tool mediation, torque/Evidence round-trip foundation, constraint discovery/materialization/satisfaction/resolution; narrow engineering providers; generic CAD programs and rigid assemblies; exact collision, transient measurement, discrete single-axis kinematics, single-axis continuous proof, generic multi-joint discrete forward kinematics, exact discrete multi-joint collision evaluation, explicit-path continuous multi-joint clearance proof, durable bounded structural Evidence/repeatability/convergence, and the bounded M12/M13 candidate-to-canonical physical-mechanism route.
 
 The accepted M11 bounded structural path is also current: M11-2 provides the
 typed source-bound single-body linear-static authority model; M11-3 provides

@@ -12,11 +12,11 @@ MechCAD is not a Yagi antenna application, FreeCAD automation script, gear gener
 
 ## 3. Universal Engineering Workflow
 
-External requirements become typed canonical state. Readiness and dependencies select bounded tasks. Agents reason and return structured results. Deterministic tools calculate values. Accepted proposals pass through `ChangeSet` and `ChangeEngine` into an immutable revision. CAD and analysis are derived from accepted state, then verified and stored with evidence.
+External requirements become typed canonical state. Readiness and dependencies select bounded tasks. Agents reason and return structured results. Deterministic tools calculate values. Accepted production mutation flows pass through `ChangeSet` and `ChangeEngine` into an immutable revision. CAD and analysis are derived from accepted state, then verified and stored with evidence.
 
 ## 4. Trust and Authority Model
 
-`DesignState` is the canonical engineering source of truth. Agents, prose, CAD files, solver state, library objects, results, and evidence do not mutate it. Trusted change machinery is the only state mutation boundary.
+`DesignState` is the canonical engineering source of truth. Agents, prose, CAD files, solver state, library objects, results, and evidence do not mutate it. Accepted production mutation flows use trusted change machinery; `StateManager` remains a lower-level persistence primitive rather than a documented alternative production authority route.
 
 ## 5. Canonical DesignState
 
@@ -36,6 +36,7 @@ Agent or engineering service -> ChangeProposal -> ChangeSet -> ChangeEngine
 ```
 
 Proposals can be rejected for stale binding, invalid paths, ownership failure, invalid operations, or resulting-state validation failure.
+`proposal.status` is not an enforced approval gate.
 
 ## 8. Dependency and Invalidation
 
@@ -70,7 +71,7 @@ bounded repeatability and explicitly declared displacement-metric
 mesh-convergence studies, and M11-6 provides final system acceptance and live
 closure of the complete M11 structural production chain. Broad structural
 approval, general FEA, dynamics, and manufacturing validation remain
-`TARGET_NEXT` or `FUTURE`.
+`FUTURE` beyond the bounded M11 path.
 
 ## 15. Kinematic Architecture
 
@@ -91,8 +92,9 @@ Domains define authority models, state paths, ownership, deterministic services,
 The M8 production architecture (orchestration, source-bound CAD compilation,
 trusted imported components, mixed assembly, production kinematic entrypoint)
 and the M9 live verification (real FreeCAD, trusted imported STEP, live mixed
-assembly, exact discrete measurement, trusted execution provenance) are the
-current accepted baseline; see §22. M10-1 adds conservative continuous
+assembly, exact discrete measurement, trusted execution provenance) are accepted
+foundational production/runtime layers that remain part of the current baseline;
+see §22. M10-1 adds conservative continuous
 single-axis clearance proof. M10-2 adds generic multi-joint discrete forward
 kinematics. M10-3 adds exact discrete multi-joint collision evaluation over
 transformed assemblies with trusted live FreeCAD provenance. Current M10 final
@@ -285,42 +287,39 @@ closure marker is `M11_FULLY_CLOSED_LIVE_VERIFIED`.
   the bounded M11 path, global convergence, materials, manufacturing, and
   optimization remain future
 
-## 24. Next Planning Boundary
+## 24. M12 / M13 Current Accepted Baseline
 
-M10-1 through M10-4 and the M10-5 system acceptance are implemented and
-live-verified. The M11 structural architecture (M11-1 through M11-6) is fully
-closed and live-verified. Whole configuration-space continuous clearance,
-broad FEA beyond the bounded M11 path, materials
-selection, manufacturing approval, tolerance verification, optimization, and
-automatic synthesis/selection remain later-stage and are not current
-capability. The next milestone requires a separate design/specification cycle.
+M12 adds a bounded candidate-to-canonical physical-mechanism route. Candidates,
+their publication, CAD, M10 results, evaluations, comparisons, and selections
+remain source-bound derived records. Selection is explicit and noncanonical.
+Only explicit promotion of a selected current feasible candidate advances the
+accepted production route to N+1, followed by fresh canonical reconstruction
+and required CAD/M10 verification. M12-6 live-verified bounded direct-drive and
+external-spur flows; it did not add general synthesis, optimization, or
+structural execution.
 
-## 25. Historical Baseline Reconciliation
+M13 adds typed supplied-component interface authority, semantic generated-part
+authority with derived CAD, and bounded physical-mechanism/multi-joint lowering.
+M13-4 is the current accepted terminal baseline for production composition and
+durable promotion verification. These semantics remain bounded: supplied
+geometry does not infer authority, generated CAD is not manufacturing truth,
+and multi-joint verification is not general trajectory or configuration-space
+certification.
 
-| Historical Statement | Current Classification | Current Source | Reconciliation Decision (not maturity) | Notes |
-|---|---|---|---|---|
-| Universal reusable mechanical-engineering harness | Architecture principle | `docs/MechCAD_Harness_Project_Description.md` sections 1, 26, 28 | PRESERVE | The antenna rotator is the first practical reference project, not the system definition. |
-| DesignState authority | Canonical contract | M0/M1/M2 specs; `models/design.py` | PRESERVE | External records remain separate. |
-| Immutable revisions and hashes | Current foundation | `state/manager.py`, `state/hashing.py` | PRESERVE | Filesystem persistence is established. |
-| Dependency and invalidation | Current foundation | M3 spec; `dependency/` | PRESERVE | Freshness is fail-closed. |
-| RunController | Current foundation | M4 spec; `runs/` | UPDATE | It is beyond the old roadmap description. |
-| ToolBroker | Current foundation | M5 spec; `tools/` | UPDATE | Exact registration and provenance are normative. |
-| Evidence | Current foundation | M0/M3/M5/M6B specs | UPDATE | Tool and backend provenance extend the record. |
-| Agent Gateway / OpenCode | Accepted foundation | M6A/M6B specs and project description sections 10-12, 18 | UPDATE | Gateway, strict transport, and live path are baseline foundations; connected runtime behavior remains audit-required. |
-| Transmission agent | Accepted bounded foundation | M6B-1 specs and project description sections 13, 18 | UPDATE | Reasoning/tool/Evidence boundary is current; general transmission synthesis remains target-next. |
-| ConstraintRequest discovery/materialization | Accepted foundation | Project description sections 14-17, 18 | UPDATE | Typed keys, deterministic identity, persistence, and satisfaction suppression are current baseline contracts. |
-| Constraint resolution loop | Accepted foundation | Project description sections 17-18 | UPDATE | Trusted external resolution flows through proposal, ChangeSet, ChangeEngine, revision, and invalidation; runtime wiring remains audit-required. |
-| Engineering backend libraries | Narrow adapters | M5.5 specs; `backends/` | UPDATE | Package existence is not integration proof. |
-| FreeCAD was future/not integrated | Stale roadmap status | Project description sections 18-21; M7 records | SUPERSEDED | M7A establishes a generic derived CAD foundation; connected call paths remain audit-required. |
-| M6B-3 live acceptance was pending | Stale intermediate status | Project description section 17 | SUPERSEDED | Constraint discovery is recorded as established. |
-| M6B-4 was future | Stale intermediate status | Project description section 17 | SUPERSEDED | Constraint resolution is recorded as implemented and accepted as a foundation. |
-| M7A / first FreeCAD model was upcoming | Stale roadmap status | Project description sections 18, 20-21 | SUPERSEDED | Typed part, assembly, exact geometry, and persisted CAD foundations now precede the next connected-workflow goal. |
-| M7A CAD foundation | Accepted narrow foundation | Project description sections 18, 20; M7 trace | UPDATE | Not a general CAD solver. |
-| M7B domain modeling | Domain reference exercise | Project description sections 18, 26 | DOMAIN_EXAMPLE_ONLY | Done for current reference scope, with physical and structural questions unresolved. |
-| M7C generic kinematics | Accepted discrete foundation | Project description section 18; M7C plan/closure evidence | UPDATE | Continuous verification remains future. |
-| M7D domain kinematic integration | Completed reference adapter | M7D specs/plans; project description section 18 | DOMAIN_EXAMPLE_ONLY | Thin Yagi adapter over generic M7C, not core architecture. |
-| MuJoCo | Future simulation backend | No accepted current contract identified | FUTURE | Do not claim current integration. |
-| FEA | Bounded current structural backend plus future generalization | M11-3/M11-4 reports; README/M5.5C exclusions | UPDATE | Source-bound single-body mesh/solve/result interpretation is current; section properties are not a general FEA or structural-approval claim. |
-| Multi-agent engineering goals | Future orchestration | M6/M7 boundaries | FUTURE | Existing agent identities do not prove multi-agent execution. |
+## 25. Next Planning Boundary
 
-The historical/current project brief reviewed for this reconciliation is `docs/MechCAD_Harness_Project_Description.md`. It preserves the original universal intent while explicitly updating stale roadmap statements. Its implementation-status assertions establish baseline maturity for documentation purposes but do not replace the independent runtime audit.
+M10, M11, and the bounded M12/M13 production architecture are accepted current
+baseline. Whole configuration-space continuous clearance, broad FEA beyond the
+bounded M11 path, materials selection, manufacturing approval, tolerance
+verification, optimization, and automatic synthesis/selection remain later
+stage and are not current capability. Further architecture expansion requires a
+separate design/specification cycle.
+
+## 26. Historical Context
+
+The accepted reconstruction set owns milestone chronology, superseded roadmap
+statements, and historical acceptance evidence. Use
+`docs/reconstruction/README.md`, `MILESTONE_LEDGER.md`, and the relevant
+accepted audit rather than inferring history from this current architecture
+overview. `docs/MechCAD_Harness_Project_Description.md` remains contextual
+background and does not replace current implementation or audit evidence.
