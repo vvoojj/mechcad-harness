@@ -26,7 +26,7 @@ system contracts.
 
 | Status | Meaning |
 |---|---|
-| `EXISTS_PRODUCTION_VERIFIED` | Implemented, production-composed, reachable through a production entry point, and live verified. |
+| `EXISTS_PRODUCTION_VERIFIED` | Implemented, production-composed, reachable through a production entry point, and covered by accepted verification for the applicable production boundary. This may be `RUNTIME_VERIFIED` without external-runtime `LIVE_VERIFIED` when no relevant external-runtime boundary applies. |
 | `EXISTS_PRODUCTION_UNVERIFIED` | Implemented and production-composed, but no accepted live verification is recorded here. |
 | `EXISTS_UNWIRED` | Implemented and tested, but not composed into the default production workflow. |
 | `PARTIAL` | Some model, service, or provider boundary exists, but required semantics or end-to-end wiring do not. |
@@ -36,9 +36,12 @@ system contracts.
 | `MISSING` | No current implementation boundary. |
 
 When a status matters, also check whether the model, service, provider,
-registration, production composition, caller, end-to-end path, and live proof
-exist. An importable library or unit test is not automatically a production
-capability.
+registration, production composition, caller, end-to-end path, and applicable
+verification boundary exist. Production/runtime verification proves execution
+through the actual production application/service boundary; external-runtime
+live verification additionally requires the actual external executable/provider
+boundary when that boundary is part of the capability. An importable library or
+unit test is not automatically a production capability.
 
 ## Core State / Change Infrastructure
 
@@ -83,6 +86,94 @@ separately below.
 `TEST_ONLY` workflow boundaries include the deterministic fake agent transport.
 Its existence does not mean an agent workflow is selected by the default
 application path.
+
+## Constraint Resolution Canonical Application
+
+`EXISTS_PRODUCTION_VERIFIED`: `ProductionApplication.admit_constraint_resolution_batch(resolution_run_id, command_id)` provides the narrow, batch-only trusted admission edge from one complete persisted `ConstraintResolutionBatchCommand` to canonical state. It reuses the source run, applies an explicit project-bound default-deny resolver policy over all seven retained `SupportedConstraintKey` values at platform level (policy authorizes the concrete subset), maps targets only through `ConstraintRequestMaterializer.anchor_for(...)`, validates canonical anchor existence, and creates one ordinary `ChangeProposal` under actor `mechcad-authority-admission`. There is no one-resolution-per-revision production API.
+
+The validated batch is applied through `RunController -> ChangeEngine` as exactly one deterministic N -> N+1 revision. Typed `AuthoritativeParameter` values, canonical `source_resolution_id` provenance, deterministic proposal/ChangeSet identities, and the ordinary invalidation record are persisted. Empty direct/transitive invalidation tuples are valid when no current dependency rule matches; output-angular-speed admission leaves existing `analysis.transmission.torque` Evidence `CURRENT` when no configured torque dependency path changed.
+
+Exact immediate replay is read-only and creates no N+2; superseded historical-command replay fails closed. Project-wide resolution provenance lookup is fail-closed, so equivalent cross-run duplicates are ambiguous rather than benign deduplication. Validation-before-mutation is bounded: a later invalidation persistence failure can leave N+1 present and the source run blocked, with no rollback or N+2 recovery.
+
+Independent verdict: `CONSTRAINT_RESOLUTION_CANONICAL_APPLICATION_INDEPENDENTLY_ACCEPTED`. The capability is production-composed and independently runtime-verified; `LIVE_VERIFIED` is not applicable because it has no external-runtime boundary. This is a new current platform admission edge, not restoration of retired F10/M6B-4C workflow/application, ownership, preparation/receipt, promotion, or recovery paths. Constraint-resolution records remain noncanonical until this trusted route admits them; `DesignState` remains canonical and admission is not automatic from resolution or proposal status.
+
+This closes the generic platform prerequisite that previously blocked MINI N2 canonical resolution admission, but does not rerun or reopen MINI, prove MINI N2 -> N3 recomputation, or change MINI status. M12's separate canonical scalar-authority capability is now independently accepted as the bounded additive path documented below; the admitted typed value still does not by itself satisfy the legacy raw `{value, unit}` contract.
+
+## M12 Canonical Scalar Authority
+
+`EXISTS_PRODUCTION_VERIFIED`: M12 Canonical Scalar Authority is independently
+accepted. The bounded production path is:
+
+```text
+typed canonical AuthoritativeParameter
+-> verified read-only canonical scalar projection
+-> explicit M12-local rad/s -> rpm lowering
+-> ProjectedSourceBoundScalar
+-> existing RevoluteDriveEngineeringRequirements
+-> existing rpm-based calculations
+```
+
+`engineering/scalar_projection.py` provides a pure, read-only projector using an
+ID-addressed `AuthoritativeParameterLocator`. It verifies project identity,
+source revision, source state hash, exactly one parameter by deterministic
+parameter ID, and the complete authoritative-parameter hash. It projects only
+the initially supported `OutputAngularSpeedValue`, preserves canonical `rad/s`,
+performs no unit conversion, owns no `StateManager`, and performs no canonical
+mutation. Other typed `AuthoritativeValue` variants fail closed; this is not
+arbitrary composite-value scalar extraction. No public projector API was added.
+
+For output angular speed, `OutputAngularSpeedValue.value_rad_s` becomes a
+`CanonicalScalarProjection(value=<rad/s>, unit="rad/s")`, then the M12-local
+`m12-output-angular-speed-rad-s-to-rpm@1` rule explicitly produces a
+`ProjectedSourceBoundScalar(value=<rpm>, unit="rpm")`. Existing M12
+calculations remain unchanged and continue consuming `required_output_speed.value`
+as rpm. The generic projector is not a generic unit-conversion facility, and
+lowering/object construction grants no authority.
+
+`CanonicalScalarProjection` and `ProjectedSourceBoundScalar` are noncanonical
+derived records. A caller-supplied projection or projected scalar is a claim
+until the M12 production verifier recomputes it from the exact canonical source
+state; hashes alone do not establish canonical trust. The verifier checks the
+project, revision, state hash, exact parameter ID, full parameter hash,
+recomputed projection, canonical key/unit, projection rule, exact rpm
+normalization, normalized-value hash, and projected binding hash.
+
+The projected route reuses the existing C1 `CandidateSourceBinding` with the
+aggregate reference `path=/authoritative_parameters` and
+`authority=CANONICAL_PARAMETER`. That reference binds the complete canonical
+authoritative-parameter collection, so any collection change makes it stale;
+the exact consumed member remains separately bound by parameter ID and full
+record hash. No new candidate-source model or numeric array-index identity was
+introduced.
+
+The raw M12 route remains additive and unchanged: `SourceBoundScalar`,
+`TrustedCanonicalScalarSourceBinding`, `CandidateSourceBinding`, and their raw
+serialization/hash semantics remain in force. Its verifier still requires the
+literal canonical `{"value", "unit"}` record and rejects typed/composite
+records. The static legacy requirements and binding compatibility, including the
+existing requirements hash, remain unchanged; the new projected route does not
+rewrite M12-6 historical raw evidence.
+
+Canonical authority remains `DesignState`, specifically the typed
+`AuthoritativeParameter` containing `OutputAngularSpeedValue.value_rad_s`.
+Projection and lowering do not create a second scalar store or canonicalize
+Evidence, candidates, or other derived records. Only output-speed canonical
+scalar authority is closed here. Design torque, transverse forces, required
+voltage, required peak torque, efficiency, safety factor, shaft yield strength,
+shaft support geometry, interface-policy choice, component properties, and
+candidate template/design variables retain their existing caller, policy, or
+candidate authority sources. No automatic full `RevoluteDriveEngineeringRequirements`
+builder exists.
+
+Production verification is exercised through
+`ProductionApplication.realize_and_evaluate_revolute_drive(...)`, including the
+accepted constraint-resolution canonical admission integration. Constraint
+resolution remains a separate upstream capability, not part of M12 projection
+or M12-specific admission. The integrated proof depends on that independently
+accepted constraint-resolution implementation being present in the same
+worktree; this is a composition dependency, not an M12 defect. For this
+scalar-only boundary, external-runtime `LIVE_VERIFIED` is not applicable or
+proven; no fresh M12-6 FreeCAD/live acceptance is implied.
 
 ## Engineering Provider Inventory
 
@@ -304,7 +395,8 @@ synthesis, whole-configuration-space certification, or M11 execution.
   `ConstraintResolutionApplicationService`, state-application provenance route,
   and associated ownership route. They are no longer unwired/test-only
   capabilities; retained M6B-4A typed resolution and `ConstraintRequestMaterializer`
-  remain active.
+  remain active. The current canonical admission edge documented above is a new
+  narrow platform route and does not restore those retired components.
 
 ## Known Integration Boundaries
 
@@ -321,6 +413,8 @@ synthesis, whole-configuration-space certification, or M11 execution.
 | Canonical state, evidence persistence, and artifacts | `EXISTS_PRODUCTION_VERIFIED` | `ProductionApplication.create` | Yes | No automatic authority mutation | [Core State / Change Infrastructure](#core-state--change-infrastructure) |
 | Generic proposals, changes, and run control | `EXISTS_PRODUCTION_UNVERIFIED` | `ProductionApplication.create` | No standalone live proof | Generic path has production composition and tests, but no accepted complete live workflow | [Core State / Change Infrastructure](#core-state--change-infrastructure) |
 | Built-in tools and transmission reasoning | `EXISTS_PRODUCTION_UNVERIFIED` | `run_transmission_round_trip` | Torque slice only | Default registration is not individual live verification; no automatic synthesis/selection | [Agent / Orchestration Infrastructure](#agent--orchestration-infrastructure) |
+| Constraint resolution canonical application | `EXISTS_PRODUCTION_VERIFIED` | `ProductionApplication.admit_constraint_resolution_batch` | Independent runtime verified; external-runtime live verification N/A | Batch-only policy-authorized admission; one N -> N+1; exact immediate replay is read-only; M12 scalar authority remains separate | [Constraint Resolution Canonical Application](#constraint-resolution-canonical-application) |
+| M12 canonical scalar authority | `EXISTS_PRODUCTION_VERIFIED` (independently accepted) | `ProductionApplication.realize_and_evaluate_revolute_drive` | Runtime verified; external-runtime live verification N/A | Output-speed projection only; derived noncanonical `rad/s` projection and explicit `rpm` lowering; raw M12 path unchanged; other M12 authority remains bounded | [M12 Canonical Scalar Authority](#m12-canonical-scalar-authority) |
 | Optional gear/material/section providers | `EXISTS_UNWIRED` | Explicit additional registrations | Selected paths | Not defaults; bounded domains | [Engineering Provider Inventory](#engineering-provider-inventory) |
 | Generic/mixed CAD and imported STEP | `EXISTS_PRODUCTION_VERIFIED` | Assembly/CAD application services | Yes | Plate compiler is narrow; external gear CAD requires optional registration | [CAD Capability](#cad-capability) |
 | M10 kinematics/collision/clearance | `EXISTS_PRODUCTION_VERIFIED` | M10 `ProductionApplication` methods | Yes | Rigid revolute model; bounded paths | [Kinematics / Collision / Clearance](#kinematics--collision--clearance) |
