@@ -184,6 +184,34 @@ def test_manifest_stays_unchanged_while_mutable_state_advances(tmp_path):
     assert state["iteration"] == 1
 
 
+def test_apply_approved_proposal_forwards_optional_changeset_id(tmp_path):
+    controller, snapshot = make_controller(tmp_path)
+    run = controller.create_run("PRJ-1")
+    proposal = ChangeProposal(
+        id="CP-CHGSET",
+        title="material",
+        status=ProposalStatus.DRAFT,
+        base_revision=1,
+        base_state_hash=snapshot.state_hash,
+        actor="actor",
+        operations=[
+            ChangeOperation(
+                operation="replace",
+                path="/components/PRT-1/name",
+                value="Plate",
+            )
+        ],
+    )
+
+    controller.apply_approved_proposal(
+        run.run_id,
+        proposal,
+        changeset_id="CS-deterministic",
+    )
+
+    assert controller.evidence.load_invalidation("PRJ-1", 2).changeset_id == "CS-deterministic"
+
+
 def test_resume_uses_state_not_mutable_manifest_fields(tmp_path):
     controller, snapshot = make_controller(tmp_path)
     run = controller.create_run("PRJ-1")

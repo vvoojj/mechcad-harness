@@ -11,6 +11,10 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 from mechcad_harness.agents import AgentAdapter, AgentIdentity, AgentRegistry, ContextBuilder
 from mechcad_harness.agents.gateway import AgentGateway
 from mechcad_harness.changes import ChangeEngine, OwnershipPolicy
+from mechcad_harness.changes.constraint_resolution_admission import (
+    ConstraintResolutionAdmissionPolicy,
+    ConstraintResolutionAdmissionService,
+)
 from mechcad_harness.dependency import DependencyGraph, EvidenceStore
 from mechcad_harness.dependency.errors import EvidenceIntegrityError
 from mechcad_harness.artifacts.models import ArtifactType
@@ -413,6 +417,8 @@ class ProductionApplication:
         "tool_broker",
         "evidence_store",
         "change_engine",
+        "constraint_resolution_policy",
+        "constraint_resolution_admission_service",
         "context_builder",
         "cad_compiler",
         "structural_service",
@@ -476,6 +482,7 @@ class ProductionApplication:
         evidence_store: EvidenceStore,
         change_engine: ChangeEngine,
         context_builder: ContextBuilder,
+        constraint_resolution_policy: ConstraintResolutionAdmissionPolicy | None = None,
         kinematic_measure: Callable[
             [TransientAssemblyAnalysisRequest, CadAssemblyProgram],
             tuple[tuple[str, str, float, float], ...],
@@ -493,6 +500,13 @@ class ProductionApplication:
         self.evidence_store = evidence_store
         self.change_engine = change_engine
         self.context_builder = context_builder
+        self.constraint_resolution_policy = constraint_resolution_policy or ConstraintResolutionAdmissionPolicy.deny_all(project_id)
+        self.constraint_resolution_admission_service = ConstraintResolutionAdmissionService(
+            project_id=project_id,
+            state_manager=state_manager,
+            run_controller=run_controller,
+            policy=self.constraint_resolution_policy,
+        )
         self.candidate_integrity_verifier = CandidateIntegrityVerifier()
         self.candidate_currentness_service = CandidateCurrentnessService(state_manager)
         self.candidate_publication_service = CandidatePublicationService(
@@ -789,6 +803,8 @@ class ProductionApplication:
         ]
         | FreeCADTransientAssemblyMeasurementProvider
         | None = None,
+        constraint_resolution_policy_path: str | Path | None = None,
+        constraint_resolution_policy: ConstraintResolutionAdmissionPolicy | None = None,
     ) -> "ProductionApplication":
         if not project_id.strip():
             raise ValueError("project_id must not be empty")
@@ -800,6 +816,17 @@ class ProductionApplication:
         dependencies = Path(dependency_path)
         if not ownership.exists() or not dependencies.exists():
             raise ValueError("ownership and dependency configuration files are required")
+        if constraint_resolution_policy_path is not None and constraint_resolution_policy is not None:
+            raise ValueError("provide only one constraint resolution admission policy")
+        if constraint_resolution_policy_path is not None:
+            admission_policy = ConstraintResolutionAdmissionPolicy.from_file(
+                constraint_resolution_policy_path,
+                project_id=project_id,
+            )
+        elif constraint_resolution_policy is not None:
+            admission_policy = constraint_resolution_policy.for_project(project_id)
+        else:
+            admission_policy = ConstraintResolutionAdmissionPolicy.deny_all(project_id)
 
         state_manager = StateManager(workspace)
         graph = DependencyGraph.from_yaml(dependencies)
@@ -829,6 +856,7 @@ class ProductionApplication:
             evidence_store=evidence_store,
             change_engine=change_engine,
             context_builder=context_builder,
+            constraint_resolution_policy=admission_policy,
             kinematic_measure=kinematic_measure,
         )
 
@@ -869,6 +897,13 @@ class ProductionApplication:
         ):
             raise RunIntegrityError("persisted run binding does not match loaded source")
         return ProductionRunBinding(run=persisted, source=source)
+
+    def admit_constraint_resolution_batch(
+        self, resolution_run_id: str, command_id: str
+    ):
+        return self.constraint_resolution_admission_service.admit_batch(
+            resolution_run_id, command_id
+        )
 
     def run_transmission_round_trip(
         self,

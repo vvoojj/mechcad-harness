@@ -176,9 +176,19 @@ class RunController:
         self.store.write_task_state(run.project_id, run_id, TaskState(task_id=task_id, bound_revision=definition.bound_revision, bound_state_hash=definition.bound_state_hash, status=result.status, started_at=existing.started_at, completed_at=datetime.now(timezone.utc), result_id=result.result_id))
         self.store.append_event(run.project_id, run_id, "TASK_SUCCEEDED" if result.status is TaskStatus.SUCCEEDED else "TASK_FAILED", {"task_id": task_id, "result_id": result.result_id})
 
-    def apply_approved_proposal(self, run_id: str, proposal: ChangeProposal):
+    def apply_approved_proposal(
+        self,
+        run_id: str,
+        proposal: ChangeProposal,
+        *,
+        changeset_id: str | None = None,
+    ):
         run = self.get_run(run_id)
-        applied = self.change_engine.apply_proposal(run.project_id, proposal)
+        applied = self.change_engine.apply_proposal(
+            run.project_id,
+            proposal,
+            changeset_id=changeset_id,
+        )
         try:
             updated = ConvergenceTracker.record_revision(run, applied.snapshot.revision, applied.snapshot.state_hash)
         except Exception as exc:

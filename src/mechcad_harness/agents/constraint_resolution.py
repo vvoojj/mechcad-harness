@@ -147,6 +147,66 @@ class ConstraintResolutionStore:
     def load_resolution(self, project_id, run_id, resolution_id):
         return self.store._read(self._path(project_id, run_id, "constraint_resolutions", resolution_id), ConstraintResolutionRecord)
 
+    def _project_resolution_records(self, project_id: str):
+        runs_dir = self.store.workspace / "projects" / project_id / "runs"
+        if not runs_dir.exists():
+            return ()
+        records = []
+        for path in sorted(
+            runs_dir.glob("*/agents/constraint_resolutions/*.json"),
+            key=lambda item: str(item),
+        ):
+            try:
+                record = self.store._read(path, ConstraintResolutionRecord)
+            except Exception as exc:
+                raise ValueError("malformed project-wide resolution record") from exc
+            if record.project_id != project_id:
+                raise ValueError("project-wide resolution record project mismatch")
+            records.append(record)
+        return tuple(records)
+
+    def load_unique_project_resolution(
+        self, project_id: str, resolution_id: str
+    ) -> ConstraintResolutionRecord:
+        matches = [
+            record
+            for record in self._project_resolution_records(project_id)
+            if record.resolution_id == resolution_id
+        ]
+        if not matches:
+            raise ValueError("no project-wide resolution record matches the ID")
+        if len(matches) != 1:
+            raise ValueError("ambiguous project-wide resolution ID")
+        return matches[0]
+
+    def load_project_resolutions_by_source_request(
+        self, project_id: str, source_constraint_request_id: str
+    ) -> tuple[ConstraintResolutionRecord, ...]:
+        return tuple(
+            record
+            for record in self._project_resolution_records(project_id)
+            if record.source_constraint_request_id == source_constraint_request_id
+            and record.status is ResolutionStatus.ACCEPTED
+        )
+
+    def load_command_scoped_resolutions(
+        self, project_id: str, run_id: str, command_id: str
+    ) -> tuple[ConstraintResolutionRecord, ...]:
+        directory = self.store.run_dir(project_id, run_id) / "agents" / "constraint_resolutions"
+        if not directory.exists():
+            return ()
+        records = []
+        for path in sorted(directory.glob("*.json"), key=lambda item: item.name):
+            try:
+                record = self.store._read(path, ConstraintResolutionRecord)
+            except Exception as exc:
+                raise ValueError("malformed persisted resolution record") from exc
+            if record.project_id != project_id:
+                raise ValueError("resolution record project mismatch")
+            if record.source_command_id == command_id:
+                records.append(record)
+        return tuple(records)
+
     def load_accepted_by_source_request(self, project_id, run_id, source_constraint_request_id):
         directory = self.store.run_dir(project_id, run_id) / "agents" / "constraint_resolutions"
         if not directory.exists():
