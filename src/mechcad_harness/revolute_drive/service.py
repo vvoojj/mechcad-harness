@@ -4,6 +4,7 @@ import hashlib
 import math
 
 from mechcad_harness.candidates.models import (
+    CandidateSourceAuthority,
     CandidateSynthesisPolicy,
     CandidateSynthesisRequest,
     ComponentSpecificationSnapshot,
@@ -17,6 +18,7 @@ from mechcad_harness.candidates.models import (
     PhysicalMechanismRealization,
     PolicyEntrySemantics,
 )
+from mechcad_harness.engineering.scalar_projection import verify_canonical_scalar_projection
 from mechcad_harness.revolute_drive.calculations import (
     _numeric_property,
     calculate_shaft_static_sizing,
@@ -30,6 +32,7 @@ from mechcad_harness.revolute_drive.models import (
     EngineeringCheck,
     EngineeringCheckStatus,
     InputProvenanceKind,
+    ProjectedSourceBoundScalar,
     RevoluteDriveAdmissibilityResult,
     RevoluteDriveConstructionOutcome,
     RevoluteDriveEngineeringRequirements,
@@ -142,6 +145,64 @@ def _revalidate_requirements(requirements):
     )
 
 
+def _projected_source_scalar_binding_defects(requirements, request, source_state) -> list[str]:
+    scalar = requirements.required_output_speed
+    defects: list[str] = []
+    references = {
+        reference.path: reference
+        for reference in request.source_binding.consumed_authority
+    }
+    reference = references.get("/authoritative_parameters")
+    if reference is None:
+        defects.append("projected output speed requires /authoritative_parameters source binding")
+    elif reference.authority is not CandidateSourceAuthority.CANONICAL_PARAMETER:
+        defects.append("/authoritative_parameters source binding has the wrong authority")
+
+    if source_state is None:
+        defects.append("projected output speed requires the canonical source state")
+        return defects
+
+    if reference is not None:
+        source_payload = source_state.model_dump(mode="json")
+        try:
+            actual_reference_hash = "sha256:" + hashlib.sha256(
+                canonical_json(source_payload["authoritative_parameters"])
+            ).hexdigest()
+        except (KeyError, TypeError) as exc:
+            defects.append(f"/authoritative_parameters source binding cannot be resolved: {exc}")
+        else:
+            if reference.value_hash != actual_reference_hash:
+                defects.append("/authoritative_parameters source binding hash mismatch")
+
+    if scalar.canonical_projection.source.project_id != request.source_binding.project_id:
+        defects.append("projected output speed locator project does not match the request source binding")
+
+    try:
+        projection = verify_canonical_scalar_projection(
+            request.source_binding.project_id,
+            source_state,
+            scalar.canonical_projection,
+        )
+    except (TypeError, ValueError) as exc:
+        defects.append(f"projected canonical output-speed recomputation failed: {exc}")
+        return defects
+
+    from mechcad_harness.revolute_drive.lowering import lower_projected_output_speed
+
+    expected = lower_projected_output_speed(projection)
+    if scalar.unit != expected.unit:
+        defects.append("projected output speed unit does not match exact rpm normalization")
+    if scalar.value != expected.value:
+        defects.append("projected output speed value does not match exact rpm normalization")
+    if scalar.normalization_rule_id != expected.normalization_rule_id:
+        defects.append("projected output speed normalization rule mismatch")
+    if scalar.normalized_value_hash != expected.normalized_value_hash:
+        defects.append("projected output speed normalized value hash mismatch")
+    if scalar.binding_hash != expected.binding_hash:
+        defects.append("projected output speed binding hash mismatch")
+    return defects
+
+
 def _requirement_scalars(requirements: RevoluteDriveEngineeringRequirements):
     load_case = requirements.design_load_case
     scalars: list[tuple[str, object]] = [
@@ -175,11 +236,13 @@ def _requirement_scalars(requirements: RevoluteDriveEngineeringRequirements):
 
 
 def _source_scalar_binding_defects(requirements, request, source_state=None) -> list[str]:
+    defects: list[str] = []
+    if isinstance(requirements.required_output_speed, ProjectedSourceBoundScalar):
+        defects.extend(_projected_source_scalar_binding_defects(requirements, request, source_state))
     references = {
         reference.path: reference
         for reference in request.source_binding.consumed_authority
     }
-    defects: list[str] = []
     trusted_bindings = {
         binding.source_path: binding
         for binding in requirements.trusted_source_scalar_bindings
@@ -192,6 +255,8 @@ def _source_scalar_binding_defects(requirements, request, source_state=None) -> 
             else source_state
         )
     for semantic_path, scalar_value in _requirement_scalars(requirements):
+        if isinstance(scalar_value, ProjectedSourceBoundScalar):
+            continue
         if scalar_value.provenance is InputProvenanceKind.SOURCE_AUTHORITY:
             declared = scalar_value.source_path
             reference = references.get(declared)

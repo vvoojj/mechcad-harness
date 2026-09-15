@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import json
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -30,6 +32,15 @@ from mechcad_harness.revolute_drive import (
 
 def scalar(value: float, unit: str = "N*m", *, provenance=InputProvenanceKind.SOURCE_AUTHORITY, source_path="/requirements/design_torque"):
     return SourceBoundScalar(value=value, unit=unit, provenance=provenance, source_path=source_path)
+
+
+def test_static_legacy_requirements_golden_round_trips_exactly():
+    fixture = Path(__file__).parents[1] / "fixtures" / "m12_raw_requirements_legacy.json"
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
+    parsed = RevoluteDriveEngineeringRequirements.model_validate(payload)
+
+    assert parsed.model_dump(mode="json") == payload
+    assert parsed.requirements_hash == payload["requirements_hash"]
 
 
 def test_models_are_frozen_and_forbid_extra_fields():

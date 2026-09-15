@@ -13,6 +13,7 @@ from mechcad_harness.candidates.models import (
     ComponentSpecificationSnapshot,
     MechanicalDesignCandidate,
 )
+from mechcad_harness.engineering.scalar_projection import CanonicalScalarProjection
 from mechcad_harness.models.common import Model
 from mechcad_harness.state.hashing import canonical_json
 
@@ -121,6 +122,43 @@ class SourceBoundScalar(RevoluteDriveModel):
         return self
 
 
+class ProjectedSourceBoundScalar(RevoluteDriveModel):
+    value: float
+    unit: Literal["rpm"]
+    canonical_projection: CanonicalScalarProjection
+    normalization_rule_id: Literal["m12-output-angular-speed-rad-s-to-rpm@1"]
+    normalized_value_hash: str = "pending"
+    binding_hash: str = "pending"
+
+    _validate_hashes = field_validator("normalized_value_hash", "binding_hash")(
+        lambda value: value if value == "pending" else _require_hash(value)
+    )
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def validate_finite(cls, value: float) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("projected scalar value must be numeric")
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError("projected scalar value must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> ProjectedSourceBoundScalar:
+        expected_value_hash = _scalar_value_hash(self.value, self.unit)
+        if self.normalized_value_hash == "pending":
+            object.__setattr__(self, "normalized_value_hash", expected_value_hash)
+        elif self.normalized_value_hash != expected_value_hash:
+            raise ValueError("projected scalar normalized value hash mismatch")
+        expected_binding_hash = _hash(self, "binding_hash")
+        if self.binding_hash == "pending":
+            object.__setattr__(self, "binding_hash", expected_binding_hash)
+        elif self.binding_hash != expected_binding_hash:
+            raise ValueError("projected scalar binding hash mismatch")
+        return self
+
+
 class TrustedCanonicalScalarSourceBinding(RevoluteDriveModel):
     """Explicit scalar evidence supplied by a trusted canonical-source adapter.
 
@@ -224,7 +262,7 @@ class ShaftSupportGeometry(RevoluteDriveModel):
 
 
 class RevoluteDriveEngineeringRequirements(RevoluteDriveModel):
-    required_output_speed: SourceBoundScalar
+    required_output_speed: SourceBoundScalar | ProjectedSourceBoundScalar
     design_load_case: StaticOutputShaftDesignLoadCase
     required_voltage: SourceBoundScalar | None = None
     required_peak_torque: SourceBoundScalar | None = None
@@ -423,6 +461,7 @@ __all__ = [
     "EngineeringCheck",
     "EngineeringCheckStatus",
     "InputProvenanceKind",
+    "ProjectedSourceBoundScalar",
     "RevoluteDriveAdmissibilityResult",
     "RevoluteDriveConstructionOutcome",
     "RevoluteDriveEngineeringRequirements",
