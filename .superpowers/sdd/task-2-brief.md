@@ -1,32 +1,38 @@
-### Task 2: Add Frozen M12-3 Models And Provenance Bindings
+# Task 2: Add Rigid-Body Member and Body Records
+
+**Purpose:** Represent a generic rigid kinematic body with explicit full-precision constituent offsets.
 
 **Files:**
-- Create: `src/mechcad_harness/revolute_drive/models.py`
-- Create: `src/mechcad_harness/revolute_drive/__init__.py`
-- Test: `tests/unit/test_m12_revolute_drive_models.py`
+- Modify: `src/mechcad_harness/multi_joint_kinematics.py`
+- Modify: `tests/unit/test_m13_3p_rigid_body_groups.py`
 
-**Interfaces:**
-- Produces enums `DriveArchitecture`, `EngineeringCheckStatus`, `DriveAdmissibility`, `InputProvenanceKind`.
-- Produces frozen models `SourceBoundScalar`, `ConsumedPropertyBinding`, `StaticOutputShaftDesignLoadCase`, `RevoluteDriveEngineeringRequirements`, `RevoluteDriveTemplateInput`, `ShaftSupportGeometry`, `RevoluteDriveConstructionOutcome`, `EngineeringCheck`, and `RevoluteDriveAdmissibilityResult`.
-- Every dimensional model validates exact units, finite values, positive domains, and rejects NaN/Inf. Every durable result uses canonical JSON hashing and excludes its own `result_hash` from the hash payload.
+**New symbols:**
+```python
+class KinematicRigidBodyMember(Model):
+    member_instance_id: str
+    reference_to_member_home: CadRigidTransform
 
-- [ ] **Step 1: Write failing model tests**
+class KinematicRigidBody(Model):
+    schema_version: Literal["kinematic-rigid-body@1"]
+    body_id: str
+    reference_member_instance_id: str
+    members: tuple[KinematicRigidBodyMember, ...]
+    body_hash: str
 
-  Cover frozen/extra-forbid behavior, scalar speed contract, source versus policy provenance, valid/invalid efficiency, safety factor, load case, support ordering, and hash determinism. Assert `RevoluteDriveConstructionOutcome(candidate=None, status=UNRESOLVED)` is valid for incomplete construction.
+def kinematic_rigid_body_hash(body: KinematicRigidBody) -> str
+```
 
-- [ ] **Step 2: Run model tests to confirm failure**
+- Write failing tests for blank/whitespace IDs, empty members, duplicate members, missing reference member, duplicate reference member, non-identity reference offset, canonical member ordering, and body-hash sensitivity to ID, reference member, member membership, and exact offset values.
+- Validate nonblank `body_id`, `reference_member_instance_id`, and `member_instance_id` with a shared local `_require_nonblank_kinematic_id(value, label)` helper. Canonicalize the persisted `members` tuple by `member_instance_id` with `object.__setattr__`; reject duplicates before sorting. Require the reference member to occur exactly once and its declared offset to be literal `CadRigidTransform()` equality, not the agreement predicate.
+- Define the body hash payload as `schema_version`, `body_id`, `reference_member_instance_id`, and canonical `members`, with each member serialized as `member_instance_id` plus the unrounded `CadRigidTransform.model_dump(mode="json")`. Derive/verify `body_hash` in the after validator, excluding `body_hash` from its own payload.
+- Run focused body tests and Task 0 goldens.
 
-  Run: `py -3 -m pytest tests/unit/test_m12_revolute_drive_models.py -q`
+**Validation invariants:** Member offsets are explicit, persisted at full precision, and never derived from assembly geometry or source placement.
 
-  Expected: FAIL because the package/models are absent.
+**Serialization/hash impact:** New v2-only records; v1 serializer and hashes do not observe these types.
 
-- [ ] **Step 3: Implement minimal immutable schemas**
+**Legacy compatibility impact:** None.
 
-  Reuse `mechcad_harness.models.common.Model` and `state.hashing.canonical_json`. Represent requirements as explicit source-bound fields and policy assumptions as explicit `SourceBoundScalar` values with `InputProvenanceKind.POLICY_ASSUMPTION`; never coerce missing values to zero. Keep derived values, checks, and unresolved reasons separate.
+**STOP conditions:** A member silently belongs to more than one body, an offset is inferred, a body is represented by a compound, or a reference offset is accepted by tolerance instead of literal identity.
 
-- [ ] **Step 4: Run model tests to confirm pass**
-
-  Run: `py -3 -m pytest tests/unit/test_m12_revolute_drive_models.py -q`
-
-  Expected: PASS.
-
+**Exit criteria:** Body records canonicalize deterministically and fail closed for every listed malformed record.

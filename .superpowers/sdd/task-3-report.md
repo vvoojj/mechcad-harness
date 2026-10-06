@@ -307,3 +307,376 @@ copy warnings for tracked files.
 
 No commit, push, reset, stash, clean, checkout, revert, discard, or destructive
 Git operation was performed.
+
+## M12-5 Task 3 Report: Ownership And Dependency Configuration
+
+### Status
+
+Implemented only M12-5 Task 3 ownership and dependency configuration with
+focused tests. No commit, tag, or push was created. Existing unrelated dirty
+and untracked worktree contents were preserved.
+
+### Scope
+
+Changed only the requested repository configuration and focused test files:
+
+- `config/ownership.yaml`
+  - Added exactly `/physical_mechanisms/*` owned by
+    `mechcad-physical-mechanism`.
+  - No root or broad ownership rule was added.
+- `config/dependencies.yaml`
+  - Added exactly one `/physical_mechanisms/*` rule.
+  - It invalidates only `analysis.continuous_clearance_proof` and
+    `analysis.kinematic_sweep`.
+  - No `analysis.structural` rule was added because the current structural
+    schema has no explicit mechanism-consumption relation.
+- `tests/unit/test_changes.py`
+  - Added coverage that the physical-mechanism owner may check
+    `/physical_mechanisms/PM-1` and is rejected for requirements, components,
+    structural definitions, and the root path.
+  - Retained the existing structural-owner assertions.
+- `tests/unit/test_dependency.py`
+  - Added coverage that a PM-1 change has exactly the two supported M10 impact
+    nodes and no transitive expansion.
+  - The test documents the static matcher boundary: `path_matches()` cannot
+    synthesize dynamic per-mechanism evidence nodes or infer structural
+    consumption.
+
+Before editing, the actual implementations were inspected. `OwnershipPolicy`
+loads the configured ownership list and applies its existing longest matching
+path behavior. `DependencyGraph.from_yaml()` uses the existing small YAML
+parser, while `impact()` applies static `path_matches()` rules and declared
+graph edges. No production parser, graph, ChangeEngine, or promotion code was
+changed.
+
+### TDD Evidence
+
+The new tests were written before the YAML changes.
+
+Initial red command:
+
+```text
+py -3 -m pytest tests/unit/test_changes.py tests/unit/test_dependency.py -q
+.........F...F........                                                   [100%]
+2 failed, 20 passed in 1.58s
+```
+
+The failures were the expected missing-configuration failures:
+
+- the PM-1 ownership check raised `OwnershipViolationError` because no owner
+  governed the path;
+- the dependency impact was empty instead of containing the two M10 nodes.
+
+After the minimal YAML changes:
+
+```text
+py -3 -m pytest tests/unit/test_changes.py tests/unit/test_dependency.py -q
+......................                                                   [100%]
+22 passed in 1.29s
+```
+
+### Verification
+
+Focused Task 3 tests passed:
+
+```text
+py -3 -m pytest tests/unit/test_changes.py tests/unit/test_dependency.py -q
+22 passed in 1.29s
+```
+
+Focused tests plus the relevant Task 2 predecessor coverage passed:
+
+```text
+py -3 -m pytest tests/unit/test_changes.py tests/unit/test_dependency.py tests/unit/test_state_foundation.py tests/unit/test_m12_canonical_physical_mechanism.py -q
+53 passed in 1.90s
+```
+
+Scoped whitespace verification passed:
+
+```text
+git diff --check -- config/ownership.yaml config/dependencies.yaml tests/unit/test_changes.py tests/unit/test_dependency.py
+```
+
+Git emitted only normal LF-to-CRLF working-copy warnings for tracked files.
+
+### Self-Review And Concerns
+
+- The ownership rule follows the repository's existing collection-item wildcard
+  convention and does not broaden ownership of requirements, components,
+  structural definitions, or the root.
+- The dependency rule is family-level and static by design. It does not create
+  per-mechanism evidence nodes, and structural invalidation is intentionally
+  absent until an explicit schema relation exists.
+- Existing ownership and dependency parser behavior was left unchanged.
+- Full repository execution was not run; the requested focused and predecessor
+  suites completed successfully.
+- No ChangeEngine, promotion, candidate-store, rebase, rollback, M12-6, or
+  assembly FEA work was added.
+- No commit, tag, push, reset, stash, clean, checkout, revert, discard, or
+  other destructive Git operation was performed.
+
+---
+
+# M13-1 Task 3 Report: Geometry Reference @1 Compatibility
+
+## Status
+
+Implemented M13-1 Task 3 in the current worktree. No commit, tag, push, reset,
+stash, clean, checkout, revert, discard, or other destructive Git operation was
+performed. Existing unrelated worktree changes were preserved.
+
+## Scope
+
+Added `coordinate_system_id` and `reference_hash` to the candidate
+`GeometrySourceReference`, and `coordinate_system_id` to the canonical
+`CanonicalGeometrySourceReference`.
+
+- Candidate and canonical reference hashes use `reference_hash_payload(...)`.
+- `reference_hash` is excluded from its own hash input.
+- A `None` coordinate system is excluded from the hash input.
+- Candidate `@1` serialization remains exactly the historical four-field
+  reference shape.
+- Canonical `@1` serialization remains exactly the historical five-field
+  reference shape, including its existing `reference_hash`.
+- M13 coordinate-bearing serialization emits the coordinate system and the
+  self-hash.
+- Explicit candidate and canonical projection helpers remain the serializer
+  boundary, rather than relying on Pydantic's treatment of `None`.
+- Canonical references accept a valid legacy self-hash when a coordinate system
+  is added to an old in-memory payload, then recompute the coordinate-aware
+  self-hash; arbitrary mismatches remain rejected.
+
+No M10/M11 behavior or `projects/rotator_v2` files were changed.
+
+## TDD Evidence
+
+The literal golden tests from
+`.superpowers/sdd/task-3-brief.md` were added before the production model
+changes.
+
+Initial red command:
+
+```text
+py -3 -m pytest tests/unit/test_m13_legacy_hash_compatibility.py -q
+```
+
+Initial result:
+
+```text
+3 failed, 3 passed
+```
+
+The expected failures were the absent `coordinate_system_id` attributes and
+the forbidden coordinate-system input on `GeometrySourceReference`.
+
+The first implementation attempt also exposed an import cycle caused by
+eagerly importing the identity helpers while `state.hashing` lazily imports
+canonical models. The helpers were moved to the model methods' runtime import
+boundary; no identity semantics changed.
+
+## Verification
+
+Focused M13 goldens, identity tests, and the listed M12 regressions:
+
+```text
+py -3 -m pytest tests/unit/test_m13_legacy_hash_compatibility.py tests/unit/test_m13_geometry_identity.py tests/unit/test_m12_candidate_foundation.py tests/unit/test_m12_canonical_reconstruction.py tests/unit/test_m12_candidate_cad_models.py -q
+................................................                         [100%]
+48 passed in 3.24s
+```
+
+Compile check:
+
+```text
+py -3 -m compileall -q src tests
+```
+
+Passed with no output.
+
+Scoped whitespace check:
+
+```text
+git diff --check -- src/mechcad_harness/candidates/models.py src/mechcad_harness/models/physical_mechanism.py tests/unit/test_m13_legacy_hash_compatibility.py
+```
+
+Passed with no whitespace errors. Git emitted only normal LF-to-CRLF working
+copy warnings for the tracked Python files.
+
+## Changed Files
+
+- `src/mechcad_harness/candidates/models.py`
+- `src/mechcad_harness/models/physical_mechanism.py`
+- `tests/unit/test_m13_legacy_hash_compatibility.py`
+- `.superpowers/sdd/task-3-report.md`
+
+## Self-Review And Concerns
+
+- The supplied canonical coordinate-extension test retains the old canonical
+  self-hash while adding the coordinate field; the implementation accepts only
+  that hash if it exactly matches the legacy projection, and immediately
+  replaces it with the coordinate-aware hash.
+- The repository was not run as a full test suite; the brief-requested focused
+  tests and compile check passed.
+- Existing unrelated modifications, including the prior contents of this
+  report, remain in place.
+
+---
+
+# M13-3P Task 3 Report: Versioned Kinematic Schema And Hash Contracts
+
+## Status
+
+Implemented Task 3 of M13-3P in the current worktree. No commit, tag, push,
+release, reset, stash, clean, checkout, revert, discard, or other destructive
+Git operation was performed. Existing unrelated dirty and untracked worktree
+contents were preserved.
+
+## Scope Completed
+
+Changed only the requested kinematics module and focused tests:
+
+- `src/mechcad_harness/multi_joint_kinematics.py`
+  - Added explicit v1 schema discriminators to `RevoluteJointModel` and
+    `KinematicModel` while retaining their public names and construction path.
+  - Added wrap serializers that remove only the in-memory v1 discriminator;
+    nested v1 joint serialization therefore remains historical and does not use
+    `exclude_none`.
+  - Added `RevoluteJointModelV2` with body endpoints and
+    `KinematicModelV2` with rigid bodies, explicit v2 evaluator/agreement
+    versions, and no mixed endpoint constructor.
+  - Added explicit `parse_revolute_joint_model` and `parse_kinematic_model`
+    discriminator selection. Absent discriminators select v1; only the exact
+    v2 discriminator selects v2; unknown values fail closed.
+  - Added `kinematic_model_wire_payload` and the exact ordered
+    `v2_revolute_joint_wire_payload` semantic mapping.
+  - Canonicalized v2 bodies and joints after validation, with duplicate IDs
+    rejected before sorting. Existing Task 2 member canonicalization remains
+    intact.
+  - Preserved the v1 hash payload branch without a v1 discriminator. The v2
+    branch hashes schema/version fields, persisted canonical body hashes, and
+    persisted joint-ID-ordered v2 wire payloads using the existing canonical
+    JSON/SHA-256 convention.
+  - Did not change the v1 FK/topology execution path. V2 schema/serialization/
+    parser/hash contracts are separate from later execution changes.
+- `tests/unit/test_m13_3p_legacy_goldens.py`
+  - Added discriminator selection, endpoint mismatch, v2 wire-field, and
+    explicit v2 requirement coverage.
+- `tests/unit/test_m13_3p_rigid_body_groups.py`
+  - Added v2 body/member/joint tuple canonicalization and semantic hash
+    sensitivity coverage, including agreement version and joint ID.
+
+The immutable Task 0 literals were not edited.
+
+## TDD Evidence
+
+The new contract tests were added before the production implementation.
+
+Initial red command:
+
+```text
+py -3 -m pytest tests/unit/test_m13_3p_legacy_goldens.py tests/unit/test_m13_3p_rigid_body_groups.py -k "discriminator or v2 or semantic_change or joint_id or agreement_version" -v
+```
+
+Initial result was the expected missing-feature collection failure:
+
+```text
+collected 0 items / 2 errors
+ImportError: cannot import name 'KinematicModelV2'
+```
+
+After the minimal implementation:
+
+```text
+15 passed, 33 deselected in 0.82s
+```
+
+## Verification
+
+Required immutable golden suite:
+
+```text
+py -3 -m pytest tests/unit/test_m13_3p_legacy_goldens.py -v
+10 passed in 0.74s
+```
+
+Required v1 M10 kinematics suite:
+
+```text
+py -3 -m pytest tests/unit/test_multi_joint_kinematics.py -v
+53 passed in 0.89s
+```
+
+Focused schema/hash and rigid-body suite:
+
+```text
+py -3 -m pytest tests/unit/test_m13_3p_rigid_body_groups.py -v
+38 passed in 0.82s
+
+py -3 -m pytest tests/unit/test_m13_3p_legacy_goldens.py tests/unit/test_m13_3p_rigid_body_groups.py -q
+48 passed in 0.89s
+```
+
+Adjacent M10 serialization regressions:
+
+```text
+py -3 -m pytest tests/unit/test_multi_joint_collision_sweep.py tests/unit/test_multi_joint_continuous_path.py -q
+35 passed in 0.90s
+```
+
+Additional checks passed:
+
+```text
+py -3 -m compileall -q src/mechcad_harness tests/unit/test_m13_3p_legacy_goldens.py tests/unit/test_m13_3p_rigid_body_groups.py
+git diff --check -- src/mechcad_harness/multi_joint_kinematics.py tests/unit/test_m13_3p_legacy_goldens.py tests/unit/test_m13_3p_rigid_body_groups.py
+```
+
+## Concerns And Boundaries
+
+- Existing FK, topology, collision, and continuous-path services remain typed
+  against the v1 `KinematicModel`; v2 execution/projection is intentionally
+  deferred to the subsequent task boundary.
+- The agreement-version sensitivity test uses Pydantic's unvalidated
+  `model_copy(update=...)` to exercise identity sensitivity to a changed
+  version, while normal v2 construction still requires the literal trusted
+  agreement version.
+- The complete repository suite was not run; the required focused suites and
+  adjacent M10 regressions passed.
+- No captured Task 0 golden literal was modified.
+
+## No-Commit Confirmation
+
+No commit, tag, push, release, reset, stash, clean, checkout, revert, discard,
+or other destructive Git operation was performed.
+
+---
+
+## Review Fix Evidence: Unknown Schema Discriminators
+
+Addressed the Task 3 review finding by adding focused regression coverage in
+`tests/unit/test_m13_3p_rigid_body_groups.py`:
+
+- `parse_revolute_joint_model` rejects an otherwise-valid payload with the
+  unknown `revolute-joint-model@999` discriminator.
+- `parse_kinematic_model` rejects an otherwise-valid payload with the unknown
+  `kinematic-model@999` discriminator.
+
+No production behavior was changed and no v1 golden literal was modified. The
+explicit parser implementation already raised `ValueError` for these unknown
+values, so this was a regression-only coverage addition; a production RED/GREEN
+cycle was not applicable.
+
+Verification:
+
+```text
+py -3 -m pytest tests/unit/test_m13_3p_rigid_body_groups.py -q
+40 passed in 0.71s
+
+py -3 -m pytest tests/unit/test_multi_joint_kinematics.py -q
+53 passed in 0.76s
+
+py -3 -m pytest tests/unit/test_m13_3p_legacy_goldens.py -q
+10 passed in 0.68s
+```
+
+`git diff --check -- tests/unit/test_m13_3p_rigid_body_groups.py` passed with no
+diagnostics. No commit, tag, push, release, reset, stash, clean, checkout,
+revert, discard, or other destructive Git operation was performed.
