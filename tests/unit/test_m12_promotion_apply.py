@@ -254,6 +254,20 @@ class _ResultFreshResolutionFailure(PromotionManifestService):
         raise RuntimeError("fresh result resolution failed")
 
 
+class _PreMutationProvenanceFailure:
+    def __init__(self, events):
+        self.events = events
+
+    def validate_selection_for_promotion(self, request):
+        self.events.append("provenance_preflight")
+        raise RuntimeError("durable candidate selection chain is invalid")
+
+
+class _PreMutationProvenancePass:
+    def validate_selection_for_promotion(self, request):
+        return request.selection
+
+
 def _service(
     tmp_path,
     *,
@@ -261,6 +275,7 @@ def _service(
     apply_error=None,
     invalidation=None,
     manifest_service=None,
+    provenance_service=None,
 ):
     request, state, manager = _request_and_manager(tmp_path)
     readiness, compilation, scope = _compiled(request)
@@ -284,11 +299,11 @@ def _service(
     )
     compiler = _Compiler(manager, request, events, readiness, compilation)
     manifest = manifest_service or _ManifestRecorder(events, failure=manifest_failure)
-    service = CandidatePromotionApplicationService(
-        compiler,
-        controller,
-        manifest_service=manifest,
-    )
+    service_kwargs = {
+        "manifest_service": manifest,
+        "provenance_service": provenance_service or _PreMutationProvenancePass(),
+    }
+    service = CandidatePromotionApplicationService(compiler, controller, **service_kwargs)
     service._scope_projection = lambda request: scope
     return service, request, state, manager, controller, events, scope
 
@@ -338,7 +353,10 @@ def _real_controller_service(
     compiler = _Compiler(manager, request, events, readiness, compilation)
     manifest = manifest_service or _ManifestRecorder(events, failure=manifest_failure)
     service = CandidatePromotionApplicationService(
-        compiler, controller, manifest_service=manifest
+        compiler,
+        controller,
+        manifest_service=manifest,
+        provenance_service=_PreMutationProvenancePass(),
     )
     service._scope_projection = lambda request: scope
     return service, request, state, manager, controller, events
@@ -372,6 +390,24 @@ def test_promotion_application_uses_one_run_scope_and_ordered_controller_lifecyc
     ]
     assert controller.run.status is RunStatus.CREATED
     assert manager.load_current_pointer(request.project_id)["revision"] == state.revision
+
+
+def test_invalid_durable_selection_chain_is_rejected_before_run_creation(tmp_path):
+    events = []
+    service, request, state, manager, controller, service_events, _ = _service(
+        tmp_path,
+        provenance_service=_PreMutationProvenanceFailure(events),
+    )
+    before_pointer = manager.load_current_pointer(request.project_id)
+
+    result = service.promote_selected_candidate(request)
+
+    assert result.status.value == "pre_apply_failure"
+    assert result.error and "durable candidate selection chain" in result.error
+    assert events == ["provenance_preflight"]
+    assert "create_run" not in service_events
+    assert controller.run is None
+    assert manager.load_current_pointer(request.project_id) == before_pointer
 
 
 def test_decision_publication_failure_fails_created_run_without_canonical_mutation(tmp_path):

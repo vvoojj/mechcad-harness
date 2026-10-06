@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from mechcad_harness.artifacts import ArtifactStore
 from mechcad_harness.candidates import (
     CandidateCurrentness,
     CandidateCurrentnessService,
@@ -23,13 +24,24 @@ from mechcad_harness.candidates import (
     MechanicalDesignCandidate,
     candidate_hash,
 )
-from mechcad_harness.candidates.models import PolicyEntrySemantics
+from mechcad_harness.candidates.models import (
+    GeometrySourceReference,
+    PolicyEntrySemantics,
+    candidate_hash_v2,
+)
+from mechcad_harness.candidates.services import (
+    bind_candidate_synthesis_request_semantic_identity,
+)
 from mechcad_harness.models import DesignState
+from mechcad_harness.models.semantic_component import (
+    bind_component_specification_semantic_identity,
+)
 from mechcad_harness.revolute_drive import (
     DriveAdmissibility,
     DriveArchitecture,
     EngineeringCheckStatus,
     InputProvenanceKind,
+    RevoluteDriveAdmissibilityResult,
     RevoluteDriveRealizationService,
     RevoluteDriveEngineeringRequirements,
     RevoluteDriveTemplateInput,
@@ -1207,3 +1219,202 @@ def test_constructed_candidate_passes_currentness_over_real_state(tmp_path):
 def test_service_has_no_stateful_dependencies():
     service = RevoluteDriveRealizationService()
     assert getattr(service, "__dict__", {}) == {} or not vars(service)
+
+
+# P2 staged-admission boundary proofs (accepted Plan T-P2.6): request@2 and
+# candidate@2 trusted behavior works positively up to pure candidate
+# construction. T-P5.2 owns the positive admissibility@2 route; this fixture
+# keeps the request-family dispatch rows explicit beside the original P2 setup.
+
+_P2_SPEC_ARTIFACTS = (
+    ("motor_specification", "artifact-p2-motor", "c", "d"),
+    ("shaft_specification", "artifact-p2-shaft", "e", "f"),
+    ("bearing_specification", "artifact-p2-bearing", "0", "1"),
+    ("hub_specification", "artifact-p2-hub", "2", "3"),
+    ("mount_specification", "artifact-p2-mount", "4", "5"),
+    ("body_specification", "artifact-p2-body", "6", "7"),
+)
+
+
+def _specification_at4(base_specification, artifact_id, raw_char, content_char):
+    artifact_hash = "sha256:" + raw_char * 64
+    source_identity = f"supplier:m12:{artifact_id}@1"
+    pending = base_specification.model_copy(
+        update={
+            "schema_version": "component-specification@4",
+            "geometry_source": GeometrySourceReference(
+                artifact_id=artifact_id,
+                artifact_hash=artifact_hash,
+                source_identity=source_identity,
+                content_identity="pending",
+                content_identity_algorithm="step-content-identity@1",
+            ),
+            "specification_hash": "pending",
+        }
+    )
+    return bind_component_specification_semantic_identity(
+        pending,
+        {
+            (artifact_id, artifact_hash, source_identity, "step", None): {
+                "algorithm": "step-content-identity@1",
+                "content_hash": "sha256:" + content_char * 64,
+            }
+        },
+    )
+
+
+def _template_at4():
+    base = {
+        "motor_specification": motor_specification(),
+        "shaft_specification": shaft_specification(),
+        "bearing_specification": bearing_specification(),
+        "hub_specification": hub_specification(),
+        "mount_specification": mount_specification(),
+        "body_specification": body_specification(),
+    }
+    bound = {
+        name: _specification_at4(base[name], artifact_id, raw_char, content_char)
+        for name, artifact_id, raw_char, content_char in _P2_SPEC_ARTIFACTS
+    }
+    return template(
+        DriveArchitecture.DIRECT_DRIVE,
+        motor_specification=bound["motor_specification"],
+        shaft_specification=bound["shaft_specification"],
+        bearing_a_specification=bound["bearing_specification"],
+        bearing_b_specification=bound["bearing_specification"],
+        hub_specification=bound["hub_specification"],
+        mount_specification=bound["mount_specification"],
+        driven_body_specification=bound["body_specification"],
+    )
+
+
+def _bound_request_at2(state, manager, store):
+    pending = CandidateSynthesisRequest(
+        schema_version="candidate-synthesis-request@2",
+        source_binding=_bound_binding(state),
+        semantic_source_binding_hash="pending",
+        required_joint_ids=("J-1",),
+        requested_joint_ids=("J-1",),
+    )
+    return bind_candidate_synthesis_request_semantic_identity(
+        pending,
+        state_manager=manager,
+        store=store,
+        project_id="PRJ-M12",
+    )
+
+
+def _bound_at2_chain(tmp_path):
+    state = _state()
+    manager = StateManager(tmp_path)
+    manager.create_project("PRJ-M12", state)
+    store = ArtifactStore(tmp_path, project_id="PRJ-M12", run_id="P2-BOUNDARY")
+    bound_request = _bound_request_at2(state, manager, store)
+    policy = policy_for(DriveArchitecture.DIRECT_DRIVE)
+    return state, bound_request, policy
+
+
+def test_p2_request_only_construction_is_deterministic_and_request_bound(tmp_path):
+    state, bound_request, policy = _bound_at2_chain(tmp_path)
+    direct_template = _template_at4()
+
+    outcome_one = _SERVICE.construct_candidate(bound_request, policy, direct_template)
+    outcome_two = _SERVICE.construct_candidate(
+        deepcopy(bound_request), deepcopy(policy), deepcopy(direct_template)
+    )
+
+    assert outcome_one.status is DriveAdmissibility.ADMISSIBLE
+    assert outcome_one.candidate is not None
+    candidate = outcome_one.candidate
+    assert candidate.schema_version == "mechanical-design-candidate@2"
+    assert candidate.source_binding == bound_request.source_binding
+    assert candidate.semantic_source_binding_hash == bound_request.semantic_source_binding_hash
+    assert candidate.synthesis_request_hash == bound_request.request_hash
+    assert candidate.candidate_hash == candidate_hash_v2(candidate)
+    assert outcome_two.candidate == candidate
+    verified = CandidateIntegrityVerifier().verify(candidate, bound_request, policy)
+    assert verified.candidate_hash == candidate.candidate_hash
+
+
+def test_p2_pending_request_at2_cannot_reach_construction(tmp_path):
+    state = _state()
+    manager = StateManager(tmp_path)
+    manager.create_project("PRJ-M12", state)
+    pending = CandidateSynthesisRequest(
+        schema_version="candidate-synthesis-request@2",
+        source_binding=_bound_binding(state),
+        semantic_source_binding_hash="pending",
+        required_joint_ids=("J-1",),
+        requested_joint_ids=("J-1",),
+    )
+
+    with pytest.raises(ValueError, match="pending|hash|bound"):
+        _SERVICE.construct_candidate(
+            pending,
+            policy_for(DriveArchitecture.DIRECT_DRIVE),
+            _template_at4(),
+        )
+
+
+def test_p5_2_m12_3_dispatch_separates_legacy_and_semantic_families(tmp_path):
+    state, bound_request, policy = _bound_at2_chain(tmp_path)
+    candidate_v2 = _SERVICE.construct_candidate(
+        bound_request, policy, _template_at4()
+    ).candidate
+    assert candidate_v2 is not None
+    result_v2 = _SERVICE.evaluate(
+        candidate_v2,
+        bound_request,
+        policy,
+        requirements(),
+        source_state=state,
+    )
+    assert result_v2.schema_version == "revolute-drive-admissibility@2"
+    assert result_v2.candidate_hash == candidate_v2.candidate_hash
+    assert result_v2.synthesis_request_hash == bound_request.request_hash
+    assert result_v2.source_binding_hash == bound_request.semantic_source_binding_hash
+    assert result_v2.result_hash == admissibility_result_hash(result_v2)
+
+    legacy_request = request(DriveArchitecture.DIRECT_DRIVE, state=state)
+    legacy_candidate = _SERVICE.construct_candidate(
+        legacy_request,
+        policy_for(DriveArchitecture.DIRECT_DRIVE),
+        template(DriveArchitecture.DIRECT_DRIVE),
+    ).candidate
+    assert legacy_candidate is not None
+    legacy_result = _SERVICE.evaluate(
+        legacy_candidate,
+        legacy_request,
+        policy_for(DriveArchitecture.DIRECT_DRIVE),
+        requirements(),
+        source_state=state,
+    )
+    assert legacy_result.schema_version == "revolute-drive-admissibility@1"
+    assert legacy_result.source_binding_hash != bound_request.semantic_source_binding_hash
+
+    with pytest.raises(ValueError, match="legacy candidate cannot admit request@2"):
+        _SERVICE.evaluate(
+            legacy_candidate,
+            bound_request,
+            policy_for(DriveArchitecture.DIRECT_DRIVE),
+            requirements(),
+            source_state=state,
+        )
+    with pytest.raises(ValueError, match="candidate@2 requires candidate-synthesis-request@2"):
+        _SERVICE.evaluate(
+            candidate_v2,
+            CandidateSynthesisRequest(
+                schema_version="candidate-synthesis-request@1",
+                source_binding=bound_request.source_binding,
+                requested_joint_ids=bound_request.requested_joint_ids,
+                required_joint_ids=bound_request.required_joint_ids,
+            ),
+            policy,
+            requirements(),
+            source_state=state,
+        )
+
+    assert (
+        RevoluteDriveAdmissibilityResult.model_fields["schema_version"].default
+        == "revolute-drive-admissibility@1"
+    )

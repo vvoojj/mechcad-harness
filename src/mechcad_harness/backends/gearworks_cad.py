@@ -51,7 +51,7 @@ def build_spur_gear_cad(value: SpurGearCadInput, workspace, producer_tool_name="
             if artifact_type is ArtifactType.STEP:
                 from build123d import export_step
 
-                export_step(part, temporary, timestamp="2000-01-01T00:00:00Z")
+                export_step(part, temporary, timestamp="2000-01-01T00:00:00")
             else:
                 from build123d import export_stl
 

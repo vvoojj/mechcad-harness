@@ -74,6 +74,53 @@ class _VerificationContext:
     request_scope_projection: object | None = None
     normalized_projection: object | None = None
     m11_handoff: object | None = None
+    candidate_provenance_artifact_service: object | None = None
+
+
+class _ExplicitProvenanceService:
+    """Explicit test boundary for verifier tests that do not build durable chains."""
+
+    def __init__(self, request, source_step_artifacts=()):
+        self.request = request
+        self.source_step_artifacts = source_step_artifacts
+        self.publication_calls = []
+
+    def resolve_selection_for_promotion(self, *, decision, result_manifest):
+        return SimpleNamespace(
+            payload=SimpleNamespace(
+                selection=self.request.selection,
+                candidate_cad=SimpleNamespace(artifact=object()),
+            ),
+        )
+
+    def resolve_promoted_candidate_chain(self, *, decision, result_manifest):
+        return self.resolve_selection_for_promotion(
+            decision=decision, result_manifest=result_manifest
+        )
+
+    def resolve_candidate_cad(self, artifact):
+        return SimpleNamespace(
+            payload=SimpleNamespace(source_step_artifacts=self.source_step_artifacts)
+        )
+
+    def publish_canonical_cad(
+        self, reconstruction, cad, *, trusted_source_references=None
+    ):
+        self.publication_calls.append(("cad", reconstruction, cad))
+        return SimpleNamespace(artifact=SimpleNamespace(artifact_id="CANONICAL-CAD-TEST"))
+
+    def publish_canonical_m10(self, cad_publication, m10):
+        self.publication_calls.append(("m10", cad_publication, m10))
+        return SimpleNamespace(artifact=SimpleNamespace(artifact_id="CANONICAL-M10-TEST"))
+
+    def resolve_canonical_m10(self, artifact_id):
+        self.publication_calls.append(("resolve-m10", artifact_id))
+
+    def publish_promotion_chain_locator(
+        self, store, **kwargs
+    ):
+        self.publication_calls.append(("locator", store))
+        return SimpleNamespace(artifact=SimpleNamespace(artifact_id="CHAIN-LOCATOR-TEST"))
 
 
 class _CanonicalM10Application:
@@ -85,12 +132,12 @@ class _CanonicalM10Application:
 
 
 class _CanonicalCadFailure:
-    def realize(self, reconstruction):
+    def realize(self, reconstruction, **kwargs):
         raise RuntimeError("FreeCAD backend failed")
 
 
 class _WrappedCanonicalCadFailure:
-    def realize(self, reconstruction):
+    def realize(self, reconstruction, **kwargs):
         try:
             raise FreeCADBackendError("backend process unavailable")
         except FreeCADBackendError as exc:
@@ -101,7 +148,7 @@ class _TypedCadResult:
     def __init__(self, realization):
         self.realization = realization
 
-    def realize(self, reconstruction):
+    def realize(self, reconstruction, **kwargs):
         return self.realization
 
 
@@ -380,6 +427,9 @@ def _context(
             )
         ),
         request_scope_projection=frozen_scope,
+        candidate_provenance_artifact_service=_ExplicitProvenanceService(
+            request, (source,)
+        ),
     ), source, reconstruction, cad, m10
 
 
@@ -491,6 +541,15 @@ def _compiled_promotion_context(tmp_path, *, mount_dimension_spelling=None):
                 )
             ),
             request_scope_projection=frozen_scope,
+            candidate_provenance_artifact_service=_ExplicitProvenanceService(
+                request,
+                tuple(
+                    type(source).model_validate(
+                        source.model_dump(mode="json", exclude={"schema_version"})
+                    )
+                    for source in reconstruction.trusted_source_references
+                ),
+            ),
         ),
         reconstruction,
         candidate_cad_request,
@@ -512,6 +571,37 @@ def test_verified_path_uses_only_typed_records_and_fresh_canonical_execution(tmp
     assert result.canonical_cad_realization_hash
     assert result.canonical_m10_request_hashes
     assert result.canonical_m10_result_hashes
+
+
+def test_promoted_verification_fails_closed_without_provenance_service(tmp_path):
+    context, _, _, _, _ = _context(tmp_path)
+    context.candidate_provenance_artifact_service = None
+
+    result = verify_promoted_mechanism(context)
+
+    assert result.status is PromotedMechanismVerificationStatus.INTEGRITY_FAILURE
+    assert "provenance" in (result.error or "").lower()
+
+
+def test_rejected_scope_verification_does_not_publish_canonical_provenance(tmp_path):
+    context, _, _, _, m10 = _context(tmp_path)
+    provenance = context.candidate_provenance_artifact_service
+    mismatch = context.scope_equivalence_service.compare(
+        context.manifest_service.resolve_decision(
+            context.manifest_store, context.application_result.decision_artifact_id
+        ).pre_promotion_scope_projection,
+        m10.scope,
+    ).model_copy(update={"equivalent": False, "differences": ("clearance",), "result_hash": "pending"})
+    context.scope_equivalence_service = SimpleNamespace(
+        compare=lambda frozen, derived: CanonicalM10ScopeEquivalenceResult.model_validate(
+            mismatch.model_dump(mode="json")
+        )
+    )
+
+    result = verify_promoted_mechanism(context)
+
+    assert result.status is PromotedMechanismVerificationStatus.UNRESOLVED
+    assert provenance.publication_calls == []
 
 
 def test_promoted_legacy_plate_preserves_candidate_and_canonical_base_dimensions(tmp_path):
@@ -880,6 +970,11 @@ def test_canonical_m10_status_mapping_preserves_applied_identity(tmp_path, statu
         context.application_result.applied_revision,
         context.application_result.applied_state_hash,
     )
+    assert [call[0] for call in context.candidate_provenance_artifact_service.publication_calls] == [
+        "cad",
+        "m10",
+        "resolve-m10",
+    ]
 
 
 def test_scope_mismatch_is_typed_unresolved_without_changing_m10_inputs(tmp_path):
@@ -1047,7 +1142,7 @@ def test_forged_nested_canonical_record_is_rejected(tmp_path, attribute):
     context, _, reconstruction, _, _ = _context(tmp_path)
     if attribute == "canonical_mechanism_compiler":
         context.canonical_mechanism_compiler = SimpleNamespace(
-            reconstruct=lambda *args: SimpleNamespace(
+                reconstruct=lambda *args, **kwargs: SimpleNamespace(
                 project_id=reconstruction.project_id,
                 revision=reconstruction.revision,
                 state_hash=reconstruction.state_hash,
@@ -1056,7 +1151,7 @@ def test_forged_nested_canonical_record_is_rejected(tmp_path, attribute):
         )
     elif attribute == "canonical_cad_compiler":
         context.canonical_cad_compiler = SimpleNamespace(
-            realize=lambda *args: SimpleNamespace()
+            realize=lambda *args, **kwargs: SimpleNamespace()
         )
     else:
         context.canonical_m10_service = SimpleNamespace(execute=lambda *args: SimpleNamespace())

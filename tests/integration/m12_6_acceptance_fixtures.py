@@ -182,6 +182,7 @@ def build_synthesis_request(
     if application.project_id != source.project_id:
         raise ValueError("captured source belongs to a different project")
     request = CandidateSynthesisRequest(
+        schema_version="candidate-synthesis-request@2",
         source_binding=CandidateSourceBinding(
             project_id=source.project_id,
             source_revision=source.revision,

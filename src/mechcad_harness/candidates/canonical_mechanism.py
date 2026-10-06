@@ -132,6 +132,73 @@ class TrustedSourceArtifact(PromotionModel):
         return cls.model_validate(artifact.model_dump(mode="json"))
 
 
+class ExactSourceArtifactResolver(ProjectArtifactResolver):
+    """Resolve trusted source artifacts only in their recorded execution scope."""
+
+    def __init__(
+        self,
+        workspace,
+        project_id: str,
+        source_references: tuple[TrustedSourceArtifact, ...],
+    ) -> None:
+        references = {}
+        for reference in source_references:
+            if not isinstance(reference, TrustedSourceArtifact):
+                raise ValueError("exact source resolver requires trusted source snapshots")
+            if reference.project_id != project_id:
+                raise ValueError("exact source resolver project scope mismatch")
+            prior = references.get(reference.artifact_id)
+            if prior is not None and prior != reference:
+                raise ValueError("exact source resolver source snapshots must be unique")
+            references[reference.artifact_id] = reference
+        if not references:
+            raise ValueError("exact source resolver requires source snapshots")
+        super().__init__(
+            ArtifactStore(workspace, project_id=project_id, run_id="EXACT-SOURCE-RESOLVER")
+        )
+        self._source_references = references
+
+    def read_verified_in_project(
+        self,
+        artifact_id: str,
+        *,
+        expected_type: ArtifactType | None = None,
+        expected_hash: str | None = None,
+    ) -> tuple[EngineeringArtifact, bytes] | None:
+        if (
+            self._store.workspace.resolve() != self._workspace
+            or self._store.project_id != self._project_id
+        ):
+            raise ValueError("exact source resolver scope changed")
+        reference = self._source_references.get(artifact_id)
+        if reference is None:
+            raise ValueError("required source artifact snapshot is missing")
+        if expected_type is not None and expected_type is not reference.artifact_type:
+            raise ValueError("required source artifact type mismatch")
+        if expected_hash is not None and expected_hash != reference.sha256:
+            raise ValueError("required source artifact hash mismatch")
+
+        expected = EngineeringArtifact.model_validate(
+            reference.model_dump(mode="json", exclude={"schema_version"})
+        )
+        try:
+            verified = ArtifactStore(
+                self.workspace,
+                project_id=reference.project_id,
+                run_id=reference.run_id,
+                task_id=reference.task_id,
+            ).read_verified_strict(
+                reference.artifact_id,
+                expected_type=reference.artifact_type,
+                expected_hash=reference.sha256,
+            )
+        except Exception as exc:
+            raise ValueError("required source artifact verification failed") from exc
+        if verified[0] != expected:
+            raise ValueError("required source artifact snapshot mismatch")
+        return verified
+
+
 class CanonicalMechanismReconstruction(PromotionModel):
     """A verified canonical mechanism reconstructed from one state revision."""
 
@@ -204,7 +271,13 @@ class CanonicalPhysicalMechanismCompiler:
         self.artifact_store_factory = artifact_store_factory
 
     def reconstruct(
-        self, project_id: str, revision: int, state_hash: str, mechanism_id: str
+        self,
+        project_id: str,
+        revision: int,
+        state_hash: str,
+        mechanism_id: str,
+        *,
+        trusted_source_references: tuple[TrustedSourceArtifact, ...] | None = None,
     ) -> CanonicalMechanismReconstruction:
         if not isinstance(project_id, str) or not project_id.strip():
             raise ValueError("project ID must not be empty")
@@ -227,7 +300,11 @@ class CanonicalPhysicalMechanismCompiler:
         if len(mechanisms) != 1:
             raise ValueError("canonical mechanism is missing or ambiguous")
 
-        sources = self._verify_sources(project_id, mechanisms[0])
+        sources = self._verify_sources(
+            project_id,
+            mechanisms[0],
+            trusted_source_references=trusted_source_references,
+        )
         mechanism = self._validate_mechanism(mechanisms[0])
         projection = _projection_from_mechanism(mechanism)
         return CanonicalMechanismReconstruction(
@@ -664,7 +741,11 @@ class CanonicalPhysicalMechanismCompiler:
                 raise ValueError("canonical placement does not match its generated derivation")
 
     def _verify_sources(
-        self, project_id: str, mechanism: CanonicalPhysicalMechanism
+        self,
+        project_id: str,
+        mechanism: CanonicalPhysicalMechanism,
+        *,
+        trusted_source_references: tuple[TrustedSourceArtifact, ...] | None = None,
     ) -> tuple[TrustedSourceArtifact, ...]:
         references = {}
         identities = {}
@@ -712,7 +793,15 @@ class CanonicalPhysicalMechanismCompiler:
         if not identities:
             return ()
 
-        store = self._artifact_store(project_id)
+        store = (
+            self._artifact_store(project_id)
+            if trusted_source_references is None
+            else ExactSourceArtifactResolver(
+                self.state_manager.workspace,
+                project_id,
+                trusted_source_references,
+            )
+        )
         artifacts = {}
         for identity in identities.values():
             try:
@@ -860,6 +949,7 @@ def normalized_projection(
 __all__ = [
     "CanonicalMechanismReconstruction",
     "CanonicalPhysicalMechanismCompiler",
+    "ExactSourceArtifactResolver",
     "ProjectArtifactResolver",
     "TrustedSourceArtifact",
     "validate_canonical_mechanism",

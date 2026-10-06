@@ -157,15 +157,23 @@ from mechcad_harness.candidates import (
     CandidateIntegrityError,
     CandidateIntegrityVerifier,
     CandidatePublicationService,
+    bind_candidate_synthesis_request_semantic_identity,
     CandidateSynthesisPolicy,
     CandidateSynthesisRequest,
     CandidateCadRealizationService,
     CandidateCadStageReason,
     CandidateCadStageOutcome,
+    CandidateCadStageOutcomeV2,
     CandidateCadStageStatus,
+    CandidateEvaluation,
+    CandidateEvaluationV2,
     CandidateEvaluationCurrentnessService,
     CandidateEvaluationPolicy,
     CandidateEvaluationService,
+    CandidateComparisonRequest,
+    CandidateComparisonRequestV2,
+    CandidateComparisonResult,
+    CandidateComparisonResultV2,
     CandidateComparisonPolicy,
     CandidateComparisonService,
     CandidateM10EvaluationService,
@@ -186,7 +194,11 @@ from mechcad_harness.candidates import (
     CandidateM10StageOutcome,
     CandidateM10StageReason,
     CandidateM10StageStatus,
+    CandidateSelection,
+    CandidateSelectionV2,
     CandidateSelectionService,
+    CandidateProvenanceArtifactService,
+    CandidateProvenanceIntegrityError,
     CandidatePromotionApplicationService,
     CandidatePromotionCompiler,
     CanonicalM10ScopeEquivalenceService,
@@ -210,6 +222,18 @@ from mechcad_harness.revolute_drive import (
     RevoluteDriveRealizationService,
     RevoluteDriveTemplateInput,
     admissibility_result_hash,
+)
+from mechcad_harness.candidates.cad_realization import CandidateCadRealizationV2
+from mechcad_harness.candidates.multi_joint_m10_evaluation import (
+    CandidateMultiJointM10EvaluationRequestV2,
+    CandidateMultiJointM10EvaluationV2,
+    CandidateMultiJointM10ReplayV2,
+)
+from mechcad_harness.candidates.multi_joint_selection import (
+    CandidateMultiJointSelectionV2,
+)
+from mechcad_harness.candidates.multi_joint_m10_bridge import (
+    PhysicalToM10V2BridgeV2,
 )
 
 
@@ -321,6 +345,9 @@ class _PromotionVerificationContext:
         self.application_result = application_result
         self.manifest_store = manifest_store
         self.manifest_service = application.promotion_manifest_service
+        self.candidate_provenance_artifact_service = (
+            application.candidate_provenance_artifact_service
+        )
         self.canonical_mechanism_compiler = application.canonical_mechanism_compiler
         self.canonical_cad_compiler = application.canonical_cad_compiler
         self.canonical_m10_service = application.canonical_m10_service
@@ -328,6 +355,11 @@ class _PromotionVerificationContext:
         self._application = application
         self._m11_handoff = None
         self._m11_resolved = False
+        self.scope_projection = getattr(
+            application,
+            "promotion_scope_projection",
+            CandidatePromotionApplicationService._scope_projection,
+        )
 
     @property
     def m11_handoff(self):
@@ -445,6 +477,7 @@ class ProductionApplication:
         "candidate_integrity_verifier",
         "candidate_currentness_service",
         "candidate_publication_service",
+        "candidate_provenance_artifact_service",
         "revolute_drive_service",
         "candidate_cad_realization_service",
         "candidate_m10_evaluation_service",
@@ -517,6 +550,14 @@ class ProductionApplication:
             workspace=state_manager.workspace,
             project_id=project_id,
             state_manager=state_manager,
+        )
+        self.candidate_provenance_artifact_service = CandidateProvenanceArtifactService(
+            workspace=state_manager.workspace,
+            project_id=project_id,
+            state_manager=state_manager,
+            evidence_store=evidence_store,
+            candidate_publication_service=self.candidate_publication_service,
+            cad_replay_verifier=self.candidate_cad_realization_service.validate_realization,
         )
         self.candidate_m10_evaluation_service = CandidateM10EvaluationService(
             self.prove_continuous_single_axis_clearance,
@@ -642,6 +683,7 @@ class ProductionApplication:
             self.candidate_promotion_compiler,
             run_controller,
             manifest_service=self.promotion_manifest_service,
+            provenance_service=self.candidate_provenance_artifact_service,
         )
         self.canonical_mechanism_compiler = CanonicalPhysicalMechanismCompiler(
             state_manager, artifact_resolver_factory
@@ -2155,6 +2197,11 @@ class ProductionApplication:
         requirements: RevoluteDriveEngineeringRequirements,
     ) -> RevoluteDriveProductionOutcome:
         request = CandidateSynthesisRequest.model_validate(request.model_dump(mode="json"))
+        if request.schema_version != "candidate-synthesis-request@2":
+            raise CandidateIntegrityError(
+                "new production construction requires candidate-synthesis-request@2; "
+                "candidate-synthesis-request@1 is rejected at the final construction entrypoint"
+            )
         policy = CandidateSynthesisPolicy.model_validate(policy.model_dump(mode="json"))
         template_input = RevoluteDriveTemplateInput.model_validate(
             template_input.model_dump(mode="json")
@@ -2162,8 +2209,13 @@ class ProductionApplication:
         requirements = RevoluteDriveEngineeringRequirements.model_validate(
             requirements.model_dump(mode="json")
         )
+        request = bind_candidate_synthesis_request_semantic_identity(
+            request,
+            state_manager=self.state_manager,
+            store=self.candidate_publication_service.store,
+            project_id=self.project_id,
+        )
         current_state = self.state_manager.load_current_state(self.project_id)
-        request.source_binding.validate_against(self.project_id, current_state)
 
         construction = self.revolute_drive_service.construct_candidate(request, policy, template_input)
         if construction.candidate is None:
@@ -2192,44 +2244,124 @@ class ProductionApplication:
         request,
     ):
         self._require_candidate_project(candidate, synthesis_request)
-        return self.candidate_cad_realization_service.realize(
+        stage = self.candidate_cad_realization_service.realize(
             candidate,
             synthesis_request,
             synthesis_policy,
             request,
         )
+        if (
+            isinstance(stage, (CandidateCadStageOutcome, CandidateCadStageOutcomeV2))
+            and stage.status is CandidateCadStageStatus.SUCCESS
+        ):
+            self.candidate_provenance_artifact_service.publish_candidate_cad(
+                candidate,
+                synthesis_request,
+                synthesis_policy,
+                request,
+                stage.realization,
+                source_step_artifacts=(
+                    None
+                    if isinstance(stage.realization, CandidateCadRealizationV2)
+                    else self._candidate_source_step_artifacts(stage.realization)
+                ),
+            )
+        return stage
 
     def evaluate_candidate_multi_joint_m10(
         self,
         candidate,
-        cad_realization,
-        bridge,
-        request,
+        synthesis_request=None,
+        cad_realization=None,
+        bridge=None,
+        request=None,
     ):
-        self._require_candidate_project(candidate)
+        if isinstance(synthesis_request, CandidateCadRealization):
+            synthesis_request, cad_realization, bridge, request = (
+                None,
+                synthesis_request,
+                cad_realization,
+                bridge,
+            )
+        self._require_candidate_project(candidate, synthesis_request)
+        if candidate.schema_version == "mechanical-design-candidate@2":
+            if not isinstance(synthesis_request, CandidateSynthesisRequest):
+                raise CandidateIntegrityError(
+                    "candidate@2 multi-joint M10 requires the exact synthesis request@2"
+                )
+            return self.candidate_multi_joint_m10_evaluation_service.execute(
+                candidate,
+                synthesis_request,
+                cad_realization,
+                bridge,
+                request,
+            )
         return self.candidate_multi_joint_m10_evaluation_service.execute(
-            candidate, cad_realization, bridge, request
+            candidate,
+            cad_realization,
+            bridge,
+            request,
         )
 
     def select_candidate_multi_joint(
         self,
         candidate: MechanicalDesignCandidate,
-        cad_realization: CandidateCadRealization,
-        bridge: PhysicalToM10V2Bridge,
-        request: CandidateMultiJointM10EvaluationRequest,
-        evaluation: CandidateMultiJointM10Evaluation,
-        selector_identity: str,
-        rationale: str,
-    ) -> CandidateMultiJointSelection:
-        self._require_candidate_project(candidate)
+        synthesis_request=None,
+        cad_realization: CandidateCadRealization | CandidateCadRealizationV2 | None = None,
+        bridge: PhysicalToM10V2Bridge | PhysicalToM10V2BridgeV2 | None = None,
+        request: CandidateMultiJointM10EvaluationRequest | CandidateMultiJointM10EvaluationRequestV2 | None = None,
+        evaluation: CandidateMultiJointM10Evaluation | CandidateMultiJointM10EvaluationV2 | None = None,
+        selector_identity: str | None = None,
+        rationale: str | None = None,
+    ) -> CandidateMultiJointSelection | CandidateMultiJointSelectionV2:
+        if isinstance(synthesis_request, (CandidateCadRealization, CandidateCadRealizationV2)):
+            synthesis_request, cad_realization, bridge, request, evaluation, selector_identity, rationale = (
+                None,
+                synthesis_request,
+                cad_realization,
+                bridge,
+                request,
+                evaluation,
+                selector_identity,
+            )
+        self._require_candidate_project(candidate, synthesis_request)
 
-        def result_replayer(replay_candidate, replay_request, replay_evaluation):
-            reconstructed = (
-                self.candidate_multi_joint_m10_evaluation_service.reconstruct_m10_request(
+        def result_replayer(
+            replay_candidate,
+            replay_synthesis_request_or_request,
+            replay_request_or_evaluation,
+            replay_evaluation=None,
+        ):
+            if replay_candidate.schema_version == "mechanical-design-candidate@2":
+                replay_synthesis_request = replay_synthesis_request_or_request
+                replay_request = replay_request_or_evaluation
+                if replay_synthesis_request is not synthesis_request:
+                    raise ValueError("candidate multi-joint replay request context changed")
+                reconstructed = self.candidate_multi_joint_m10_evaluation_service.reconstruct_m10_request(
+                    replay_candidate,
+                    synthesis_request,
+                    cad_realization,
+                    bridge,
+                    replay_request,
+                )
+            else:
+                replay_request = replay_synthesis_request_or_request
+                replay_evaluation = replay_request_or_evaluation
+                reconstructed = self.candidate_multi_joint_m10_evaluation_service.reconstruct_m10_request(
                     replay_candidate, cad_realization, bridge, replay_request
                 )
-            )
-            if reconstructed.request_hash != replay_request.m10_v2_request_hash:
+            if replay_candidate.schema_version == "mechanical-design-candidate@2":
+                from mechcad_harness.semantic_m10_kinematics import (
+                    semantic_m10_v2_request_hash,
+                )
+
+                if semantic_m10_v2_request_hash(
+                    reconstructed,
+                    cad_realization.assembly,
+                    cad_realization.mappings,
+                ) != replay_request.semantic_m10_v2_request_hash:
+                    raise ValueError("candidate multi-joint selection replay request identity mismatch")
+            elif reconstructed.request_hash != replay_request.m10_v2_request_hash:
                 raise ValueError("candidate multi-joint selection replay request identity mismatch")
             result = self._execute_candidate_v2_sweep(
                 source_revision=replay_request.source_revision,
@@ -2241,6 +2373,24 @@ class ProductionApplication:
                 volume_tolerance_mm3=reconstructed.volume_tolerance_mm3,
                 distance_tolerance_mm=reconstructed.distance_tolerance_mm,
             )
+            if replay_candidate.schema_version == "mechanical-design-candidate@2":
+                from mechcad_harness.semantic_m10_kinematics import (
+                    semantic_m10_v2_result_hash,
+                )
+
+                if semantic_m10_v2_result_hash(
+                    result,
+                    reconstructed,
+                    cad_realization.assembly,
+                    cad_realization.mappings,
+                ) != replay_evaluation.semantic_m10_v2_result_hash:
+                    raise ValueError("candidate multi-joint selection replay result identity mismatch")
+                return CandidateMultiJointM10ReplayV2(
+                    reconstructed,
+                    result,
+                    cad_realization,
+                    bridge,
+                )
             if result.result_hash != replay_evaluation.m10_v2_result_hash:
                 raise ValueError("candidate multi-joint selection replay result identity mismatch")
             return CandidateMultiJointM10Replay(reconstructed, result)
@@ -2249,7 +2399,14 @@ class ProductionApplication:
             project_id=self.project_id,
             currentness_verifier=self.candidate_currentness_service,
             result_replayer=result_replayer,
-        ).select(candidate, request, evaluation, selector_identity, rationale)
+        ).select(
+            candidate,
+            request,
+            evaluation,
+            selector_identity,
+            rationale,
+            synthesis_request=synthesis_request,
+        )
 
     def compile_candidate_promotion(self, request):
         self._require_promotion_project(request)
@@ -2263,7 +2420,14 @@ class ProductionApplication:
     def promote_selected_multi_joint_candidate(
         self, request: CandidateMultiJointPromotionRequest
     ) -> CandidateMultiJointPromotionApplicationResult:
-        if type(request) is not CandidateMultiJointPromotionRequest:
+        from mechcad_harness.candidates.promotion_models import (
+            CandidateMultiJointPromotionRequestV2,
+        )
+
+        if type(request) not in {
+            CandidateMultiJointPromotionRequest,
+            CandidateMultiJointPromotionRequestV2,
+        }:
             raise CandidateIntegrityError("multi-joint promotion request must be typed")
         self._require_promotion_project(request)
         return self.promotion_application_service.promote_selected_multi_joint_candidate(request)
@@ -2360,6 +2524,68 @@ class ProductionApplication:
             canonical_json(candidate.source_binding.model_dump(mode="json"))
         ).hexdigest()
 
+    @staticmethod
+    def _candidate_provenance_artifact_id(prefix: str, identity: str) -> str:
+        return f"{prefix}{identity[7:31]}"
+
+    def _candidate_comparison_artifact(self, comparison):
+        if not isinstance(
+            comparison, (CandidateComparisonResult, CandidateComparisonResultV2)
+        ):
+            return None
+        verified = ArtifactStore(
+            self.state_manager.workspace,
+            project_id=self.project_id,
+            run_id="LOOKUP",
+        ).read_verified_in_project(
+            self._candidate_provenance_artifact_id(
+                "CANDIDATE-COMPARISON-", comparison.result_hash
+            ),
+            expected_type=ArtifactType.JSON,
+        )
+        return None if verified is None else verified[0]
+
+    @staticmethod
+    def _evaluation_from_entry(entry):
+        return entry[1] if isinstance(entry, tuple) and len(entry) == 2 else entry
+
+    def _candidate_source_step_artifacts(self, realization):
+        sources = []
+        seen_artifact_ids = set()
+        lookup = ArtifactStore(
+            self.state_manager.workspace,
+            project_id=self.project_id,
+            run_id="LOOKUP",
+        )
+        for mapping in realization.mappings:
+            source_hash = mapping.source_geometry_identity
+            if source_hash is None:
+                continue
+            if not mapping.geometry_definition_identities:
+                raise CandidateIntegrityError(
+                    "candidate CAD source artifact identity is unavailable"
+                )
+            source_artifact_id = mapping.geometry_definition_identities[0]
+            if source_artifact_id in seen_artifact_ids:
+                continue
+            verified = lookup.read_verified_in_project(
+                source_artifact_id,
+                expected_type=ArtifactType.STEP,
+                expected_hash=source_hash,
+            )
+            if verified is None:
+                raise CandidateIntegrityError(
+                    "candidate CAD source artifact is missing or ambiguous"
+                )
+            artifact, _ = verified
+            sources.append(artifact)
+            seen_artifact_ids.add(source_artifact_id)
+        if tuple(dict.fromkeys(item.sha256 for item in sources)) != realization.verified_source_content_identities:
+            raise CandidateIntegrityError(
+                "candidate CAD source artifact identities do not match realization"
+            )
+        return tuple(sources)
+
     def _require_candidate_project(self, candidate, synthesis_request=None) -> None:
         try:
             candidate_project = candidate.source_binding.project_id
@@ -2418,7 +2644,12 @@ class ProductionApplication:
             raise CandidateIntegrityError("M12-3 admissibility result hash mismatch")
         if result.candidate_hash != candidate.candidate_hash:
             raise CandidateIntegrityError("M12-3 result candidate binding mismatch")
-        if result.source_binding_hash != self._candidate_source_binding_hash(candidate):
+        expected_source_binding_hash = (
+            candidate.semantic_source_binding_hash
+            if candidate.schema_version == "mechanical-design-candidate@2"
+            else self._candidate_source_binding_hash(candidate)
+        )
+        if result.source_binding_hash != expected_source_binding_hash:
             raise CandidateIntegrityError("M12-3 result source binding mismatch")
         if result.synthesis_request_hash != synthesis_request.request_hash:
             raise CandidateIntegrityError("M12-3 result synthesis request binding mismatch")
@@ -2431,6 +2662,44 @@ class ProductionApplication:
         if any(value is None for value in (m10_request, m10_scope, m10_binding)):
             raise CandidateIntegrityError(
                 "M10 not-reached stage requires its exact request, scope, and binding"
+            )
+        if candidate.schema_version == "mechanical-design-candidate@2":
+            from mechcad_harness.candidates.m10_evaluation import (
+                CandidateM10BindingV2,
+                CandidateM10EvaluationRequestV2,
+                CandidateM10StageOutcomeV2,
+            )
+
+            try:
+                request_v2 = CandidateM10EvaluationRequestV2.model_validate(
+                    m10_request.model_dump(mode="json")
+                )
+                binding_v2 = CandidateM10BindingV2.model_validate(
+                    m10_binding.model_dump(mode="json")
+                )
+                scope_v1 = CandidateM10EvaluationScope.model_validate(
+                    m10_scope.model_dump(mode="json")
+                )
+                if (
+                    request_v2.candidate_hash != candidate.candidate_hash
+                    or binding_v2.candidate_hash != candidate.candidate_hash
+                    or request_v2.cad_realization_hash != binding_v2.cad_realization_hash
+                    or request_v2.binding_hash != binding_v2.binding_hash
+                    or request_v2.scope_hash != scope_v1.scope_hash
+                    or request_v2.semantic_single_joint_kinematic_model_hash
+                    != binding_v2.semantic_single_joint_kinematic_model_hash
+                ):
+                    raise ValueError("M10 @2 not-reached parent binding mismatch")
+            except Exception as exc:
+                raise CandidateIntegrityError(
+                    f"M10 @2 not-reached context integrity failure: {exc}"
+                ) from exc
+            return CandidateM10StageOutcomeV2(
+                status=CandidateM10StageStatus.NOT_REACHED,
+                candidate_hash=candidate.candidate_hash,
+                source_revision=candidate.source_binding.source_revision,
+                source_state_hash=candidate.source_binding.source_state_hash,
+                reasons=(CandidateM10StageReason.PRIOR_STAGE_FAILED,),
             )
         try:
             m10_request = CandidateM10EvaluationRequest.model_validate(
@@ -2492,7 +2761,12 @@ class ProductionApplication:
             m12_3_result,
         )
         if m12_3_result.status is DriveAdmissibility.INADMISSIBLE:
-            cad_stage = CandidateCadStageOutcome(
+            cad_stage_type = (
+                CandidateCadStageOutcomeV2
+                if candidate.schema_version == "mechanical-design-candidate@2"
+                else CandidateCadStageOutcome
+            )
+            cad_stage = cad_stage_type(
                 status=CandidateCadStageStatus.NOT_REACHED,
                 reasons=(CandidateCadStageReason.PRIOR_STAGE_FAILED,),
             )
@@ -2539,7 +2813,7 @@ class ProductionApplication:
                 "m10_binding": None,
             }
         )
-        return self.candidate_evaluation_service.evaluate(
+        evaluation = self.candidate_evaluation_service.evaluate(
             candidate,
             synthesis_request,
             synthesis_policy,
@@ -2549,14 +2823,76 @@ class ProductionApplication:
             evaluation_policy,
             **stage_context,
         )
+        if (
+            isinstance(evaluation, (CandidateEvaluation, CandidateEvaluationV2))
+            and evaluation.cad_realization_hash is not None
+        ):
+            self.candidate_provenance_artifact_service.publish_candidate_evaluation(
+                self._candidate_provenance_artifact_id(
+                    "CANDIDATE-CAD-", evaluation.cad_realization_hash
+                ),
+                evaluation,
+            )
+        return evaluation
 
-    def compare_candidates(self, request, evaluations):
+    def compare_candidates(
+        self,
+        request,
+        evaluations,
+        *,
+        synthesis_requests_by_candidate_hash=None,
+    ):
         self._require_comparison_project(request)
         entries = tuple(evaluations.values()) if hasattr(evaluations, "values") else tuple(evaluations)
         for entry in entries:
             if isinstance(entry, tuple) and len(entry) == 2:
                 self._require_candidate_project(entry[0])
-        return self.candidate_comparison_service.compare(request, evaluations)
+        result = self.candidate_comparison_service.compare(
+            request,
+            evaluations,
+            synthesis_requests_by_candidate_hash=synthesis_requests_by_candidate_hash,
+        )
+        if (
+            type(request) is CandidateComparisonRequestV2
+            and type(result) is CandidateComparisonResultV2
+        ) or (
+            type(request) is CandidateComparisonRequest
+            and type(result) is CandidateComparisonResult
+        ):
+            candidate_evaluations = tuple(
+                self._evaluation_from_entry(entry) for entry in entries
+            )
+            expected_evaluation_type = (
+                CandidateEvaluationV2
+                if type(request) is CandidateComparisonRequestV2
+                else CandidateEvaluation
+            )
+            if all(
+                type(item) is expected_evaluation_type
+                for item in candidate_evaluations
+            ):
+                by_evaluation_hash = {
+                    item.evaluation_hash: item for item in candidate_evaluations
+                }
+                ordered_evaluations = tuple(
+                    by_evaluation_hash[evaluation_hash]
+                    for _, evaluation_hash in request.candidate_evaluation_pairs
+                    if evaluation_hash in by_evaluation_hash
+                )
+                if len(ordered_evaluations) == len(candidate_evaluations) == len(
+                    request.candidate_evaluation_pairs
+                ):
+                    self.candidate_provenance_artifact_service.publish_candidate_comparison(
+                        request,
+                        result,
+                        tuple(
+                            self._candidate_provenance_artifact_id(
+                                "CANDIDATE-EVALUATION-", item.evaluation_hash
+                            )
+                            for item in ordered_evaluations
+                        ),
+                    )
+        return result
 
     def select_candidate(
         self,
@@ -2566,6 +2902,9 @@ class ProductionApplication:
         rationale,
         comparison=None,
         comparison_entries=None,
+        *,
+        synthesis_request=None,
+        synthesis_requests_by_candidate_hash=None,
     ):
         self._require_candidate_project(candidate)
         if comparison is not None:
@@ -2574,11 +2913,43 @@ class ProductionApplication:
             for entry in comparison_entries:
                 if isinstance(entry, tuple) and len(entry) == 2:
                     self._require_candidate_project(entry[0])
-        return self.candidate_selection_service.select(
+        selection = self.candidate_selection_service.select(
             candidate,
             evaluation,
             selector_identity,
             rationale,
             comparison=comparison,
             comparison_entries=comparison_entries,
+            synthesis_request=synthesis_request,
+            synthesis_requests_by_candidate_hash=synthesis_requests_by_candidate_hash,
         )
+        if (
+            type(selection) in (CandidateSelection, CandidateSelectionV2)
+            and type(evaluation)
+            in (CandidateEvaluation, CandidateEvaluationV2)
+            and evaluation.cad_realization_hash is not None
+            and (
+                type(selection) is CandidateSelection
+                and type(evaluation) is CandidateEvaluation
+                or type(selection) is CandidateSelectionV2
+                and type(evaluation) is CandidateEvaluationV2
+            )
+        ):
+            comparison_artifact = None
+            if comparison is not None:
+                comparison_artifact = self._candidate_comparison_artifact(comparison)
+                if comparison_artifact is None:
+                    raise CandidateProvenanceIntegrityError(
+                        "candidate comparison artifact is missing or ambiguous"
+                    )
+            self.candidate_provenance_artifact_service.publish_candidate_selection(
+                selection,
+                self._candidate_provenance_artifact_id(
+                    "CANDIDATE-CAD-", evaluation.cad_realization_hash
+                ),
+                self._candidate_provenance_artifact_id(
+                    "CANDIDATE-EVALUATION-", evaluation.evaluation_hash
+                ),
+                comparison_artifact,
+            )
+        return selection

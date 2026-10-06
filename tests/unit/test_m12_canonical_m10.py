@@ -23,6 +23,7 @@ from mechcad_harness.candidates.canonical_m10 import (
     CanonicalM10VerificationService,
     CanonicalM10VerificationStatus,
     DerivedCanonicalM10Scope,
+    canonical_m10_aggregate_summary,
 )
 from mechcad_harness.continuous_proof import (
     ContinuousCollisionWitness,
@@ -343,6 +344,22 @@ def test_execute_derives_fresh_canonical_pair_and_request_without_scope(tmp_path
     )
     assert outcome.request.request_hash != "sha256:" + "b" * 64
     assert outcome.request.revision == reconstruction.revision
+
+
+def test_aggregate_summary_derives_limiting_pair_and_metric_in_proof_order(tmp_path):
+    reconstruction, cad = _canonical_inputs(tmp_path)
+
+    class FakeApplication:
+        def prove_continuous_single_axis_clearance(self, **kwargs):
+            return _proof_result(kwargs)
+
+    outcome = CanonicalM10VerificationService(FakeApplication()).execute(reconstruction, cad)
+
+    assert canonical_m10_aggregate_summary(outcome) == (
+        CanonicalM10VerificationStatus.VERIFIED_CLEAR,
+        9.9,
+        (outcome.pair_proofs[0].moving_instance_id, outcome.pair_proofs[0].stationary_instance_id),
+    )
 
 
 @pytest.mark.parametrize(

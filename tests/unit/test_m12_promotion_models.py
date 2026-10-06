@@ -42,6 +42,27 @@ HASH = "sha256:" + "a" * 64
 OTHER_HASH = "sha256:" + "b" * 64
 
 
+def _verified_result_with_m10_hashes(*, request_hashes=(HASH,), result_hashes=(OTHER_HASH,)):
+    return PromotedMechanismVerificationResult(
+        promotion_result_artifact_id="artifact-1",
+        promotion_result_hash=HASH,
+        promoted_revision=4,
+        promoted_state_hash=HASH,
+        canonical_target_mechanism_id="PM-1",
+        canonical_mechanism_hash=HASH,
+        projection_hash=HASH,
+        projection_equivalence_hash=HASH,
+        canonical_cad_request_hash=HASH,
+        canonical_cad_realization_hash=HASH,
+        canonical_m10_inventory_hash=HASH,
+        canonical_m10_outcome_hash=HASH,
+        canonical_m10_request_hashes=request_hashes,
+        canonical_m10_result_hashes=result_hashes,
+        scope_equivalence_hash=HASH,
+        status=PromotedMechanismVerificationStatus.VERIFIED,
+    )
+
+
 def _promotion_inputs():
     from test_m12_candidate_evaluation import (
         _bound_m10_inputs,
@@ -366,6 +387,45 @@ def test_promotion_request_requires_exact_m12_result_binding():
     with pytest.raises(ValueError, match="M12-3 result identity"):
         _promotion_request(inputs=inputs, m12_3_result=alternate)
     assert evaluation.m12_3_result_hash != alternate.result_hash
+
+
+@pytest.mark.parametrize("result_count", (1, 2, 9))
+def test_promoted_verification_accepts_one_canonical_request_and_many_results(result_count):
+    result_hashes = tuple(
+        "sha256:" + f"{index:064x}" for index in range(1, result_count + 1)
+    )
+
+    result = _verified_result_with_m10_hashes(result_hashes=result_hashes)
+
+    assert result.canonical_m10_request_hashes == (HASH,)
+    assert result.canonical_m10_result_hashes == result_hashes
+    assert PromotedMechanismVerificationResult.model_validate(
+        result.model_dump(mode="json")
+    ) == result
+
+
+@pytest.mark.parametrize(
+    ("request_hashes", "result_hashes"),
+    (
+        ((), (OTHER_HASH,)),
+        ((HASH,), ()),
+    ),
+)
+def test_promoted_verification_rejects_missing_required_canonical_m10_identity(
+    request_hashes, result_hashes
+):
+    with pytest.raises(ValueError, match="requires canonical M10 identities"):
+        _verified_result_with_m10_hashes(
+            request_hashes=request_hashes,
+            result_hashes=result_hashes,
+        )
+
+
+def test_promoted_verification_rejects_duplicate_canonical_m10_results():
+    with pytest.raises(ValueError, match="canonical M10 result identities must be unique"):
+        _verified_result_with_m10_hashes(
+            result_hashes=(OTHER_HASH, OTHER_HASH),
+        )
 
 
 @pytest.mark.parametrize("field", ["m12_3_result", "evaluation", "selection"])

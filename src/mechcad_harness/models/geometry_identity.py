@@ -19,6 +19,9 @@ def _require_sha256(value: str) -> str:
 def reference_hash_payload(ref: dict) -> dict:
     payload = dict(ref)
     payload.pop("reference_hash", None)
+    payload.pop("content_identity", None)
+    payload.pop("content_identity_algorithm", None)
+    payload.pop("semantic_reference_hash", None)
     if payload.get("coordinate_system_id") is None:
         payload.pop("coordinate_system_id", None)
     return payload
@@ -48,6 +51,62 @@ def canonical_geometry_reference_payload(reference, *, m13: bool) -> dict:
     if m13:
         payload["coordinate_system_id"] = reference.coordinate_system_id
     return payload
+
+
+def candidate_geometry_reference_wire_payload(reference, *, m13: bool) -> dict:
+    payload = candidate_geometry_reference_payload(reference, m13=m13)
+    _add_semantic_reference_fields(payload, reference)
+    return payload
+
+
+def canonical_geometry_reference_wire_payload(reference, *, m13: bool) -> dict:
+    payload = canonical_geometry_reference_payload(reference, m13=m13)
+    _add_semantic_reference_fields(payload, reference)
+    return payload
+
+
+def semantic_reference_hash_payload(reference) -> dict:
+    """Return the raw-free semantic reference projection from §3."""
+
+    if reference.content_identity is None:
+        raise ValueError("semantic geometry reference requires content_identity")
+    if reference.content_identity_algorithm != "step-content-identity@1":
+        raise ValueError("unsupported semantic geometry content identity algorithm")
+    payload = {
+        "source_identity": reference.source_identity,
+        "format": reference.format,
+        "content_identity": reference.content_identity,
+        "content_identity_algorithm": reference.content_identity_algorithm,
+    }
+    if reference.coordinate_system_id is not None:
+        payload["coordinate_system_id"] = reference.coordinate_system_id
+    return payload
+
+
+def semantic_reference_hash(reference) -> str:
+    from mechcad_harness.core.canonical import canonical_json_bytes
+
+    return "sha256:" + hashlib.sha256(
+        canonical_json_bytes(semantic_reference_hash_payload(reference))
+    ).hexdigest()
+
+
+def _add_semantic_reference_fields(payload: dict, reference) -> None:
+    if any(
+        value is not None
+        for value in (
+            reference.content_identity,
+            reference.content_identity_algorithm,
+            reference.semantic_reference_hash,
+        )
+    ):
+        payload.update(
+            {
+                "content_identity": reference.content_identity,
+                "content_identity_algorithm": reference.content_identity_algorithm,
+                "semantic_reference_hash": reference.semantic_reference_hash,
+            }
+        )
 
 
 def geometry_identity_hash(identity: "GeometryArtifactIdentity") -> str:

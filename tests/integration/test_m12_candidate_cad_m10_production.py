@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 import importlib.util
 import json
 import os
@@ -19,7 +20,9 @@ from mechcad_harness.candidates import (
     CandidateCadRealizationService,
     CandidateCadStageReason,
     CandidateCadStageStatus,
+    CandidateCadStageOutcomeV2,
     CandidateEvaluationOutcome,
+    CandidateEvaluation,
     CandidateEvaluationPolicy,
     CandidateSynthesisPolicy,
     CandidateM10EvaluationService,
@@ -38,10 +41,16 @@ from mechcad_harness.candidates import (
     CandidateGeometryFidelity,
     CandidateDesignVariable,
     CandidateComparisonService,
+    CandidateComparisonResult,
     CandidateSelectionService,
+    CandidateSelection,
+    CandidateProvenanceArtifactService,
 )
 from mechcad_harness.candidates.models import GeometrySourceReference
-from mechcad_harness.candidates.m10_evaluation import CandidateM10StageOutcome
+from mechcad_harness.candidates.m10_evaluation import (
+    CandidateM10StageOutcome,
+    CandidateM10StageOutcomeV2,
+)
 from mechcad_harness.candidates.cad_realization import CandidateCadStageOutcome
 from mechcad_harness.candidates.m10_evaluation import CandidateCollisionPairInventory
 from mechcad_harness.cad_assembly import CadAssemblyProgram, CadComponentInstance, CadRigidTransform, assembly_hash
@@ -75,17 +84,28 @@ from mechcad_harness.revolute_drive import (
 )
 from mechcad_harness.tools.errors import ToolExecutionError
 from mechcad_harness.tools.models import ToolResultStatus
+from mechcad_harness.models.evidence import Evidence
 
 from test_m12_revolute_drive_production import (
     build_application,
     production_state,
     UninvokedAgentAdapter,
     make_request,
+    motor_specification,
+    shaft_specification,
+    bearing_specification,
+    hub_specification,
+    mount_specification,
+    body_specification,
+    gear_specification,
+    support_mount_specification,
     policy_for,
     requirements,
     spur_requirements,
     template,
     workspace_snapshot,
+    _geometry_identities,
+    _publish_source_artifacts,
 )
 
 
@@ -110,6 +130,14 @@ def _freecad_available_for_capstone() -> bool:
 FREECAD_AVAILABLE = _freecad_available_for_capstone()
 def _candidate_and_result(application):
     synthesis_request = make_request(application)
+    from mechcad_harness.candidates.services import bind_candidate_synthesis_request_semantic_identity
+
+    synthesis_request = bind_candidate_synthesis_request_semantic_identity(
+        synthesis_request,
+        state_manager=application.state_manager,
+        store=application.candidate_publication_service.store,
+        project_id=application.project_id,
+    )
     synthesis_policy = policy_for(DriveArchitecture.DIRECT_DRIVE)
     outcome = application.realize_and_evaluate_revolute_drive(
         request=synthesis_request,
@@ -144,7 +172,91 @@ def _evaluation_fixture(application):
     )
 
 
-def _cad_m10_inputs(candidate):
+def _publish_scalar_restart_evaluation(application):
+    """Create the persisted evaluation through production boundaries only."""
+    (
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        m12_result,
+        cad_stage,
+        m10_stage,
+        scope,
+        binding,
+        m10_request,
+        cad_request,
+    ) = _evaluation_fixture(application)
+    provenance = application.candidate_provenance_artifact_service
+    provenance.cad_replay_verifier = lambda *args: None
+    application.candidate_evaluation_service.cad_replay_verifier = lambda *args: None
+    evaluation = application.candidate_evaluation_service.evaluate(
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        m12_result,
+        cad_stage,
+        m10_stage,
+        CandidateEvaluationPolicy(),
+        cad_request=cad_request,
+        m10_request=m10_request,
+        m10_scope=scope,
+        m10_binding=binding,
+    )
+    evidence_dir = application.state_manager.workspace / "projects" / candidate.source_binding.project_id / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    for kind, prefix, records in (
+        (
+            "analysis.continuous_clearance_proof",
+            "EVD-CPROOF-",
+            m10_stage.pair_proofs,
+        ),
+        ("analysis.kinematic_sweep", "EVD-KSWEEP-", m10_stage.home_exact_checks),
+    ):
+        for record in records:
+            evidence_id = prefix + hashlib.sha256(
+                (record.request_hash + record.result_hash).encode()
+            ).hexdigest()[:24]
+            (evidence_dir / f"{evidence_id}.json").write_text(
+                Evidence(
+                    id=evidence_id,
+                    kind=kind,
+                    summary="deterministic production integration fixture",
+                    revision=candidate.source_binding.source_revision,
+                    state_hash=candidate.source_binding.source_state_hash,
+                    producer_result_id=record.result_hash,
+                    input_hash=record.request_hash,
+                    output_hash=record.result_hash,
+                ).model_dump_json(),
+                encoding="utf-8",
+            )
+    candidate_cad = provenance.publish_candidate_cad(
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        cad_request,
+        cad_stage.realization,
+        source_step_artifacts=None,
+    )
+    return provenance.publish_candidate_evaluation(candidate_cad.artifact, evaluation)
+
+
+def _cad_m10_inputs(
+    candidate,
+    *,
+    application=None,
+    synthesis_request=None,
+    synthesis_policy=None,
+    scope_pair=None,
+):
+    if candidate.schema_version == "mechanical-design-candidate@2":
+        return _cad_m10_inputs_v2(
+            candidate,
+            application=application,
+            synthesis_request=synthesis_request,
+            synthesis_policy=synthesis_policy,
+            scope_pair=scope_pair,
+        )
+
     physical_ids = tuple(component.instance_id for component in candidate.realization.components)
     output_id = "output-shaft"
     hub_id = "output-hub"
@@ -364,6 +476,465 @@ def _cad_m10_inputs(candidate):
     return cad, m10, scope, binding, m10_request, cad_request
 
 
+def _cad_m10_inputs_v2(
+    candidate,
+    *,
+    application=None,
+    synthesis_request=None,
+    synthesis_policy=None,
+    publish_cad=True,
+    use_production_m10=False,
+    not_proven=False,
+    external_spur=False,
+    request_only=False,
+    axis_origin_x_mm=None,
+    scope_pair=None,
+):
+    from test_m12_revolute_drive_production import (
+        _GEOMETRY_SLOTS,
+        _STEP_ARTIFACT_HASH,
+    )
+    from mechcad_harness.candidates.cad_realization import (
+        CandidateCadInstanceMappingV2,
+        CandidateCadRealizationRequestV3,
+            CandidateCadRealizationV2,
+            CandidateCadStageOutcomeV2,
+            SemanticSourceGeometryIdentity,
+            SemanticPlacementOrigin,
+        bind_semantic_placement_origin,
+        trusted_representation_identity,
+    )
+    import mechcad_harness.candidates.m10_evaluation as candidate_m10_v2
+    from mechcad_harness.semantic_m10_kinematics import (
+        semantic_single_joint_kinematic_model_hash,
+    )
+
+    mappings = []
+    instances = []
+    imported_components = []
+    content_by_artifact = {}
+    for index, component in enumerate(candidate.realization.components):
+        specification = next(
+            item
+            for item in candidate.component_specifications
+            if item.specification_hash == component.specification_hash
+        )
+        source = specification.geometry_source
+        if source is None:
+            raise AssertionError("@2 CAD fixture requires a bound semantic source spec")
+        placement_values = {"x_mm": 0.0, "y_mm": 0.0, "z_mm": 0.0}
+        placement_variable_identities = []
+        if application is not None:
+            for axis in placement_values:
+                names = (
+                    f"{component.instance_id}.placement.{axis}",
+                    f"placement.{component.instance_id}.{axis}",
+                )
+                matches = tuple(
+                    variable
+                    for variable in candidate.design_variables
+                    if variable.name in names
+                )
+                if len(matches) > 1:
+                    raise AssertionError(
+                        "candidate placement authority is ambiguous in promotion fixture"
+                    )
+                if matches:
+                    placement_values[axis] = float(matches[0].value)
+                    placement_variable_identities.append(
+                        f"candidate:design-variable:{matches[0].name}"
+                    )
+        transform = (
+            CadRigidTransform(**placement_values)
+            if application is not None
+            else CadRigidTransform(x_mm=float(index * 20))
+        )
+        cad_id = f"cad-{component.instance_id}"
+        content_by_artifact[source.artifact_id] = source.content_identity
+        content_by_artifact[source.artifact_hash] = source.content_identity
+        origin = bind_semantic_placement_origin(
+            "source_authority",
+            (
+                source.artifact_id,
+                source.artifact_hash,
+                f"candidate:source-authority:{source.source_identity}",
+                *placement_variable_identities,
+            ),
+            "fixture-placement@1",
+            transform,
+            content_by_artifact=content_by_artifact,
+        )
+        mappings.append(
+            CandidateCadInstanceMappingV2(
+                candidate_hash=candidate.candidate_hash,
+                physical_instance_id=component.instance_id,
+                cad_instance_id=cad_id,
+                fidelity=CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY,
+                representation_identity=trusted_representation_identity(
+                    slot=cad_id,
+                    content_identity=source.content_identity,
+                    content_identity_algorithm=source.content_identity_algorithm,
+                ),
+                source_geometry_identity=SemanticSourceGeometryIdentity(
+                    content_identity=source.content_identity,
+                    content_identity_algorithm=source.content_identity_algorithm,
+                ),
+                geometry_definition_identities=(source.content_identity,),
+                placement=transform,
+                placement_origin=origin,
+            )
+        )
+        imported_components.append(
+            ImportedCadComponent(
+                component_id=cad_id,
+                artifact_id=source.artifact_id,
+                artifact_hash=source.artifact_hash,
+                source_revision=candidate.source_binding.source_revision,
+                source_state_hash=candidate.source_binding.source_state_hash,
+            )
+        )
+        instances.append(
+            CadComponentInstance(
+                instance_id=cad_id,
+                part_id=cad_id,
+                placement=transform,
+            )
+        )
+    mappings = tuple(sorted(mappings, key=lambda item: item.physical_instance_id))
+    declared_inputs = {
+        identity
+        for mapping in mappings
+        for identity in (
+            mapping.geometry_definition_identities
+            + mapping.placement_origin.input_identities
+        )
+    }
+    cad_request = CandidateCadRealizationRequestV3(
+        candidate_hash=candidate.candidate_hash,
+        source_binding=candidate.source_binding,
+        semantic_source_binding_hash=candidate.semantic_source_binding_hash,
+        representation_policy_version="candidate-cad-policy@1",
+        compiler_identity="candidate-cad-compiler",
+        compiler_version="1",
+        candidate_instance_ids=tuple(item.physical_instance_id for item in mappings),
+        mappings=mappings,
+        placement_derivations=(),
+        design_variable_identities=tuple(
+            sorted(
+                identity
+                for identity in declared_inputs
+                if identity.startswith("candidate:design-variable:")
+            )
+        ),
+        component_interface_identities=tuple(
+            sorted(
+                identity
+                for identity in declared_inputs
+                if identity.startswith("candidate:component-interface:")
+            )
+        ),
+    )
+    if request_only:
+        return cad_request
+    if application is not None:
+        if synthesis_request is None or synthesis_policy is None:
+            raise AssertionError("production CAD fixture requires typed synthesis parents")
+        cad_stage = (
+            application.realize_candidate_cad(
+                candidate, synthesis_request, synthesis_policy, cad_request
+            )
+            if publish_cad
+            else application.candidate_cad_realization_service.realize(
+                candidate, synthesis_request, synthesis_policy, cad_request
+            )
+        )
+        if (
+            type(cad_stage) is not CandidateCadStageOutcomeV2
+            or cad_stage.status is not CandidateCadStageStatus.SUCCESS
+            or cad_stage.realization is None
+        ):
+            raise AssertionError(f"production CAD@2 realization failed: {cad_stage}")
+        cad_realization = cad_stage.realization
+        required_raw_pairs = (
+            application.candidate_provenance_artifact_service
+            ._candidate_cad_required_raw_pairs(candidate)
+        )
+        if sorted(cad_realization.verified_source_artifact_hashes) != sorted(
+            required_raw_pairs.values()
+        ):
+            raise AssertionError(
+                "production CAD fixture raw multiset does not match its accepted source set: "
+                f"actual={sorted(cad_realization.verified_source_artifact_hashes)!r} "
+                f"expected={sorted(required_raw_pairs.values())!r}"
+            )
+        assembly = cad_realization.assembly
+    else:
+        assembly = CadAssemblyProgram(
+            assembly_id="candidate-production-fixture-v2",
+            imported_components=tuple(imported_components),
+            instances=tuple(instances),
+        )
+        cad_realization = CandidateCadRealizationV2(
+            candidate_hash=candidate.candidate_hash,
+            request_hash=cad_request.request_hash,
+            mappings=mappings,
+            assembly=assembly,
+            assembly_hash=assembly_hash(assembly),
+            representation_identities=tuple(item.representation_identity for item in mappings),
+            semantic_placement_derivations_hash=cad_request.semantic_placement_derivations_hash,
+            verified_source_content_identities=tuple(
+                dict.fromkeys(
+                    item.source_geometry_identity.content_identity
+                    for item in mappings
+                    if item.source_geometry_identity is not None
+                )
+            ),
+            verified_source_artifact_hashes=(_STEP_ARTIFACT_HASH,) * len(
+                _GEOMETRY_SLOTS
+            ),
+            compiler_identity="candidate-cad-compiler",
+            compiler_version="1",
+            provider_identity="candidate-cad-v2-integration-fixture",
+        )
+        cad_stage = CandidateCadStageOutcomeV2(
+            status=CandidateCadStageStatus.SUCCESS,
+            realization=cad_realization,
+        )
+
+    instance_ids = {item.instance_id for item in candidate.realization.components}
+    output_ids = {"output-shaft", "output-hub", "payload-body"}
+    dispositions = tuple(
+        candidate_m10_v2.CandidateM10ConstituentDispositionV2(
+            schema_version="candidate-m10-constituent-disposition@2",
+            physical_instance_id=instance_id,
+            cad_instance_id=f"cad-{instance_id}",
+            constituent_key=instance_id,
+            disposition=(
+                "internal_motion_unmodeled"
+                if external_spur and instance_id == "driver-gear"
+                else ("output_rigid" if instance_id in output_ids else "fixed")
+            ),
+            output_transform_group=(
+                "J-1"
+                if instance_id in output_ids
+                else None
+            ),
+        )
+        for instance_id in sorted(instance_ids)
+    )
+    motor_mount_placement = next(
+        instance.placement
+        for instance in assembly.instances
+        if instance.instance_id == "cad-motor-mount"
+    )
+    world_axis_origin_x_mm = 120.0 if axis_origin_x_mm is None else axis_origin_x_mm
+    local_axis_origin_x_mm = world_axis_origin_x_mm - motor_mount_placement.x_mm
+    model = KinematicModel(
+        model_id="candidate-production-fixture-model-v2",
+        joints=(
+            RevoluteJointModel(
+                joint_id="J-1",
+                parent_instance_id="cad-motor-mount",
+                child_instance_id="cad-output-shaft",
+                axis_origin_x_mm=local_axis_origin_x_mm,
+                axis_direction_z=1.0,
+            ),
+        ),
+    )
+    binding = candidate_m10_v2.CandidateM10BindingV2(
+        schema_version="candidate-m10-binding@2",
+        candidate_hash=candidate.candidate_hash,
+        cad_realization_hash=cad_realization.realization_hash,
+        model=model,
+        semantic_single_joint_kinematic_model_hash=(
+            semantic_single_joint_kinematic_model_hash(model)
+        ),
+        output_joint_id="J-1",
+        driver_gear_constituent_key="driver-gear" if external_spur else None,
+        output_axis=RevoluteAxis(
+            origin_x_mm=world_axis_origin_x_mm,
+            origin_y_mm=0.0,
+            origin_z_mm=0.0,
+            direction_x=0.0,
+            direction_y=0.0,
+            direction_z=1.0,
+            frame_id="joint:J-1",
+        ),
+        constituent_dispositions=dispositions,
+    )
+    pair = scope_pair or (
+        "hub-mount-clearance",
+        "output-hub",
+        "motor-mount",
+    )
+    scope = CandidateM10EvaluationScope(
+        output_joint_semantic_key="primary-output-revolute",
+        angle_interval_deg=(-45.0, 45.0),
+        required_clearance_mm=1.0,
+        pair_scope_requirements=(
+            CandidateM10PairScopeRequirement(
+                requirement_key=pair[0],
+                first_constituent_key=pair[1],
+                second_constituent_key=pair[2],
+                required_classification=CandidateM10PairClassification.CHECK_CLEARANCE,
+            ),
+        ),
+        fidelity_requirements=(
+            (
+                pair[1],
+                CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY,
+            ),
+            (
+                pair[2],
+                CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY,
+            ),
+        ),
+        proof_service_version="m10-single-axis-continuous-proof@1",
+    )
+    classifications = ()
+    if external_spur:
+        baseline_inventory = candidate_m10_v2.CandidateCollisionPairInventoryV2.complete_for(
+            cad_realization, binding, scope
+        )
+        classifications = tuple(
+            item.model_copy(
+                update={
+                    "classification": candidate_m10_v2.CandidateM10PairClassification.INTENDED_CONTACT_EXCLUDED,
+                    "reason": "declared gear mesh interface is outside M10 scope",
+                    "classification_hash": "pending",
+                }
+            )
+            if set(item.pair) == {"cad-driver-gear", "cad-driven-gear"}
+            else item
+            for item in baseline_inventory.classifications
+        )
+    inventory = candidate_m10_v2.CandidateCollisionPairInventoryV2.complete_for(
+        cad_realization, binding, scope, classifications
+    )
+    m10_request = candidate_m10_v2.CandidateM10EvaluationRequestV2(
+        schema_version="candidate-m10-evaluation-request@2",
+        candidate_hash=candidate.candidate_hash,
+        cad_realization_hash=cad_realization.realization_hash,
+        binding_hash=binding.binding_hash,
+        scope_hash=scope.scope_hash,
+        semantic_single_joint_kinematic_model_hash=(
+            binding.semantic_single_joint_kinematic_model_hash
+        ),
+        mapping_hashes=tuple(sorted(item.mapping_hash for item in mappings)),
+        inventory=inventory,
+    )
+
+    def prove(**kwargs):
+        from hashlib import sha256
+
+        proof_request = ContinuousSingleAxisProofRequest(
+            source_assembly_id=kwargs["assembly"].assembly_id,
+            source_assembly_hash=assembly_hash(kwargs["assembly"]),
+            axis=kwargs["axis"],
+            start_angle_deg=kwargs["start_angle_deg"],
+            end_angle_deg=kwargs["end_angle_deg"],
+            moving_instance_ids=kwargs["moving_instance_ids"],
+            stationary_instance_ids=kwargs["stationary_instance_ids"],
+            required_clearance_mm=kwargs["required_clearance_mm"],
+            proof_guard_mm=kwargs["proof_guard_mm"],
+            max_depth=kwargs["max_depth"],
+            minimum_interval_deg=kwargs["minimum_interval_deg"],
+            max_exact_evaluations=kwargs["max_exact_evaluations"],
+        )
+        pair = ContinuousPairCertificate(
+            moving_instance_id=kwargs["moving_instance_ids"][0],
+            stationary_instance_id=kwargs["stationary_instance_ids"][0],
+            exact_distance_mm=10.0,
+            radial_bound_mm=1.0,
+            angular_motion_bound_mm=0.1,
+            certified_lower_clearance_mm=9.9,
+        )
+        proof_result = ContinuousSingleAxisProofResult(
+            request_hash=proof_request.request_hash,
+            source_assembly_hash=proof_request.source_assembly_hash,
+            proof_algorithm_version=CONTINUOUS_PROOF_ALGORITHM_VERSION,
+            axis=proof_request.axis,
+            start_angle_deg=proof_request.start_angle_deg,
+            end_angle_deg=proof_request.end_angle_deg,
+            moving_instance_ids=proof_request.moving_instance_ids,
+            stationary_instance_ids=proof_request.stationary_instance_ids,
+            required_clearance_mm=proof_request.required_clearance_mm,
+            proof_guard_mm=proof_request.proof_guard_mm,
+            status=ContinuousSingleAxisProofStatus.VERIFIED_CLEAR,
+            certified_leaf_certificates=(
+                ContinuousIntervalCertificate(
+                    interval_start_deg=proof_request.start_angle_deg,
+                    interval_end_deg=proof_request.end_angle_deg,
+                    reference_angle_deg=0.0,
+                    pair_certificates=(pair,),
+                    minimum_certified_lower_clearance_mm=9.9,
+                ),
+            ),
+            exact_evaluations_count=1,
+            maximum_depth_reached=0,
+        )
+        payload = proof_result.model_dump(mode="json", exclude={"result_hash"})
+        return proof_result.model_copy(
+            update={
+                "result_hash": "sha256:"
+                + sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            }
+        )
+
+    if application is not None and use_production_m10:
+        if not_proven:
+            application.candidate_m10_evaluation_service.max_exact_evaluations = 2
+            application.candidate_m10_evaluation_service.max_depth = 1
+        m10_stage = application.candidate_m10_evaluation_service.evaluate(
+            candidate.source_binding.source_revision,
+            candidate.source_binding.source_state_hash,
+            cad_stage,
+            binding,
+            m10_request,
+            scope=scope,
+            physical_realization=candidate.realization,
+        )
+    else:
+        m10_stage = candidate_m10_v2.CandidateM10EvaluationService(
+            prove,
+            lambda **kwargs: pytest.fail("home check not required by fixture scope"),
+            scope=scope,
+        ).evaluate(
+            candidate.source_binding.source_revision,
+            candidate.source_binding.source_state_hash,
+            cad_realization,
+            binding,
+            m10_request,
+            physical_realization=candidate.realization,
+        )
+    return cad_stage, m10_stage, scope, binding, m10_request, cad_request
+
+
+def test_candidate_cad_realization_at2_raw_multiset_covers_full_source_binding(
+    tmp_path,
+):
+    application = build_application(tmp_path)
+    candidate, synthesis_request, synthesis_policy, _ = _candidate_and_result(
+        application
+    )
+    cad_stage, _, _, _, _, _ = _cad_m10_inputs_v2(
+        candidate,
+        application=application,
+        synthesis_request=synthesis_request,
+        synthesis_policy=synthesis_policy,
+        publish_cad=False,
+    )
+    assert cad_stage.realization is not None
+    required_raw_pairs = (
+        application.candidate_provenance_artifact_service
+        ._candidate_cad_required_raw_pairs(candidate)
+    )
+
+    assert sorted(cad_stage.realization.verified_source_artifact_hashes) == sorted(
+        required_raw_pairs.values()
+    )
+
+
 def _violated_m12_result(result):
     checks = result.checks
     replacement = checks[-1].model_copy(
@@ -394,7 +965,7 @@ def _not_proven_m10_stage(m10):
             ).hexdigest()
         }
     )
-    return CandidateM10StageOutcome.model_validate(
+    return type(m10).model_validate(
         m10.model_dump(mode="json")
         | {
             "pair_proofs": (
@@ -416,9 +987,332 @@ def test_default_production_composes_candidate_services_and_attested_freecad(tmp
     assert isinstance(application.candidate_m10_evaluation_service, CandidateM10EvaluationService)
     assert isinstance(application.candidate_comparison_service, CandidateComparisonService)
     assert isinstance(application.candidate_selection_service, CandidateSelectionService)
+    assert isinstance(
+        application.candidate_provenance_artifact_service,
+        CandidateProvenanceArtifactService,
+    )
+    with pytest.raises(AttributeError, match="read-only"):
+        application.candidate_provenance_artifact_service = object()
     assert application._is_real_freecad_measurement_provider(
         application._kinematic_measurement_provider
     )
+
+
+def test_candidate_evaluation_restarts_from_scalar_artifact_locator(tmp_path):
+    application = build_application(tmp_path)
+    publication = _publish_scalar_restart_evaluation(application)
+    service = application.candidate_provenance_artifact_service
+
+    project_id = publication.artifact.project_id
+    workspace = application.state_manager.workspace
+    artifact_id = publication.artifact.artifact_id
+    artifact_hash = publication.artifact.sha256
+    del service, application, publication
+    gc.collect()
+
+    from mechcad_harness.candidates.provenance_artifacts import (
+        CandidateProvenanceArtifactService,
+    )
+    from mechcad_harness.state import StateManager
+
+    restarted = CandidateProvenanceArtifactService(
+        workspace,
+        # Retain only the declared workspace locator, not the original service.
+        project_id,
+        StateManager(workspace),
+        cad_replay_verifier=lambda *args: None,
+    )
+    resolved = restarted.resolve_candidate_evaluation(artifact_id)
+
+    assert resolved.artifact.artifact_id == artifact_id
+    assert resolved.artifact.sha256 == artifact_hash
+
+
+def test_candidate_entrypoints_publish_after_typed_result_exists(tmp_path, monkeypatch):
+    application = build_application(tmp_path)
+    (
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        m12_result,
+        cad_stage,
+        m10_stage,
+        scope,
+        binding,
+        m10_request,
+        cad_request,
+    ) = _evaluation_fixture(application)
+    calls = []
+
+    monkeypatch.setattr(
+        application.candidate_provenance_artifact_service,
+        "publish_candidate_cad",
+        lambda *args, **kwargs: calls.append("cad"),
+    )
+    monkeypatch.setattr(
+        application.candidate_provenance_artifact_service,
+        "publish_candidate_evaluation",
+        lambda *args, **kwargs: calls.append("evaluation"),
+    )
+    monkeypatch.setattr(
+        application.candidate_cad_realization_service,
+        "realize",
+        lambda *args, **kwargs: cad_stage,
+    )
+    monkeypatch.setattr(
+        application.candidate_m10_evaluation_service,
+        "evaluate",
+        lambda *args, **kwargs: m10_stage,
+    )
+    monkeypatch.setattr(
+        application.candidate_evaluation_service,
+        "cad_replay_verifier",
+        lambda *args, **kwargs: None,
+    )
+
+    evaluation = application.evaluate_candidate(
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        m12_result,
+        cad_request,
+        m10_request,
+        scope,
+        binding,
+        evaluation_policy=CandidateEvaluationPolicy(),
+    )
+
+    from mechcad_harness.candidates.evaluation import CandidateEvaluationV2
+
+    assert isinstance(evaluation, CandidateEvaluationV2)
+    assert calls == ["cad", "evaluation"]
+
+
+def test_failed_cad_does_not_publish_or_promote_and_uncalled_comparison_stays_unpublished(
+    tmp_path, monkeypatch
+):
+    application = build_application(tmp_path)
+    (
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        m12_result,
+        cad_stage,
+        m10_stage,
+        scope,
+        binding,
+        m10_request,
+        cad_request,
+    ) = _evaluation_fixture(application)
+    unresolved = CandidateCadStageOutcomeV2(
+        status=CandidateCadStageStatus.UNRESOLVED,
+        reasons=(CandidateCadStageReason.GEOMETRY_UNAVAILABLE,),
+    )
+    calls = []
+    original_evaluate = application.candidate_evaluation_service.evaluate
+    comparison_publication_calls = []
+
+    monkeypatch.setattr(
+        application.candidate_provenance_artifact_service,
+        "publish_candidate_cad",
+        lambda *args, **kwargs: calls.append("cad"),
+    )
+    monkeypatch.setattr(
+        application.candidate_provenance_artifact_service,
+        "publish_candidate_evaluation",
+        lambda *args, **kwargs: calls.append("evaluation"),
+    )
+    monkeypatch.setattr(
+        application.candidate_provenance_artifact_service,
+        "publish_candidate_comparison",
+        lambda *args, **kwargs: comparison_publication_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        application.candidate_cad_realization_service,
+        "realize",
+        lambda *args, **kwargs: unresolved,
+    )
+    monkeypatch.setattr(
+        application.candidate_m10_evaluation_service,
+        "evaluate",
+        lambda *args, **kwargs: pytest.fail("M10 must not run after unresolved CAD"),
+    )
+    monkeypatch.setattr(
+        application.candidate_evaluation_service,
+        "evaluate",
+        lambda *args, **kwargs: SimpleNamespace(
+            outcome=CandidateEvaluationOutcome.UNRESOLVED,
+            cad_stage_outcome=args[4],
+            m10_stage_outcome=args[5],
+        ),
+    )
+
+    result = application.evaluate_candidate(
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        m12_result,
+        cad_request,
+        m10_request,
+        scope,
+        binding,
+        evaluation_policy=CandidateEvaluationPolicy(),
+    )
+
+    assert result.outcome is CandidateEvaluationOutcome.UNRESOLVED
+    assert calls == []
+    monkeypatch.setattr(
+        application.candidate_evaluation_service,
+        "cad_replay_verifier",
+        lambda *args, **kwargs: None,
+    )
+    valid_evaluation = original_evaluate(
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        m12_result,
+        cad_stage,
+        m10_stage,
+        CandidateEvaluationPolicy(),
+        cad_request=cad_request,
+        m10_request=m10_request,
+        m10_scope=scope,
+        m10_binding=binding,
+    )
+    from mechcad_harness.candidates import CandidateSelectionV2
+
+    selection = CandidateSelectionV2(
+        candidate_hash=candidate.candidate_hash,
+        evaluation_hash=valid_evaluation.evaluation_hash,
+        source_binding_hash=valid_evaluation.source_binding_hash,
+        evaluation_scope_hash=valid_evaluation.evaluation_scope_hash,
+        selector_identity="manual",
+        rationale="bounded fixture selection",
+    )
+    monkeypatch.setattr(
+        application.candidate_selection_service,
+        "select",
+        lambda *args, **kwargs: selection,
+    )
+    monkeypatch.setattr(
+        application.candidate_provenance_artifact_service,
+        "publish_candidate_selection",
+        lambda *args, **kwargs: calls.append("selection"),
+    )
+    monkeypatch.setattr(
+        application,
+        "promote_selected_candidate",
+        lambda *args, **kwargs: pytest.fail("candidate selection must not promote"),
+    )
+    assert (
+        application.select_candidate(
+            candidate,
+            valid_evaluation,
+            "manual",
+            "bounded fixture selection",
+            synthesis_request=synthesis_request,
+        )
+        == selection
+    )
+    assert calls == ["selection"]
+    assert comparison_publication_calls == []
+
+
+def test_selection_with_unpublished_supplied_comparison_fails_closed(
+    tmp_path, monkeypatch
+):
+    from mechcad_harness.candidates import CandidateProvenanceIntegrityError
+    from mechcad_harness.candidates.comparison import (
+        CandidateComparisonRequestV2,
+        CandidateComparisonResultV2,
+    )
+    from mechcad_harness.candidates import CandidateSelectionV2
+
+    application = build_application(tmp_path)
+    (
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        m12_result,
+        cad_stage,
+        m10_stage,
+        scope,
+        binding,
+        m10_request,
+        cad_request,
+    ) = _evaluation_fixture(application)
+    monkeypatch.setattr(
+        application.candidate_evaluation_service,
+        "cad_replay_verifier",
+        lambda *args, **kwargs: None,
+    )
+    evaluation = application.candidate_evaluation_service.evaluate(
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        m12_result,
+        cad_stage,
+        m10_stage,
+        CandidateEvaluationPolicy(),
+        cad_request=cad_request,
+        m10_request=m10_request,
+        m10_scope=scope,
+        m10_binding=binding,
+    )
+    comparison_request = CandidateComparisonRequestV2(
+        project_id=application.project_id,
+        source_binding_hash=evaluation.source_binding_hash,
+        evaluation_scope_hash=evaluation.evaluation_scope_hash,
+        policy_hash=application.candidate_comparison_service.policy.policy_hash,
+        candidate_evaluation_pairs=((candidate.candidate_hash, evaluation.evaluation_hash),),
+    )
+    comparison = CandidateComparisonResultV2(
+        project_id=application.project_id,
+        source_binding_hash=evaluation.source_binding_hash,
+        evaluation_scope_hash=evaluation.evaluation_scope_hash,
+        policy=application.candidate_comparison_service.policy,
+        policy_hash=application.candidate_comparison_service.policy.policy_hash,
+        request_hash=comparison_request.request_hash,
+        candidate_evaluation_pairs=((candidate.candidate_hash, evaluation.evaluation_hash),),
+        ranked_candidate_hashes=(candidate.candidate_hash,),
+        ranked_evaluation_hashes=(evaluation.evaluation_hash,),
+        metric_values=((candidate.candidate_hash, evaluation.metrics[0].value),),
+        comparator_version=application.candidate_comparison_service.policy.comparator_version,
+    )
+    selection = CandidateSelectionV2(
+        candidate_hash=candidate.candidate_hash,
+        evaluation_hash=evaluation.evaluation_hash,
+        source_binding_hash=evaluation.source_binding_hash,
+        evaluation_scope_hash=evaluation.evaluation_scope_hash,
+        selector_identity="manual",
+        rationale="selection without a published comparison",
+        comparison_used=True,
+        comparison_result_hash=comparison.result_hash,
+    )
+    monkeypatch.setattr(
+        application.candidate_selection_service,
+        "select",
+        lambda *args, **kwargs: selection,
+    )
+    selection_publication_calls = []
+    monkeypatch.setattr(
+        application.candidate_provenance_artifact_service,
+        "publish_candidate_selection",
+        lambda *args, **kwargs: selection_publication_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(CandidateProvenanceIntegrityError, match="comparison artifact"):
+        application.select_candidate(
+            candidate,
+            evaluation,
+            "manual",
+            "selection without a published comparison",
+            comparison=comparison,
+            comparison_entries=((candidate, evaluation),),
+            synthesis_request=synthesis_request,
+        )
+
+    assert selection_publication_calls == []
 
 
 def test_candidate_entrypoints_delegate_to_composed_services(tmp_path, monkeypatch):
@@ -574,7 +1468,7 @@ def test_cad_unresolved_short_circuits_m10_and_is_unresolved(tmp_path, monkeypat
     application = build_application(tmp_path)
     candidate, synthesis_request, synthesis_policy, admissible = _candidate_and_result(application)
     _cad, _m10, m10_scope, m10_binding, m10_request, cad_request = _cad_m10_inputs(candidate)
-    cad_stage = CandidateCadStageOutcome(
+    cad_stage = CandidateCadStageOutcomeV2(
         status=CandidateCadStageStatus.UNRESOLVED,
         reasons=(CandidateCadStageReason.GEOMETRY_UNAVAILABLE,),
     )
@@ -662,8 +1556,10 @@ def test_inadmissible_m12_uses_real_evaluator_with_typed_not_reached_stages(tmp_
 
     assert result.outcome is CandidateEvaluationOutcome.INFEASIBLE
     assert result.cad_stage_outcome.status is CandidateCadStageStatus.NOT_REACHED
+    assert result.cad_stage_outcome.schema_version == "candidate-cad-stage-outcome@2"
     assert result.cad_stage_outcome.reasons == (CandidateCadStageReason.PRIOR_STAGE_FAILED,)
     assert result.m10_stage_outcome.status is CandidateM10StageStatus.NOT_REACHED
+    assert result.m10_stage_outcome.schema_version == "candidate-m10-stage-outcome@2"
     assert result.m10_stage_outcome.reasons == (CandidateM10StageReason.PRIOR_STAGE_FAILED,)
     assert result.m10_stage_outcome.binding_hash is None
     assert result.m10_stage_outcome.scope_hash is None
@@ -707,7 +1603,7 @@ def test_unresolved_cad_uses_real_evaluator_without_downstream_identities(tmp_pa
         m10_request,
         cad_request,
     ) = _evaluation_fixture(application)
-    cad_stage = CandidateCadStageOutcome(
+    cad_stage = CandidateCadStageOutcomeV2(
         status=CandidateCadStageStatus.UNRESOLVED,
         reasons=(CandidateCadStageReason.GEOMETRY_UNAVAILABLE,),
     )
@@ -806,6 +1702,16 @@ def test_successful_cad_and_not_proven_m10_retains_exact_result_references(tmp_p
         return original_evaluate(*args, **kwargs)
 
     monkeypatch.setattr(application.candidate_cad_realization_service, "realize", realize)
+    monkeypatch.setattr(
+        application.candidate_provenance_artifact_service,
+        "publish_candidate_cad",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        application.candidate_provenance_artifact_service,
+        "publish_candidate_evaluation",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setattr(application.candidate_evaluation_service, "cad_replay_verifier", lambda *args: None)
     monkeypatch.setattr(application.candidate_m10_evaluation_service, "evaluate", evaluate_m10)
     monkeypatch.setattr(application.candidate_evaluation_service, "evaluate", evaluate)
@@ -893,8 +1799,15 @@ def _build_gear_application(tmp_path: Path):
     )
     from mechcad_harness.state import StateManager
 
-    StateManager(workspace).create_project(PROJECT_ID, production_state())
-    return ProductionApplication.create(
+    state = production_state()
+    state = state.model_copy(
+        update={
+            "yagi_payload_carrier_requirements": list(state.yagi_payload_carrier_requirements)
+            + _geometry_identities(state)
+        }
+    )
+    StateManager(workspace).create_project(PROJECT_ID, state)
+    application = ProductionApplication.create(
         workspace,
         PROJECT_ID,
         UninvokedAgentAdapter(),
@@ -902,6 +1815,8 @@ def _build_gear_application(tmp_path: Path):
         dependency_path=dependencies,
         additional_tool_registrations=GearworksTools.registrations(),
     )
+    _publish_source_artifacts(application, state)
+    return application
 
 
 def _build_live_application(tmp_path: Path):
@@ -931,14 +1846,23 @@ def _build_live_application(tmp_path: Path):
     )
     from mechcad_harness.state import StateManager
 
-    StateManager(workspace).create_project(PROJECT_ID, production_state())
-    return ProductionApplication.create(
+    state = production_state()
+    state = state.model_copy(
+        update={
+            "yagi_payload_carrier_requirements": list(state.yagi_payload_carrier_requirements)
+            + _geometry_identities(state)
+        }
+    )
+    StateManager(workspace).create_project(PROJECT_ID, state)
+    application = ProductionApplication.create(
         workspace,
         PROJECT_ID,
         UninvokedAgentAdapter(),
         ownership_path=ownership,
         dependency_path=dependencies,
     )
+    _publish_source_artifacts(application, state)
+    return application
 
 
 def _publish_source_step(application, *, part_id="candidate-trusted-source", size=(20.0, 20.0, 5.0)):
@@ -969,6 +1893,11 @@ def _publish_source_step(application, *, part_id="candidate-trusted-source", siz
     assert artifact_path.read_bytes()
     assert artifact.sha256 == "sha256:" + hashlib.sha256(artifact_path.read_bytes()).hexdigest()
     return artifact
+
+
+def publish_source_step(application, *, part_id="candidate-trusted-source", size=(20.0, 20.0, 5.0)):
+    """Public deterministic fixture builder for composed integration tests."""
+    return _publish_source_step(application, part_id=part_id, size=size)
 
 
 def _publish_gear_step(application, *, teeth=20):
@@ -1010,6 +1939,11 @@ def _publish_gear_step(application, *, teeth=20):
     artifact_path = application.state_manager.workspace / artifact.relative_path
     assert reference["sha256"] == "sha256:" + hashlib.sha256(artifact_path.read_bytes()).hexdigest()
     return artifact
+
+
+def publish_gear_step(application, *, teeth=20):
+    """Public deterministic gear fixture builder for composed integration tests."""
+    return _publish_gear_step(application, teeth=teeth)
 
 
 def _source_spec(specification, artifact):
@@ -1056,6 +1990,15 @@ def _candidate_template(
         )
         for field in source_fields
     }
+    if isinstance(source_artifact, dict):
+        for field, instance_id in (
+            ("mount_specification", "motor-mount"),
+            ("driven_body_specification", "payload-body"),
+        ):
+            if instance_id in source_artifact:
+                updates[field] = _source_spec(
+                    getattr(candidate_template, field), source_artifact[instance_id]
+                )
     if architecture is DriveArchitecture.EXTERNAL_SPUR_REDUCTION:
         assert gear_artifact is not None
         updates.update(
@@ -1093,8 +2036,214 @@ def _candidate_template(
     return candidate_template.model_copy(update=updates | {"design_variables": tuple(design_variables)})
 
 
+def _bind_candidate_template_specs(application, candidate_template):
+    from mechcad_harness.artifacts import ArtifactType
+    from mechcad_harness.models.semantic_component import bind_component_specification_semantic_identity
+    from mechcad_harness.step_content_identity import step_content_identity_v1
+
+    store = application.candidate_publication_service.store
+    specification_fields = (
+        "motor_specification",
+        "shaft_specification",
+        "bearing_a_specification",
+        "bearing_b_specification",
+        "hub_specification",
+        "mount_specification",
+        "driven_body_specification",
+        "driver_gear_specification",
+        "driven_gear_specification",
+    )
+    pending = [
+        (field, getattr(candidate_template, field))
+        for field in specification_fields
+        if getattr(candidate_template, field, None) is not None
+        and getattr(candidate_template, field).specification_hash == "pending"
+    ]
+    support_specs = candidate_template.support_mount_specifications
+    pending.extend(
+        (f"support_mount_specifications[{index}]", spec)
+        for index, spec in enumerate(support_specs)
+        if spec.specification_hash == "pending"
+    )
+    context = {}
+    for _, spec in pending:
+        reference = spec.geometry_source
+        if reference is None:
+            continue
+        verified = store.read_verified_in_project(
+            reference.artifact_id,
+            expected_type=ArtifactType.STEP,
+            expected_hash=reference.artifact_hash,
+        )
+        if verified is None:
+            raise CandidateIntegrityError(
+                f"candidate template source artifact is missing: {reference.artifact_id}"
+            )
+        _, content = verified
+        content_identity = step_content_identity_v1(content)
+        context[
+            (
+                reference.artifact_id,
+                reference.artifact_hash,
+                reference.source_identity,
+                reference.format,
+                reference.coordinate_system_id,
+            )
+        ] = content_identity.model_dump(mode="json")
+    updates = {
+        field: bind_component_specification_semantic_identity(spec, context)
+        for field, spec in pending
+        if not field.startswith("support_mount_specifications")
+    }
+    if any(field.startswith("support_mount_specifications") for field, _ in pending):
+        updates["support_mount_specifications"] = tuple(
+            bind_component_specification_semantic_identity(spec, context)
+            if spec.specification_hash == "pending"
+            else spec
+            for spec in support_specs
+        )
+    return candidate_template.model_copy(update=updates)
+
+
+def _bounded_legacy_candidate(
+    application,
+    source_artifact,
+    positions,
+    *,
+    architecture=DriveArchitecture.DIRECT_DRIVE,
+    gear_artifact=None,
+    extra_design_variables=(),
+):
+    """Build an explicit legacy candidate for M12-5 replay fixtures.
+
+    Mount/body use the existing component definitions and candidate-bound geometry
+    variables, with no geometry source. Other supplied components retain their exact
+    published STEP sources. External-spur gears and support mounts retain their
+    supplied sources as well. This fixture is deliberately @1: the M12-5 promotion
+    integration path is a legacy replay path and must not mix it with candidate@2.
+    """
+
+    from mechcad_harness.candidates import (
+        CandidateSynthesisPolicy,
+        CandidateSynthesisRequest,
+    )
+    from mechcad_harness.revolute_drive.models import RevoluteDriveTemplateInput
+
+    pending_request = make_request(application, architecture)
+    request_payload = pending_request.model_dump(mode="json")
+    request_payload["schema_version"] = "candidate-synthesis-request@1"
+    request_payload.pop("semantic_source_binding_hash", None)
+    request_payload["request_hash"] = "pending"
+    synthesis_request = CandidateSynthesisRequest.model_validate(request_payload)
+
+    candidate_template = _candidate_template(
+        architecture,
+        source_artifact,
+        positions,
+        gear_artifact=gear_artifact,
+        extra_design_variables=extra_design_variables,
+    )
+    source_for = (
+        lambda instance_id: source_artifact[instance_id]
+        if isinstance(source_artifact, dict)
+        else source_artifact
+    )
+    updates = {
+            "motor_specification": _source_spec(
+                motor_specification(), source_for("drive-motor")
+            ),
+            "shaft_specification": _source_spec(
+                shaft_specification(), source_for("output-shaft")
+            ),
+            "bearing_a_specification": _source_spec(
+                bearing_specification(), source_for("bearing-a")
+            ),
+            "bearing_b_specification": _source_spec(
+                bearing_specification(), source_for("bearing-b")
+            ),
+            "hub_specification": _source_spec(
+                hub_specification(), source_for("output-hub")
+            ),
+            "mount_specification": mount_specification(),
+            "driven_body_specification": body_specification(),
+        }
+    if architecture is DriveArchitecture.EXTERNAL_SPUR_REDUCTION:
+        if gear_artifact is None:
+            raise AssertionError("external-spur legacy fixture requires gear STEP artifacts")
+        gear_for = (
+            lambda instance_id: gear_artifact[instance_id]
+            if isinstance(gear_artifact, dict)
+            else gear_artifact
+        )
+        updates.update(
+            {
+                "driver_gear_specification": _source_spec(
+                    gear_specification(20), gear_for("driver-gear")
+                ),
+                "driven_gear_specification": _source_spec(
+                    gear_specification(100), gear_for("driven-gear")
+                ),
+                "support_mount_specifications": tuple(
+                    _source_spec(support_mount_specification(), source_for(instance_id))
+                    for instance_id in ("support-mount-a", "support-mount-b")
+                ),
+            }
+        )
+    candidate_template = candidate_template.model_copy(update=updates)
+    candidate_template = RevoluteDriveTemplateInput.model_validate(
+        candidate_template.model_dump(mode="json")
+    )
+
+    base_policy = policy_for(architecture)
+    entries = list(base_policy.entries)
+    declared = {entry[0] for entry in entries}
+    for variable in candidate_template.design_variables:
+        key = f"allow-design-variable:{variable.name}"
+        if key not in declared:
+            entries.append(
+                (
+                    key,
+                    json.dumps(
+                        {"value": variable.value},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "hard_admissibility",
+                )
+            )
+    synthesis_policy = CandidateSynthesisPolicy(entries=tuple(entries))
+    construction = application.revolute_drive_service.construct_candidate(
+        synthesis_request, synthesis_policy, candidate_template
+    )
+    if construction.candidate is None:
+        raise AssertionError(
+            f"bounded legacy candidate construction failed: {construction.reason}"
+        )
+    source_state = application.state_manager.load_current_state(application.project_id)
+    engineering_requirements = (
+        requirements(require_nominal_interface_compatibility=True)
+        if architecture is DriveArchitecture.DIRECT_DRIVE
+        else spur_requirements(require_nominal_interface_compatibility=True)
+    )
+    m12_result = application.revolute_drive_service.evaluate(
+        construction.candidate,
+        synthesis_request,
+        synthesis_policy,
+        engineering_requirements,
+        source_state=source_state,
+    )
+    return construction.candidate, synthesis_request, synthesis_policy, m12_result
+
+
 def _real_candidate(application, source_artifact, positions, *, architecture=DriveArchitecture.DIRECT_DRIVE, gear_artifact=None, extra_design_variables=()):
-    synthesis_request = make_request(application, architecture)
+    from mechcad_harness.candidates.services import bind_candidate_synthesis_request_semantic_identity
+
+    synthesis_request = bind_candidate_synthesis_request_semantic_identity(
+        make_request(application, architecture),
+        state_manager=application.state_manager,
+        store=application.candidate_publication_service.store,
+        project_id=application.project_id,
+    )
     synthesis_policy = policy_for(architecture)
     candidate_template = _candidate_template(
         architecture,
@@ -1103,6 +2252,7 @@ def _real_candidate(application, source_artifact, positions, *, architecture=Dri
         gear_artifact=gear_artifact,
         extra_design_variables=extra_design_variables,
     )
+    candidate_template = _bind_candidate_template_specs(application, candidate_template)
     policy_entries = list(synthesis_policy.entries)
     declared_policy_keys = {entry[0] for entry in policy_entries}
     for variable in candidate_template.design_variables:
@@ -1133,7 +2283,27 @@ def _real_candidate(application, source_artifact, positions, *, architecture=Dri
     return outcome.construction.candidate, synthesis_request, synthesis_policy, outcome.evaluation
 
 
+def real_candidate(application, source_artifact, positions, *, architecture=DriveArchitecture.DIRECT_DRIVE, gear_artifact=None, extra_design_variables=()):
+    """Public deterministic candidate builder for composed integration tests."""
+    return _real_candidate(
+        application,
+        source_artifact,
+        positions,
+        architecture=architecture,
+        gear_artifact=gear_artifact,
+        extra_design_variables=extra_design_variables,
+    )
+
+
 def _cad_request(candidate, *, bounded_instance_ids=()):
+    if candidate.schema_version == "mechanical-design-candidate@2":
+        if bounded_instance_ids:
+            raise ValueError(
+                "candidate@2 source-backed specs cannot use bounded CAD mappings"
+            )
+        return _cad_m10_inputs_v2(
+            candidate, request_only=True
+        )
     bounded_instance_ids = set(bounded_instance_ids)
     specifications = {
         specification.specification_hash: specification
@@ -1226,6 +2396,76 @@ def _cad_request(candidate, *, bounded_instance_ids=()):
 
 def _explicit_bounded_cad_request(candidate):
     return _cad_request(candidate, bounded_instance_ids=("motor-mount", "payload-body"))
+
+
+def test_candidate_cad_fixture_dispatch_keeps_bounded_legacy_and_trusted_v3_families(tmp_path):
+    application = build_application(tmp_path)
+    source_store = ArtifactStore(
+        application.state_manager.workspace,
+        project_id=application.project_id,
+        run_id="SOURCE",
+    )
+    source_artifacts = {}
+    for instance_id, slot in (
+        ("drive-motor", "motor"),
+        ("output-shaft", "shaft"),
+        ("bearing-a", "bearing"),
+        ("bearing-b", "bearing"),
+        ("output-hub", "hub"),
+    ):
+        source_artifacts[instance_id] = source_store.read_verified_strict(
+            f"ART-{slot}", expected_type=ArtifactType.STEP
+        )[0]
+    positions = {
+        "drive-motor": (100.0, 100.0, 0.0),
+        "output-shaft": (80.0, 0.0, 0.0),
+        "bearing-a": (90.0, 30.0, 0.0),
+        "bearing-b": (90.0, -30.0, 0.0),
+        "output-hub": (80.0, 0.0, 0.0),
+        "motor-mount": (0.0, 0.0, 0.0),
+        "payload-body": (80.0, 0.0, 0.0),
+    }
+    bounded_candidate, bounded_request, _, _ = _bounded_legacy_candidate(
+        application, source_artifacts, positions
+    )
+    bounded_cad_request = _explicit_bounded_cad_request(bounded_candidate)
+    bounded_specs = {
+        component.instance_id: next(
+            specification
+            for specification in bounded_candidate.component_specifications
+            if specification.specification_hash == component.specification_hash
+        )
+        for component in bounded_candidate.realization.components
+    }
+
+    assert bounded_candidate.schema_version == "mechanical-design-candidate@1"
+    assert bounded_request.schema_version == "candidate-synthesis-request@1"
+    assert bounded_cad_request.schema_version == "candidate-cad-realization-request@1"
+    for instance_id in ("motor-mount", "payload-body"):
+        assert bounded_specs[instance_id].schema_version == "component-specification@1"
+        assert bounded_specs[instance_id].geometry_source is None
+    bounded = {
+        mapping.physical_instance_id: mapping
+        for mapping in bounded_cad_request.mappings
+        if mapping.fidelity is CandidateGeometryFidelity.DECLARED_BOUNDED_COLLISION_REPRESENTATION
+    }
+    assert set(bounded) == {"motor-mount", "payload-body"}
+    assert all(mapping.source_geometry_identity is None for mapping in bounded.values())
+    assert tuple(mapping.mapping_hash for mapping in bounded_cad_request.mappings) == tuple(
+        mapping.mapping_hash
+        for mapping in _explicit_bounded_cad_request(bounded_candidate).mappings
+    )
+
+    source_candidate, *_ = _candidate_and_result(application)
+    v3_request = _cad_request(source_candidate)
+    assert source_candidate.schema_version == "mechanical-design-candidate@2"
+    assert v3_request.schema_version == "candidate-cad-realization-request@3"
+    assert all(
+        mapping.schema_version == "candidate-cad-instance-mapping@2"
+        and mapping.fidelity is CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY
+        and mapping.source_geometry_identity is not None
+        for mapping in v3_request.mappings
+    )
 
 
 def test_external_spur_trusted_provider_failure_never_downgrades_to_bounded_geometry(tmp_path, monkeypatch):
@@ -1322,6 +2562,16 @@ def test_candidate_realization_rejects_unavailable_trusted_external_spur_artifac
             )
         )
     }
+    source_artifacts["motor-mount"] = _publish_source_step(
+        application,
+        part_id="candidate-provider-boundary-motor-mount",
+        size=(30.0, 30.0, 5.0),
+    )
+    source_artifacts["payload-body"] = _publish_source_step(
+        application,
+        part_id="candidate-provider-boundary-payload-body",
+        size=(20.0, 20.0, 5.0),
+    )
     gear_artifact = {
         "driver-gear": _publish_gear_step(application, teeth=20),
         "driven-gear": _publish_gear_step(application, teeth=100),
@@ -1346,18 +2596,17 @@ def test_candidate_realization_rejects_unavailable_trusted_external_spur_artifac
         architecture=DriveArchitecture.EXTERNAL_SPUR_REDUCTION,
         gear_artifact=gear_artifact,
     )
-    request = _cad_request(candidate, bounded_instance_ids=("motor-mount", "payload-body"))
+    request = _cad_request(candidate)
     trusted = {
         mapping.physical_instance_id: mapping
         for mapping in request.mappings
         if mapping.fidelity is CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY
     }
     assert {instance_id for instance_id in trusted} >= {"driver-gear", "driven-gear"}
-    assert {
-        mapping.physical_instance_id
+    assert all(
+        mapping.fidelity is CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY
         for mapping in request.mappings
-        if mapping.fidelity is CandidateGeometryFidelity.DECLARED_BOUNDED_COLLISION_REPRESENTATION
-    } == {"motor-mount", "payload-body"}
+    )
 
     driver_artifact_path = application.state_manager.workspace / gear_artifact["driver-gear"].relative_path
     driver_artifact_path.unlink()
@@ -1371,7 +2620,10 @@ def test_candidate_realization_rejects_unavailable_trusted_external_spur_artifac
         ),
     )
 
-    with pytest.raises(CandidateCadIntegrityError, match="trusted source artifact is missing"):
+    with pytest.raises(
+        CandidateCadIntegrityError,
+        match="candidate required geometry artifact is missing or ambiguous|trusted source artifact is missing",
+    ):
         application.realize_candidate_cad(
             candidate,
             synthesis_request,
@@ -1414,7 +2666,7 @@ def test_explicit_bounded_collision_fixture_is_candidate_bound_not_trusted_fallb
         "motor-mount": (0.0, 0.0, 0.0),
         "payload-body": (80.0, 0.0, 0.0),
     }
-    candidate, synthesis_request, synthesis_policy, _ = _real_candidate(
+    candidate, synthesis_request, synthesis_policy, _ = _bounded_legacy_candidate(
         application, source_artifacts, positions
     )
     request = _explicit_bounded_cad_request(candidate)
@@ -1548,13 +2800,44 @@ def _m10_inputs(candidate, cad_stage, *, external_spur=False, home=False):
     return scope, binding, request
 
 
-def _evaluate_real_candidate(application, candidate, synthesis_request, synthesis_policy, m12_result, *, external_spur=False, not_proven=False):
+def m10_inputs(candidate, cad_stage, *, external_spur=False, home=False):
+    """Public M10 fixture boundary used by promotion integration tests."""
+    return _m10_inputs(candidate, cad_stage, external_spur=external_spur, home=home)
+
+
+def _evaluate_real_candidate(application, candidate, synthesis_request, synthesis_policy, m12_result, *, external_spur=False, not_proven=False, scope_pair=None):
+    if candidate.schema_version == "mechanical-design-candidate@2":
+        _cad_stage, _m10_stage, scope, binding, m10_request, cad_request = (
+            _cad_m10_inputs_v2(
+                candidate,
+                application=application,
+                synthesis_request=synthesis_request,
+                synthesis_policy=synthesis_policy,
+                publish_cad=False,
+                not_proven=not_proven,
+                external_spur=external_spur,
+                axis_origin_x_mm=0.0,
+                scope_pair=scope_pair,
+            )
+        )
+        evaluation = application.evaluate_candidate(
+            candidate,
+            synthesis_request,
+            synthesis_policy,
+            m12_result,
+            cad_request,
+            m10_request,
+            scope,
+            binding,
+            evaluation_policy=CandidateEvaluationPolicy(),
+        )
+        return evaluation, cad_request, scope, binding, m10_request
     cad_request = _cad_request(candidate)
     cad_stage = application.realize_candidate_cad(
         candidate, synthesis_request, synthesis_policy, cad_request
     )
     assert cad_stage.status is CandidateCadStageStatus.SUCCESS
-    scope, binding, m10_request = _m10_inputs(candidate, cad_stage, external_spur=external_spur, home=not_proven)
+    scope, binding, m10_request = m10_inputs(candidate, cad_stage, external_spur=external_spur, home=not_proven)
     if not_proven:
         application.candidate_m10_evaluation_service.max_exact_evaluations = 2
         application.candidate_m10_evaluation_service.max_depth = 1
@@ -1570,6 +2853,38 @@ def _evaluate_real_candidate(application, candidate, synthesis_request, synthesi
         evaluation_policy=CandidateEvaluationPolicy(),
     )
     return evaluation, cad_request, scope, binding, m10_request
+
+
+def evaluate_real_candidate(application, candidate, synthesis_request, synthesis_policy, m12_result, *, external_spur=False, not_proven=False, scope_pair=None):
+    """Public deterministic evaluation builder for composed integration tests."""
+    return _evaluate_real_candidate(
+        application,
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        m12_result,
+        external_spur=external_spur,
+        not_proven=not_proven,
+        scope_pair=scope_pair,
+    )
+
+
+def cad_m10_inputs(
+    candidate,
+    *,
+    application=None,
+    synthesis_request=None,
+    synthesis_policy=None,
+    scope_pair=None,
+):
+    """Public bounded CAD/M10 fixture builder for composed integration tests."""
+    return _cad_m10_inputs(
+        candidate,
+        application=application,
+        synthesis_request=synthesis_request,
+        synthesis_policy=synthesis_policy,
+        scope_pair=scope_pair,
+    )
 
 
 @pytest.mark.skipif(not FREECAD_AVAILABLE, reason="FreeCAD is not available through deterministic discovery")
@@ -1616,7 +2931,7 @@ def test_live_direct_drive_clear_collision_and_not_proven_chain(tmp_path, monkey
         "motor-mount": (0.0, 0.0, 0.0),
         "payload-body": (80.0, 0.0, 0.0),
     }
-    clear_candidate, clear_request, clear_policy, clear_m12 = _real_candidate(
+    clear_candidate, clear_request, clear_policy, clear_m12 = _bounded_legacy_candidate(
         application, source_artifacts, common_positions
     )
     clear_evaluation, clear_cad_request, clear_scope, clear_binding, clear_m10_request = _evaluate_real_candidate(
@@ -1649,7 +2964,7 @@ def test_live_direct_drive_clear_collision_and_not_proven_chain(tmp_path, monkey
     collision_positions["output-shaft"] = (0.0, 0.0, 0.0)
     collision_positions["output-hub"] = (0.0, 0.0, 0.0)
     collision_positions["payload-body"] = (0.0, 0.0, 0.0)
-    collision_candidate, collision_request, collision_policy, collision_m12 = _real_candidate(
+    collision_candidate, collision_request, collision_policy, collision_m12 = _bounded_legacy_candidate(
         application, source_artifacts, collision_positions
     )
     collision_evaluation, _, _, _, _ = _evaluate_real_candidate(
@@ -1664,7 +2979,7 @@ def test_live_direct_drive_clear_collision_and_not_proven_chain(tmp_path, monkey
     assert collision_evaluation.outcome is CandidateEvaluationOutcome.INFEASIBLE
     assert collision_evaluation.hard_witnesses
 
-    not_proven_candidate, not_proven_request, not_proven_policy, not_proven_m12 = _real_candidate(
+    not_proven_candidate, not_proven_request, not_proven_policy, not_proven_m12 = _bounded_legacy_candidate(
         application, source_artifacts, common_positions
     )
     not_proven_evaluation, _, not_proven_scope, _, _ = _evaluate_real_candidate(
@@ -1736,6 +3051,16 @@ def test_live_external_spur_preserves_unmodeled_internal_motion_boundary(tmp_pat
             )
         )
     }
+    source_artifacts["motor-mount"] = _publish_source_step(
+        application,
+        part_id="candidate-spur-motor-mount",
+        size=(30.0, 30.0, 5.0),
+    )
+    source_artifacts["payload-body"] = _publish_source_step(
+        application,
+        part_id="candidate-spur-payload-body",
+        size=(20.0, 20.0, 5.0),
+    )
     gear_artifact = {
         "driver-gear": _publish_gear_step(application, teeth=20),
         "driven-gear": _publish_gear_step(application, teeth=100),
@@ -1782,7 +3107,11 @@ def test_live_external_spur_preserves_unmodeled_internal_motion_boundary(tmp_pat
         "bearing-b", "output-hub", "motor-mount", "support-mount-a", "support-mount-b",
         "payload-body",
     }
-    driver = binding.disposition_for("cad-driver-gear")
+    driver = next(
+        disposition
+        for disposition in binding.constituent_dispositions
+        if disposition.cad_instance_id == "cad-driver-gear"
+    )
     assert driver.disposition is CandidateM10BodyDisposition.INTERNAL_MOTION_UNMODELED
     gear_pair = next(
         item for item in m10_request.inventory.classifications
@@ -1849,6 +3178,16 @@ def test_live_comparison_and_selection_are_deterministic_and_noncanonical(tmp_pa
             ("drive-motor", "output-shaft", "bearing-a", "bearing-b", "output-hub")
         )
     }
+    source_artifacts["motor-mount"] = _publish_source_step(
+        application,
+        part_id="candidate-comparison-motor-mount",
+        size=(30.0, 30.0, 5.0),
+    )
+    source_artifacts["payload-body"] = _publish_source_step(
+        application,
+        part_id="candidate-comparison-payload-body",
+        size=(20.0, 20.0, 5.0),
+    )
     positions_a = {
         "drive-motor": (100.0, 100.0, 0.0), "output-shaft": (60.0, 0.0, 0.0),
         "bearing-a": (90.0, 30.0, 0.0), "bearing-b": (90.0, -30.0, 0.0),
@@ -1880,11 +3219,26 @@ def test_live_comparison_and_selection_are_deterministic_and_noncanonical(tmp_pa
     assert evaluation_b.metrics[0].value == evaluation_c.metrics[0].value
     for evaluation in (evaluation_a, evaluation_b, evaluation_c):
         assert evaluation.metrics[0].unit == "mm"
-        assert evaluation.metrics[0].source_result_hashes == evaluation.m10_result_hashes
+        if evaluation.schema_version == "candidate-evaluation@2":
+            assert evaluation.metrics[0].source_result_hashes == tuple(
+                proof.proof_hash
+                for proof in evaluation.m10_stage_outcome.pair_proofs
+            )
+        else:
+            assert evaluation.metrics[0].source_result_hashes == evaluation.m10_result_hashes
     comparison_policy = application.candidate_comparison_service.policy
-    source_binding_hash = application._candidate_source_binding_hash(candidate_a)
+    from mechcad_harness.candidates.comparison import CandidateComparisonRequestV2
 
-    ranking_request = CandidateComparisonRequest(
+    source_binding_hash = candidate_a.semantic_source_binding_hash
+    ranking_synthesis_requests = {
+        candidate_a.candidate_hash: request_a,
+        candidate_b.candidate_hash: request_b,
+    }
+    tie_synthesis_requests = {
+        candidate_b.candidate_hash: request_b,
+        candidate_c.candidate_hash: request_c,
+    }
+    ranking_request = CandidateComparisonRequestV2(
         project_id=application.project_id,
         source_binding_hash=source_binding_hash,
         evaluation_scope_hash=scope_a.scope_hash,
@@ -1895,16 +3249,20 @@ def test_live_comparison_and_selection_are_deterministic_and_noncanonical(tmp_pa
         ),
     )
     ranking = application.compare_candidates(
-        ranking_request, ((candidate_a, evaluation_a), (candidate_b, evaluation_b))
+        ranking_request,
+        ((candidate_a, evaluation_a), (candidate_b, evaluation_b)),
+        synthesis_requests_by_candidate_hash=ranking_synthesis_requests,
     )
     repeated_ranking = application.compare_candidates(
-        ranking_request, ((candidate_b, evaluation_b), (candidate_a, evaluation_a))
+        ranking_request,
+        ((candidate_b, evaluation_b), (candidate_a, evaluation_a)),
+        synthesis_requests_by_candidate_hash=ranking_synthesis_requests,
     )
     assert ranking.result_hash == repeated_ranking.result_hash
     assert ranking.ranked_candidate_hashes == (candidate_b.candidate_hash, candidate_a.candidate_hash)
     assert ranking.ties == ()
 
-    tie_request = CandidateComparisonRequest(
+    tie_request = CandidateComparisonRequestV2(
         project_id=application.project_id,
         source_binding_hash=source_binding_hash,
         evaluation_scope_hash=scope_b.scope_hash,
@@ -1915,7 +3273,9 @@ def test_live_comparison_and_selection_are_deterministic_and_noncanonical(tmp_pa
         ),
     )
     tie = application.compare_candidates(
-        tie_request, ((candidate_b, evaluation_b), (candidate_c, evaluation_c))
+        tie_request,
+        ((candidate_b, evaluation_b), (candidate_c, evaluation_c)),
+        synthesis_requests_by_candidate_hash=tie_synthesis_requests,
     )
     assert tie.ranked_candidate_hashes == (candidate_b.candidate_hash, candidate_c.candidate_hash)
     assert tie.ties == ((candidate_b.candidate_hash, candidate_c.candidate_hash),)
@@ -1928,12 +3288,15 @@ def test_live_comparison_and_selection_are_deterministic_and_noncanonical(tmp_pa
         "selected highest certified clearance",
         comparison=ranking,
         comparison_entries=((candidate_a, evaluation_a), (candidate_b, evaluation_b)),
+        synthesis_request=request_b,
+        synthesis_requests_by_candidate_hash=ranking_synthesis_requests,
     )
     selected_without_comparison = application.select_candidate(
         candidate_a,
         evaluation_a,
         "fixture-selector",
         "selected directly without comparison",
+        synthesis_request=request_a,
     )
     selected_non_top = application.select_candidate(
         candidate_a,
@@ -1942,6 +3305,8 @@ def test_live_comparison_and_selection_are_deterministic_and_noncanonical(tmp_pa
         "explicitly selected non-top-ranked feasible candidate",
         comparison=ranking,
         comparison_entries=((candidate_a, evaluation_a), (candidate_b, evaluation_b)),
+        synthesis_request=request_a,
+        synthesis_requests_by_candidate_hash=ranking_synthesis_requests,
     )
     state_after_selections = application.load_state()
     assert selected_top.comparison_used is True

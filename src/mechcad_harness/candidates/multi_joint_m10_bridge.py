@@ -9,14 +9,29 @@ from typing import Literal, TypeAlias
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
-from mechcad_harness.cad_assembly import CadAssemblyProgram, CadRigidTransform, assembly_hash
+from mechcad_harness.cad_assembly import (
+    M10_EXECUTION_SEMANTICS_VERSION,
+    CadAssemblyProgram,
+    CadRigidTransform,
+    _require_semantic_fields,
+    assembly_hash,
+)
 from mechcad_harness.candidates.cad_realization import (
     CandidateCadInstanceMapping,
+    CandidateCadInstanceMappingV2,
     CandidateCadRealization,
+    CandidateCadRealizationV2,
+    semantic_placement_derivations_hash,
 )
 from mechcad_harness.candidates.canonical_cad import (
     CanonicalCadRealization,
+    CanonicalCadRealizationV2,
     CanonicalPhysicalCadMapping,
+    CanonicalPhysicalCadMappingV2,
+    CanonicalPhysicalCadCompiler,
+    canonical_cad_realization_hash_v2,
+    semantic_canonical_cad_request_hash,
+    semantic_canonical_placement_hash,
 )
 from mechcad_harness.candidates.canonical_mechanism import (
     CanonicalMechanismReconstruction,
@@ -42,8 +57,11 @@ from mechcad_harness.candidates.models import (
     SuppliedReferenceFrameAxisSource,
     SuppliedRotationalInterfaceAxisSource,
     physical_kinematic_root_hash,
+    semantic_candidate_axis_source_payload,
+    semantic_candidate_mechanism_hash,
 )
 from mechcad_harness.models.physical_mechanism import (
+    CanonicalGeometryFidelity,
     CanonicalPhysicalPairClassificationBinding,
     CanonicalPhysicalRigidBodyBinding,
     CanonicalPhysicalComponent,
@@ -57,6 +75,7 @@ from mechcad_harness.models.physical_mechanism import (
     CanonicalSuppliedReferenceFrameAxisSource,
     CanonicalGeneratedRotationalInterfaceAxisSource,
     CanonicalGeneratedReferenceFrameAxisSource,
+    canonical_physical_mechanism_hash_payload_v4,
 )
 from mechcad_harness.models.generated_placement import (
     CanonicalGeneratedPlacementDerivation,
@@ -74,6 +93,7 @@ from mechcad_harness.models.supplied_component_interface import (
 )
 from mechcad_harness.models.generated_part import GeneratedRotationalInterface
 from mechcad_harness.models.generated_part import GeneratedReferenceFrame
+from mechcad_harness.cad_program import cad_program_hash
 from mechcad_harness.models.physical_pair_policy import (
     PhysicalPairClassification,
     PhysicalPairClassificationBinding,
@@ -109,6 +129,7 @@ from mechcad_harness.multi_joint_collision_sweep import (
     MultiJointCollisionSweepResultV2,
     multi_joint_collision_sweep_result_v2_hash,
 )
+from mechcad_harness.semantic_m10_kinematics import semantic_kinematic_model_hash
 
 
 _CadMapping: TypeAlias = CandidateCadInstanceMapping | CanonicalPhysicalCadMapping
@@ -520,16 +541,20 @@ class CanonicalMultiJointM10VerificationService:
     def execute(
         self,
         reconstruction: CanonicalMechanismReconstruction,
-        cad: CanonicalCadRealization,
+        cad: CanonicalCadRealization | CanonicalCadRealizationV2,
     ) -> CanonicalMultiJointM10Verification:
         if type(reconstruction) is not CanonicalMechanismReconstruction:
             raise ValueError("canonical multi-joint verification requires reconstruction")
-        if type(cad) is not CanonicalCadRealization:
+        if type(cad) not in (CanonicalCadRealization, CanonicalCadRealizationV2):
             raise ValueError("canonical multi-joint verification requires canonical CAD")
         reconstruction = CanonicalMechanismReconstruction.model_validate(
             reconstruction.model_dump(mode="json")
         )
-        cad = cad.validated_canonical_copy()
+        cad = (
+            CanonicalCadRealizationV2.model_validate(cad.model_dump(mode="json"))
+            if type(cad) is CanonicalCadRealizationV2
+            else cad.validated_canonical_copy()
+        )
         mechanism = reconstruction.canonical_mechanism
         obligations = mechanism.multi_joint_verification_obligations
         if len(obligations) != 1:
@@ -737,6 +762,162 @@ class MultiJointCollisionPairInventory(Model):
             object.__setattr__(self, "inventory_hash", expected_hash)
         elif self.inventory_hash != expected_hash:
             raise ValueError("multi-joint collision pair inventory hash mismatch")
+        return self
+
+
+def multi_joint_collision_pair_inventory_hash_v2(
+    *,
+    physical_mechanism_hash: str,
+    physical_body_binding_hashes: tuple[str, ...],
+    cad_realization_hash: str,
+    semantic_kinematic_model_hash: str,
+    complete_concrete_instance_ids: tuple[str, ...],
+    expected_pair_universe: tuple[tuple[str, str], ...],
+    entries: tuple[MultiJointCollisionPairEntry, ...],
+) -> str:
+    """Derive the F6 inventory@2 identity without consuming its legacy model hash."""
+    for value, label in (
+        (physical_mechanism_hash, "physical mechanism hash"),
+        (cad_realization_hash, "CAD realization hash"),
+        (semantic_kinematic_model_hash, "semantic kinematic model hash"),
+    ):
+        _require_final_hash(value)
+        if not value.startswith("sha256:"):
+            raise ValueError(f"{label} must be sha256")
+    bodies = tuple(physical_body_binding_hashes)
+    if bodies != tuple(sorted(bodies)) or len(set(bodies)) != len(bodies):
+        raise ValueError("inventory body binding hashes must be sorted and unique")
+    for value in bodies:
+        _require_final_hash(value)
+    concrete_ids = tuple(complete_concrete_instance_ids)
+    if (
+        len(concrete_ids) < 2
+        or concrete_ids != tuple(sorted(concrete_ids))
+        or len(set(concrete_ids)) != len(concrete_ids)
+        or any(not isinstance(value, str) or not value.strip() for value in concrete_ids)
+    ):
+        raise ValueError("inventory concrete instance IDs must be sorted and unique")
+    pair_universe = tuple(expected_pair_universe)
+    expected_pairs = tuple(itertools.combinations(concrete_ids, 2))
+    if pair_universe != expected_pairs:
+        raise ValueError("inventory expected pair universe is incomplete or noncanonical")
+    entry_fields = {
+        "schema_version", "first_instance_id", "second_instance_id",
+        "classification", "exclusion_reason",
+    }
+    validated_entries = []
+    for entry in entries:
+        _require_semantic_fields(
+            entry, MultiJointCollisionPairEntry, entry_fields,
+            "MultiJointCollisionPairEntry",
+        )
+        validated_entries.append(
+            MultiJointCollisionPairEntry.model_validate(
+                entry.model_dump(mode="json")
+            )
+        )
+    canonical_entries = tuple(
+        sorted(
+            validated_entries,
+            key=lambda item: (item.first_instance_id, item.second_instance_id),
+        )
+    )
+    entry_pairs = tuple(
+        (entry.first_instance_id, entry.second_instance_id)
+        for entry in canonical_entries
+    )
+    if entry_pairs != expected_pairs:
+        raise ValueError("inventory entries do not match the complete pair universe")
+    payload = {
+        "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+        "schema_version": "multi-joint-collision-pair-inventory@2",
+        "physical_mechanism_hash": physical_mechanism_hash,
+        "physical_body_binding_hashes": list(bodies),
+        "cad_realization_hash": cad_realization_hash,
+        "semantic_kinematic_model_hash": semantic_kinematic_model_hash,
+        "complete_concrete_instance_ids": list(concrete_ids),
+        "expected_pair_universe": [list(pair) for pair in pair_universe],
+        "entries": [entry.model_dump(mode="json") for entry in canonical_entries],
+    }
+    return "sha256:" + hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+
+
+class MultiJointCollisionPairInventoryV2(Model):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal["multi-joint-collision-pair-inventory@2"] = (
+        "multi-joint-collision-pair-inventory@2"
+    )
+    physical_mechanism_hash: str
+    physical_body_binding_hashes: tuple[str, ...] = Field(min_length=1)
+    cad_realization_hash: str
+    semantic_kinematic_model_hash: str
+    complete_concrete_instance_ids: tuple[str, ...] = Field(min_length=2)
+    expected_pair_universe: tuple[tuple[str, str], ...] = Field(min_length=1)
+    entries: tuple[MultiJointCollisionPairEntry, ...] = Field(min_length=1)
+    inventory_hash: str = "pending"
+
+    _validate_hashes = field_validator(
+        "physical_mechanism_hash",
+        "cad_realization_hash",
+        "semantic_kinematic_model_hash",
+    )(_require_final_hash)
+    _validate_inventory_hash = field_validator("inventory_hash")(
+        _require_hash_or_pending
+    )
+
+    @model_validator(mode="after")
+    def validate_inventory_v2(self) -> "MultiJointCollisionPairInventoryV2":
+        body_hashes = tuple(sorted(self.physical_body_binding_hashes))
+        if len(set(body_hashes)) != len(body_hashes):
+            raise ValueError("physical body binding hashes must be unique")
+        if body_hashes != self.physical_body_binding_hashes:
+            object.__setattr__(self, "physical_body_binding_hashes", body_hashes)
+        for value in body_hashes:
+            _require_final_hash(value)
+
+        concrete_ids = tuple(sorted(self.complete_concrete_instance_ids))
+        if (
+            len(set(concrete_ids)) != len(concrete_ids)
+            or any(not value.strip() for value in concrete_ids)
+        ):
+            raise ValueError("concrete instance IDs must be unique and nonblank")
+        if concrete_ids != self.complete_concrete_instance_ids:
+            object.__setattr__(self, "complete_concrete_instance_ids", concrete_ids)
+        expected_pairs = tuple(itertools.combinations(concrete_ids, 2))
+        if self.expected_pair_universe != expected_pairs:
+            raise ValueError("v2 concrete pair universe is incomplete or noncanonical")
+
+        entries = tuple(
+            MultiJointCollisionPairEntry.model_validate(entry.model_dump(mode="json"))
+            for entry in self.entries
+        )
+        entries = tuple(
+            sorted(entries, key=lambda entry: (entry.first_instance_id, entry.second_instance_id))
+        )
+        entry_pairs = tuple(
+            (entry.first_instance_id, entry.second_instance_id) for entry in entries
+        )
+        if len(set(entry_pairs)) != len(entry_pairs) or entry_pairs != expected_pairs:
+            raise ValueError("v2 concrete pair inventory is incomplete or contains unsupported pairs")
+        if entries != self.entries:
+            object.__setattr__(self, "entries", entries)
+
+        expected_hash = multi_joint_collision_pair_inventory_hash_v2(
+            physical_mechanism_hash=self.physical_mechanism_hash,
+            physical_body_binding_hashes=self.physical_body_binding_hashes,
+            cad_realization_hash=self.cad_realization_hash,
+            semantic_kinematic_model_hash=self.semantic_kinematic_model_hash,
+            complete_concrete_instance_ids=self.complete_concrete_instance_ids,
+            expected_pair_universe=self.expected_pair_universe,
+            entries=self.entries,
+        )
+        if self.inventory_hash == "pending":
+            if "inventory_hash" in self.model_fields_set:
+                raise ValueError("multi-joint collision pair inventory@2 hash must be finalized")
+            object.__setattr__(self, "inventory_hash", expected_hash)
+        elif self.inventory_hash != expected_hash:
+            raise ValueError("multi-joint collision pair inventory@2 hash mismatch")
         return self
 
 
@@ -1868,6 +2049,411 @@ def derive_multi_joint_collision_pair_inventory(
     )
 
 
+def _validate_physical_cad_universe_v2(
+    mappings: Sequence[CandidateCadInstanceMappingV2 | CanonicalPhysicalCadMappingV2],
+    assembly: CadAssemblyProgram,
+    physical_body_bindings: Sequence[_BodyBinding],
+) -> Mapping[str, CandidateCadInstanceMappingV2 | CanonicalPhysicalCadMappingV2]:
+    if type(assembly) is not CadAssemblyProgram:
+        raise ValueError("CAD assembly must be a typed CadAssemblyProgram")
+    assembly = _validated(assembly, CadAssemblyProgram, "CAD assembly")
+    mappings = _validated_sequence(
+        mappings, (CandidateCadInstanceMappingV2, CanonicalPhysicalCadMappingV2), "CAD mapping@2"
+    )
+    bodies = _validated_sequence(
+        physical_body_bindings, (PhysicalRigidBodyBinding, CanonicalPhysicalRigidBodyBinding), "physical body binding"
+    )
+    mapping_layer = _require_single_layer(
+        mappings, CandidateCadInstanceMappingV2, CanonicalPhysicalCadMappingV2, "CAD mapping@2"
+    )
+    body_layer = _require_single_layer(
+        bodies, PhysicalRigidBodyBinding, CanonicalPhysicalRigidBodyBinding, "physical body binding"
+    )
+    if mapping_layer != body_layer:
+        raise ValueError("CAD mapping@2 and physical body bindings must use one layer")
+    by_physical = {item.physical_instance_id: item for item in mappings}
+    by_cad = {item.cad_instance_id: item for item in mappings}
+    if len(by_physical) != len(mappings) or len(by_cad) != len(mappings):
+        raise ValueError("candidate CAD mapping@2 identities must be unique")
+    if set(by_cad) != {item.instance_id for item in assembly.instances}:
+        raise ValueError("candidate CAD mapping@2 and assembly membership mismatch")
+    assembly_by_id = {item.instance_id: item for item in assembly.instances}
+    if any(
+        assembly_by_id[item.cad_instance_id].placement != item.placement
+        for item in mappings
+    ):
+        raise ValueError("candidate CAD mapping@2 assembly placement mismatch")
+    member_owner = {}
+    for body in bodies:
+        for member in body.member_physical_instance_ids:
+            if member not in by_physical or member in member_owner:
+                raise ValueError("candidate physical body and CAD mapping universe mismatch")
+            member_owner[member] = body.physical_body_id
+    if set(member_owner) != set(by_physical):
+        raise ValueError("candidate physical bodies do not cover the CAD mapping universe")
+    return MappingProxyType({key: by_physical[key] for key in sorted(by_physical)})
+
+
+def _validate_canonical_cad_realization_v2_for_bridge(
+    mechanism: CanonicalPhysicalMechanism,
+    cad_realization: CanonicalCadRealizationV2,
+) -> CanonicalCadRealizationV2:
+    """Revalidate canonical CAD@2 request, map, assembly, and realization links."""
+    mechanism = _validated(
+        mechanism, CanonicalPhysicalMechanism, "canonical mechanism@4"
+    )
+    if mechanism.schema_version != "canonical-physical-mechanism@4":
+        raise ValueError("canonical multi-joint bridge requires mechanism@4")
+    cad_realization = _validated(
+        cad_realization, CanonicalCadRealizationV2, "canonical CAD realization@2"
+    )
+    if (
+        cad_realization.mechanism_id != mechanism.id
+        or cad_realization.mechanism_hash != mechanism.mechanism_hash
+    ):
+        raise ValueError("canonical CAD realization@2 mechanism binding mismatch")
+    if cad_realization.assembly_hash != assembly_hash(cad_realization.assembly):
+        raise ValueError("canonical CAD realization@2 assembly replay hash mismatch")
+
+    instances = {item.instance_id: item for item in cad_realization.assembly.instances}
+    parts = {item.part_id: item for item in cad_realization.assembly.parts}
+    specifications = {item.specification_hash: item for item in mechanism.component_specifications}
+    expected_representation_identities: dict[str, str] = {}
+    fallback_geometry_definition_identities: dict[str, tuple[str, ...]] = {}
+    for mapping in cad_realization.mappings:
+        if type(mapping) is not CanonicalPhysicalCadMappingV2:
+            raise ValueError("canonical CAD realization@2 requires canonical mapping@2")
+        if mapping.fidelity is CanonicalGeometryFidelity.TRUSTED_SOURCE_GEOMETRY:
+            continue
+        instance = instances.get(mapping.cad_instance_id)
+        if instance is None:
+            raise ValueError("canonical CAD mapping@2 instance is missing")
+        part = parts.get(instance.part_id)
+        if part is None:
+            raise ValueError("canonical generated CAD mapping@2 part is missing")
+        specification = specifications.get(mapping.specification_hash)
+        if specification is None:
+            raise ValueError("canonical generated CAD mapping@2 specification is missing")
+        expected_program, expected_definitions = CanonicalPhysicalCadCompiler._compile_generated(
+            specification, mapping.physical_instance_id, mapping.cad_instance_id, mechanism
+        )
+        if part != expected_program:
+            raise ValueError("canonical generated CAD mapping@2 program does not match semantic authority")
+        expected_representation_identities[mapping.physical_instance_id] = (
+            cad_program_hash(expected_program)
+        )
+        if (
+            mapping.fidelity
+            is CanonicalGeometryFidelity.DECLARED_BOUNDED_COLLISION_REPRESENTATION
+        ):
+            fallback_geometry_definition_identities[mapping.physical_instance_id] = (
+                expected_definitions
+            )
+
+    expected_request_hash = semantic_canonical_cad_request_hash(
+        project_id=cad_realization.project_id,
+        revision=cad_realization.revision,
+        mechanism=mechanism,
+        mappings=cad_realization.mappings,
+        compiler_identity=cad_realization.compiler_identity,
+        compiler_version=cad_realization.compiler_version,
+        expected_representation_identities=expected_representation_identities,
+        fallback_geometry_definition_identities=(
+            fallback_geometry_definition_identities
+        ),
+    )
+    if cad_realization.request_hash != expected_request_hash:
+        raise ValueError("canonical CAD realization@2 request identity mismatch")
+    expected_realization_hash = canonical_cad_realization_hash_v2(cad_realization)
+    if cad_realization.realization_hash != expected_realization_hash:
+        raise ValueError("canonical CAD realization@2 semantic hash mismatch")
+    return cad_realization
+
+
+def _validate_canonical_physical_cad_universe_v2(
+    mechanism: CanonicalPhysicalMechanism,
+    cad_realization: CanonicalCadRealizationV2,
+    physical_body_bindings: Sequence[CanonicalPhysicalRigidBodyBinding],
+) -> Mapping[str, CanonicalPhysicalCadMappingV2]:
+    """Require one canonical physical slot per canonical CAD@2 instance/body member."""
+    components = {item.instance_id: item for item in mechanism.components}
+    if len(components) != len(mechanism.components):
+        raise ValueError("canonical component instance IDs must be unique")
+    mappings = _validated_sequence(
+        cad_realization.mappings,
+        CanonicalPhysicalCadMappingV2,
+        "canonical CAD mapping@2",
+    )
+    by_physical = {item.physical_instance_id: item for item in mappings}
+    by_cad = {item.cad_instance_id: item for item in mappings}
+    if len(by_physical) != len(mappings) or len(by_cad) != len(mappings):
+        raise ValueError("canonical CAD mapping@2 identities must be unique")
+    if set(by_physical) != set(components):
+        raise ValueError("canonical CAD mapping@2 does not cover canonical components")
+    if set(by_cad) != {item.instance_id for item in cad_realization.assembly.instances}:
+        raise ValueError("canonical CAD mapping@2 and assembly universe mismatch")
+    specifications = {
+        item.specification_hash: item for item in mechanism.component_specifications
+    }
+    for physical_id, mapping in by_physical.items():
+        component = components[physical_id]
+        specification = specifications.get(component.specification_hash)
+        if (
+            mapping.mechanism_hash != mechanism.mechanism_hash
+            or mapping.component_hash != component.component_hash
+            or mapping.specification_hash != component.specification_hash
+            or specification is None
+            or specification.schema_version != "canonical-component-specification@4"
+        ):
+            raise ValueError("canonical CAD mapping@2 does not bind mechanism@4 component/specification")
+    return _validate_physical_cad_universe_v2(
+        mappings, cad_realization.assembly, physical_body_bindings
+    )
+
+
+def _derive_candidate_multi_joint_bridge_v2(
+    candidate: MechanicalDesignCandidate,
+    cad_realization: CandidateCadRealizationV2,
+    placement_derivations=(),
+) -> PhysicalToM10V2BridgeV2:
+    candidate = _validated(candidate, MechanicalDesignCandidate, "candidate")
+    cad_realization = _validated(
+        cad_realization, CandidateCadRealizationV2, "candidate CAD realization@2"
+    )
+    if candidate.schema_version != "mechanical-design-candidate@2":
+        raise ValueError("bridge@2 requires mechanical-design-candidate@2")
+    if candidate.realization.schema_version != "physical-mechanism-realization@2":
+        raise ValueError("bridge@2 requires physical-mechanism-realization@2")
+    if cad_realization.candidate_hash != candidate.candidate_hash:
+        raise ValueError("candidate CAD realization@2 does not bind candidate@2")
+    realization = _validated(
+        candidate.realization,
+        PhysicalMechanismRealization,
+        "candidate physical realization@2",
+    )
+    bodies = _validated_sequence(
+        realization.physical_rigid_body_bindings,
+        PhysicalRigidBodyBinding,
+        "candidate physical rigid body binding",
+    )
+    joints = _validated_sequence(
+        realization.physical_revolute_joint_bindings,
+        PhysicalRevoluteJointBinding,
+        "candidate physical revolute joint binding",
+    )
+    pairs = _validated_sequence(
+        realization.physical_pair_classification_bindings,
+        PhysicalPairClassificationBinding,
+        "candidate physical pair classification binding",
+    )
+    connections = tuple(
+        _validated(item, MechanicalConnection, "candidate mechanical connection")
+        for item in realization.connections
+    )
+    components = _validated_sequence(
+        realization.components,
+        PhysicalComponentInstance,
+        "candidate physical component",
+    )
+    mappings = tuple(
+        _validated(item, CandidateCadInstanceMappingV2, "candidate CAD mapping@2")
+        for item in cad_realization.mappings
+    )
+    derivations = tuple(
+        _validated(item, GeneratedPlacementDerivation, "candidate placement derivation")
+        for item in placement_derivations
+    )
+    if semantic_placement_derivations_hash(derivations) != (
+        cad_realization.semantic_placement_derivations_hash
+    ):
+        raise ValueError("candidate placement derivation semantic identity mismatch")
+    root_id = realization.kinematic_root_physical_body_id
+    if root_id is None:
+        raise ValueError("candidate physical realization@2 has no kinematic root")
+    validate_physical_kinematic_tree(bodies, joints, root_id)
+    validate_physical_revolute_connections(joints, connections, components)
+    mapping_by_physical = _validate_physical_cad_universe_v2(
+        mappings, cad_realization.assembly, bodies
+    )
+    physical_ids = tuple(sorted(mapping_by_physical))
+    pair_map = validate_complete_physical_pair_policy(pairs, physical_ids)
+    physical_owner = validate_physical_body_pair_consistency(bodies, pair_map)
+    if set(physical_owner) != set(physical_ids):
+        raise ValueError("candidate physical body and CAD mapping universes differ")
+    for physical_id, mapping in mapping_by_physical.items():
+        member_body = next(
+            (
+                body
+                for body in bodies
+                if physical_id in body.member_physical_instance_ids
+            ),
+            None,
+        )
+        if member_body is None or member_body.physical_body_id != physical_owner[physical_id]:
+            raise ValueError("candidate physical body member binding mismatch")
+        if mapping.candidate_hash != candidate.candidate_hash:
+            raise ValueError("candidate CAD mapping@2 does not bind candidate@2")
+
+    semantic_placements = {
+        physical_id: mapping.placement
+        for physical_id, mapping in mapping_by_physical.items()
+    }
+    placement_identities = tuple(
+        mapping.placement_origin.origin_hash
+        for _, mapping in sorted(mapping_by_physical.items())
+    )
+    axis_poses = {
+        joint.physical_joint_id: _axis_pose_from_resolved_source(
+            resolve_candidate_axis_source(candidate, joint.axis_source)
+        )
+        for joint in joints
+    }
+    model_id = physical_to_m10_v2_model_id(
+        (body.physical_body_id for body in bodies),
+        (joint.physical_joint_id for joint in joints),
+    )
+    model = compile_kinematic_model_v2(
+        cad_realization.assembly,
+        bodies,
+        joints,
+        semantic_placements,
+        {
+            physical_id: mapping.cad_instance_id
+            for physical_id, mapping in mapping_by_physical.items()
+        },
+        axis_poses,
+        model_id,
+    )
+    candidate_mechanism_hash = semantic_candidate_mechanism_hash(realization)
+    inventory = derive_multi_joint_collision_pair_inventory_v2(
+        physical_mechanism_hash=candidate_mechanism_hash,
+        cad_realization_hash=cad_realization.realization_hash,
+        model=model,
+        mappings=tuple(mapping_by_physical.values()),
+        assembly=cad_realization.assembly,
+        physical_body_bindings=bodies,
+        pair_bindings=pairs,
+    )
+    scope = exact_scope_from_inventory_v2(inventory)
+    semantic_joint_hashes = tuple(
+        semantic_physical_revolute_joint_binding_hash_v2(joint)
+        for joint in sorted(joints, key=lambda item: item.physical_joint_id)
+    )
+    axis_source_hashes = tuple(
+        _semantic_axis_source_hash(joint.axis_source)
+        for joint in sorted(joints, key=lambda item: item.physical_joint_id)
+    )
+    bridge = PhysicalToM10V2BridgeV2(
+        physical_mechanism_hash=candidate_mechanism_hash,
+        kinematic_root_binding_hash=physical_kinematic_root_hash(root_id),
+        physical_body_binding_hashes=tuple(sorted(body.binding_hash for body in bodies)),
+        physical_joint_binding_hashes=semantic_joint_hashes,
+        semantic_placement_identities=placement_identities,
+        axis_source_identities=axis_source_hashes,
+        cad_mapping_hashes=tuple(
+            sorted(mapping.mapping_hash for mapping in mapping_by_physical.values())
+        ),
+        physical_pair_classification_set_hash=physical_pair_classification_set_hash(pairs),
+        model=model,
+        semantic_kinematic_model_hash=semantic_kinematic_model_hash(model),
+        inventory=inventory,
+        inventory_hash=inventory.inventory_hash,
+        exact_pair_scope=scope,
+        exact_pair_scope_hash=exact_pair_scope_hash(scope),
+        ordered_body_ids=tuple(body.body_id for body in model.bodies),
+        ordered_joint_ids=tuple(joint.joint_id for joint in model.joints),
+    )
+    return bridge
+
+
+def derive_multi_joint_collision_pair_inventory_v2(
+    *,
+    physical_mechanism_hash: str,
+    cad_realization_hash: str,
+    model: KinematicModelV2,
+    mappings: Sequence[CandidateCadInstanceMappingV2 | CanonicalPhysicalCadMappingV2],
+    assembly: CadAssemblyProgram,
+    physical_body_bindings: Sequence[_BodyBinding],
+    pair_bindings: Sequence[_PairBinding],
+) -> MultiJointCollisionPairInventoryV2:
+    physical_mechanism_hash = _require_final_hash(physical_mechanism_hash)
+    cad_realization_hash = _require_final_hash(cad_realization_hash)
+    model = revalidate_v2_kinematic_model(model)
+    mappings_by_physical = _validate_physical_cad_universe_v2(
+        mappings, assembly, physical_body_bindings
+    )
+    bodies = _validated_sequence(
+        physical_body_bindings, (PhysicalRigidBodyBinding, CanonicalPhysicalRigidBodyBinding),
+        "physical body binding",
+    )
+    pair_bindings = _validated_sequence(
+        pair_bindings, (PhysicalPairClassificationBinding, CanonicalPhysicalPairClassificationBinding),
+        "physical pair classification",
+    )
+    member_to_body = validate_v2_body_assembly_agreement(assembly, model)
+    concrete_ids = tuple(
+        sorted(mapping.cad_instance_id for mapping in mappings_by_physical.values())
+    )
+    if concrete_ids != tuple(sorted(member_to_body)):
+        raise ValueError("candidate concrete instance universe does not match M10 model members")
+    physical_ids = tuple(sorted(mappings_by_physical))
+    pair_map = validate_complete_physical_pair_policy(pair_bindings, physical_ids)
+    physical_owner = validate_physical_body_pair_consistency(bodies, pair_map)
+    for physical_id, mapping in mappings_by_physical.items():
+        model_body = member_to_body.get(mapping.cad_instance_id)
+        if model_body is None or model_body.body_id != physical_owner[physical_id]:
+            raise ValueError("candidate physical body ownership disagrees with M10 v2 model")
+
+    entries_by_pair = {}
+    for physical_pair, binding in pair_map.items():
+        pair = tuple(
+            sorted(
+                (
+                    mappings_by_physical[physical_pair[0]].cad_instance_id,
+                    mappings_by_physical[physical_pair[1]].cad_instance_id,
+                )
+            )
+        )
+        if pair in entries_by_pair:
+            raise ValueError("candidate physical-to-CAD pair mapping is not one-to-one")
+        entries_by_pair[pair] = MultiJointCollisionPairEntry(
+            first_instance_id=pair[0],
+            second_instance_id=pair[1],
+            classification=binding.classification,
+            exclusion_reason=binding.exclusion_reason,
+        )
+    expected_pairs = tuple(itertools.combinations(concrete_ids, 2))
+    if tuple(sorted(entries_by_pair)) != expected_pairs:
+        raise ValueError("candidate M10 @2 inventory pair universe is incomplete")
+    return MultiJointCollisionPairInventoryV2(
+        physical_mechanism_hash=physical_mechanism_hash,
+        physical_body_binding_hashes=tuple(sorted(item.binding_hash for item in bodies)),
+        cad_realization_hash=cad_realization_hash,
+        semantic_kinematic_model_hash=semantic_kinematic_model_hash(model),
+        complete_concrete_instance_ids=concrete_ids,
+        expected_pair_universe=expected_pairs,
+        entries=tuple(entries_by_pair[pair] for pair in expected_pairs),
+    )
+
+
+def exact_scope_from_inventory_v2(
+    inventory: MultiJointCollisionPairInventoryV2,
+) -> tuple[ExactConstituentPair, ...]:
+    inventory = MultiJointCollisionPairInventoryV2.model_validate(
+        inventory.model_dump(mode="json")
+    )
+    return canonical_exact_pair_scope(
+        tuple(
+            ExactConstituentPair(
+                first_instance_id=entry.first_instance_id,
+                second_instance_id=entry.second_instance_id,
+            )
+            for entry in inventory.entries
+            if entry.classification is PhysicalPairClassification.CHECK_CLEARANCE
+        )
+    )
+
+
 def exact_scope_from_inventory(
     inventory: MultiJointCollisionPairInventory,
     *,
@@ -2298,6 +2884,204 @@ class PhysicalToM10V2Bridge(Model):
         return self
 
 
+def _semantic_candidate_axis_source_payload(source: _AxisSource) -> dict[str, str]:
+    return semantic_candidate_axis_source_payload(source)
+
+
+def semantic_physical_revolute_joint_binding_hash_v2(
+    binding: PhysicalRevoluteJointBinding,
+) -> str:
+    """Hash M13 joint semantics without its raw interface/reference self-hashes."""
+    fields = {
+        "schema_version", "physical_joint_id", "parent_physical_body_id",
+        "child_physical_body_id", "connection_id", "parent_physical_instance_id",
+        "parent_interface_id", "child_physical_instance_id", "child_interface_id",
+        "axis_source", "axis_owner_endpoint", "axis_sign", "motion_mode",
+        "min_angle_deg", "max_angle_deg", "zero_reference_semantics", "binding_hash",
+    }
+    _require_semantic_fields(
+        binding, PhysicalRevoluteJointBinding, fields, "PhysicalRevoluteJointBinding"
+    )
+    return "sha256:" + hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+                "schema_version": binding.schema_version,
+                "physical_joint_id": binding.physical_joint_id,
+                "parent_physical_body_id": binding.parent_physical_body_id,
+                "child_physical_body_id": binding.child_physical_body_id,
+                "connection_id": binding.connection_id,
+                "parent_physical_instance_id": binding.parent_physical_instance_id,
+                "parent_interface_id": binding.parent_interface_id,
+                "child_physical_instance_id": binding.child_physical_instance_id,
+                "child_interface_id": binding.child_interface_id,
+                "axis_source": _semantic_candidate_axis_source_payload(binding.axis_source),
+                "axis_owner_endpoint": binding.axis_owner_endpoint.value,
+                "axis_sign": binding.axis_sign,
+                "motion_mode": binding.motion_mode.value,
+                "min_angle_deg": binding.min_angle_deg,
+                "max_angle_deg": binding.max_angle_deg,
+                "zero_reference_semantics": binding.zero_reference_semantics,
+            }
+        )
+    ).hexdigest()
+
+
+def _semantic_axis_source_hash(source: _AxisSource) -> str:
+    return "sha256:" + hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+                "axis_source": _semantic_candidate_axis_source_payload(source),
+            }
+        )
+    ).hexdigest()
+
+
+class PhysicalToM10V2BridgeV2(Model):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal["physical-to-m10-v2-bridge@2"] = (
+        "physical-to-m10-v2-bridge@2"
+    )
+    physical_mechanism_hash: str
+    kinematic_root_binding_hash: str
+    physical_body_binding_hashes: tuple[str, ...] = Field(min_length=1)
+    physical_joint_binding_hashes: tuple[str, ...] = ()
+    semantic_placement_identities: tuple[str, ...] = Field(min_length=1)
+    axis_source_identities: tuple[str, ...] = ()
+    cad_mapping_hashes: tuple[str, ...] = Field(min_length=1)
+    physical_pair_classification_set_hash: str
+    model: KinematicModelV2
+    semantic_kinematic_model_hash: str
+    inventory: MultiJointCollisionPairInventoryV2
+    inventory_hash: str
+    exact_pair_scope: tuple[ExactConstituentPair, ...] = Field(min_length=1)
+    exact_pair_scope_hash: str
+    ordered_body_ids: tuple[str, ...] = Field(min_length=1)
+    ordered_joint_ids: tuple[str, ...] = ()
+    physical_to_m10_bridge_hash: str = "pending"
+
+    _validate_hashes = field_validator(
+        "physical_mechanism_hash", "kinematic_root_binding_hash",
+        "physical_pair_classification_set_hash", "semantic_kinematic_model_hash",
+        "inventory_hash", "exact_pair_scope_hash",
+    )(_require_final_hash)
+    @field_validator(
+        "physical_body_binding_hashes", "physical_joint_binding_hashes",
+        "semantic_placement_identities", "axis_source_identities", "cad_mapping_hashes",
+    )
+    @classmethod
+    def _validate_identity_hashes(cls, values):
+        values = tuple(values)
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            raise ValueError("bridge @2 identity projections must not be blank")
+        for value in values:
+            _require_final_hash(value)
+        return values
+
+    _validate_bridge_hash = field_validator("physical_to_m10_bridge_hash")(
+        _require_hash_or_pending
+    )
+
+    @model_validator(mode="after")
+    def validate_bridge_v2(self) -> "PhysicalToM10V2BridgeV2":
+        model = revalidate_v2_kinematic_model(self.model)
+        inventory = MultiJointCollisionPairInventoryV2.model_validate(
+            self.inventory.model_dump(mode="json")
+        )
+        scope = canonical_exact_pair_scope(self.exact_pair_scope)
+        if model != self.model:
+            object.__setattr__(self, "model", model)
+        if inventory != self.inventory:
+            object.__setattr__(self, "inventory", inventory)
+        if scope != self.exact_pair_scope:
+            object.__setattr__(self, "exact_pair_scope", scope)
+        if self.semantic_kinematic_model_hash != semantic_kinematic_model_hash(model):
+            raise ValueError("bridge semantic M10 model hash mismatch")
+        if self.inventory_hash != inventory.inventory_hash:
+            raise ValueError("bridge @2 inventory hash mismatch")
+        if inventory.semantic_kinematic_model_hash != self.semantic_kinematic_model_hash:
+            raise ValueError("bridge @2 inventory semantic model mismatch")
+        if inventory.physical_mechanism_hash != self.physical_mechanism_hash:
+            raise ValueError("bridge @2 inventory physical mechanism mismatch")
+        if inventory.physical_body_binding_hashes != self.physical_body_binding_hashes:
+            raise ValueError("bridge @2 inventory body binding mismatch")
+        model_member_ids = tuple(
+            sorted(member.member_instance_id for body in model.bodies for member in body.members)
+        )
+        if inventory.complete_concrete_instance_ids != model_member_ids:
+            raise ValueError("bridge @2 inventory concrete instance mismatch")
+        if scope != _trusted_scope_from_inventory_v2(inventory):
+            raise ValueError("bridge @2 scope does not match CHECK_CLEARANCE inventory")
+        if self.exact_pair_scope_hash != exact_pair_scope_hash(scope):
+            raise ValueError("bridge @2 exact pair scope hash mismatch")
+        if self.ordered_body_ids != tuple(body.body_id for body in model.bodies):
+            raise ValueError("bridge @2 ordered body IDs mismatch")
+        if self.ordered_joint_ids != tuple(joint.joint_id for joint in model.joints):
+            raise ValueError("bridge @2 ordered joint IDs mismatch")
+        if model.model_id != physical_to_m10_v2_model_id(
+            self.ordered_body_ids, self.ordered_joint_ids
+        ):
+            raise ValueError("bridge @2 model ID does not match physical topology")
+        expected = physical_to_m10_bridge_hash_v2(self)
+        if self.physical_to_m10_bridge_hash == "pending":
+            object.__setattr__(self, "physical_to_m10_bridge_hash", expected)
+        elif self.physical_to_m10_bridge_hash != expected:
+            raise ValueError("physical-to-M10 bridge@2 hash mismatch")
+        return self
+
+
+def physical_to_m10_bridge_hash_v2(bridge: PhysicalToM10V2BridgeV2) -> str:
+    _require_semantic_fields(
+        bridge,
+        PhysicalToM10V2BridgeV2,
+        {
+            "schema_version", "physical_mechanism_hash", "kinematic_root_binding_hash",
+            "physical_body_binding_hashes", "physical_joint_binding_hashes",
+            "semantic_placement_identities", "axis_source_identities", "cad_mapping_hashes",
+            "physical_pair_classification_set_hash", "model",
+            "semantic_kinematic_model_hash", "inventory", "inventory_hash",
+            "exact_pair_scope", "exact_pair_scope_hash", "ordered_body_ids",
+            "ordered_joint_ids", "physical_to_m10_bridge_hash",
+        },
+        "PhysicalToM10V2BridgeV2",
+    )
+    payload = {
+        "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+        "schema_version": bridge.schema_version,
+        "physical_mechanism_hash": bridge.physical_mechanism_hash,
+        "kinematic_root_binding_hash": bridge.kinematic_root_binding_hash,
+        "physical_body_binding_hashes": list(bridge.physical_body_binding_hashes),
+        "physical_joint_binding_hashes": list(bridge.physical_joint_binding_hashes),
+        "semantic_placement_identities": list(bridge.semantic_placement_identities),
+        "axis_source_identities": list(bridge.axis_source_identities),
+        "cad_mapping_hashes": list(bridge.cad_mapping_hashes),
+        "physical_pair_classification_set_hash": bridge.physical_pair_classification_set_hash,
+        "semantic_kinematic_model_hash": bridge.semantic_kinematic_model_hash,
+        "inventory_hash": bridge.inventory_hash,
+        "exact_pair_scope_hash": bridge.exact_pair_scope_hash,
+        "ordered_body_ids": list(bridge.ordered_body_ids),
+        "ordered_joint_ids": list(bridge.ordered_joint_ids),
+    }
+    return "sha256:" + hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+
+
+def _trusted_scope_from_inventory_v2(
+    inventory: MultiJointCollisionPairInventoryV2,
+) -> tuple[ExactConstituentPair, ...]:
+    return canonical_exact_pair_scope(
+        tuple(
+            ExactConstituentPair(
+                first_instance_id=entry.first_instance_id,
+                second_instance_id=entry.second_instance_id,
+            )
+            for entry in inventory.entries
+            if entry.classification is PhysicalPairClassification.CHECK_CLEARANCE
+        )
+    )
+
+
 def physical_to_m10_bridge_hash(bridge: PhysicalToM10V2Bridge) -> str:
     """Hash a finalized bridge without introducing a model/inventory cycle."""
     if type(bridge) is not PhysicalToM10V2Bridge:
@@ -2474,6 +3258,24 @@ def validate_physical_to_m10_v2_bridge(
     return bridge
 
 
+def validate_physical_to_m10_v2_bridge_v2(
+    bridge: PhysicalToM10V2BridgeV2,
+    *,
+    candidate: MechanicalDesignCandidate,
+    cad_realization: CandidateCadRealizationV2,
+    placement_derivations=(),
+) -> PhysicalToM10V2BridgeV2:
+    bridge = _validated(bridge, PhysicalToM10V2BridgeV2, "physical-to-M10 bridge@2")
+    expected = _derive_candidate_multi_joint_bridge_v2(
+        candidate, cad_realization, placement_derivations
+    )
+    if bridge != expected:
+        raise ValueError("bridge@2 does not match trusted candidate/CAD/M13 inputs")
+    if bridge.physical_to_m10_bridge_hash != physical_to_m10_bridge_hash_v2(bridge):
+        raise ValueError("bridge@2 hash does not match trusted semantic inputs")
+    return bridge
+
+
 def _axis_pose_from_resolved_source(source) -> _SemanticAxisPose:
     if isinstance(source, RotationalShaftInterface):
         return (
@@ -2522,6 +3324,126 @@ def _canonical_semantic_placements(mechanism, mappings):
     }, tuple(
         mapping.placement_hash or mapping.component_hash for mapping in mappings
     )
+
+
+def _derive_canonical_multi_joint_bridge_v2(
+    reconstruction: CanonicalMechanismReconstruction,
+    cad_realization: CanonicalCadRealizationV2,
+) -> PhysicalToM10V2BridgeV2:
+    """Lower verified mechanism@4/CAD@2 through the existing M10 model/inventory."""
+    reconstruction = _validated(
+        reconstruction, CanonicalMechanismReconstruction, "canonical mechanism reconstruction"
+    )
+    mechanism = reconstruction.mechanism
+    if mechanism.schema_version != "canonical-physical-mechanism@4":
+        raise ValueError("canonical bridge@2 requires canonical-physical-mechanism@4")
+    cad_realization = _validate_canonical_cad_realization_v2_for_bridge(
+        mechanism, cad_realization
+    )
+    if (
+        cad_realization.project_id != reconstruction.project_id
+        or cad_realization.revision != reconstruction.revision
+        or cad_realization.state_hash != reconstruction.state_hash
+    ):
+        raise ValueError("canonical CAD realization@2 does not bind the reconstruction")
+    if len(mechanism.multi_joint_verification_obligations) != 1:
+        raise ValueError("canonical bridge requires exactly one multi-joint verification obligation")
+    bodies = mechanism.physical_rigid_body_bindings
+    joints = mechanism.physical_revolute_joint_bindings
+    root_id = mechanism.kinematic_root_physical_body_id
+    validate_physical_kinematic_tree(bodies, joints, root_id)
+    validate_physical_revolute_connections(joints, mechanism.connections, mechanism.components)
+    mapping_by_physical = _validate_canonical_physical_cad_universe_v2(
+        mechanism, cad_realization, bodies
+    )
+    placements = {}
+    placement_identities = []
+    placements_by_id = {item.placement_id: item for item in mechanism.placements}
+    for physical_id, mapping in mapping_by_physical.items():
+        placement = placements_by_id.get(mapping.placement_id)
+        resolved = (
+            CadRigidTransform()
+            if mapping.placement_id is None
+            else resolve_canonical_placement(mechanism, physical_id)
+        )
+        if not rigid_transform_agrees(resolved, mapping.placement, RIGID_TRANSFORM_AGREEMENT_VERSION):
+            raise ValueError("canonical CAD@2 placement differs from resolved semantic authority")
+        placements[physical_id] = resolved
+        placement_identities.append(semantic_canonical_placement_hash(
+            placement=placement,
+            mapping_instance_id=physical_id,
+            geometry_identities=mechanism.component_specifications,
+            placement_id=mapping.placement_id,
+            placement_input_identities=mapping.placement_input_identities,
+            placement_relation=mapping.placement_relation,
+            transform=resolved,
+        ))
+    axis_poses = {
+        joint.physical_joint_id: _axis_pose_from_resolved_source(
+            resolve_canonical_axis_source(mechanism, joint.axis_source)
+        )
+        for joint in joints
+    }
+    model = compile_kinematic_model_v2(
+        cad_realization.assembly, bodies, joints, placements,
+        {physical_id: mapping.cad_instance_id for physical_id, mapping in mapping_by_physical.items()},
+        axis_poses,
+        physical_to_m10_v2_model_id(
+            (body.physical_body_id for body in bodies), (joint.physical_joint_id for joint in joints)
+        ),
+    )
+    inventory = derive_multi_joint_collision_pair_inventory_v2(
+        physical_mechanism_hash=mechanism.mechanism_hash,
+        cad_realization_hash=cad_realization.realization_hash,
+        model=model, mappings=tuple(mapping_by_physical.values()),
+        assembly=cad_realization.assembly,
+        physical_body_bindings=bodies,
+        pair_bindings=mechanism.physical_pair_classification_bindings,
+    )
+    # Reuse the accepted @4 semantic joint/axis projection rather than hashing
+    # the legacy binding/source self-hashes (which retain raw M13 references).
+    semantic_joints = canonical_physical_mechanism_hash_payload_v4(mechanism)[
+        "physical_revolute_joint_bindings"
+    ]
+    semantic_joints = sorted(semantic_joints, key=lambda item: item["physical_joint_id"])
+    def semantic_digest(payload):
+        return "sha256:" + hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+    scope = exact_scope_from_inventory_v2(inventory)
+    return PhysicalToM10V2BridgeV2(
+        physical_mechanism_hash=mechanism.mechanism_hash,
+        kinematic_root_binding_hash=physical_kinematic_root_hash(root_id),
+        physical_body_binding_hashes=tuple(sorted(body.binding_hash for body in bodies)),
+        physical_joint_binding_hashes=tuple(semantic_digest({
+            "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION, **joint
+        }) for joint in semantic_joints),
+        semantic_placement_identities=tuple(placement_identities),
+        axis_source_identities=tuple(semantic_digest({
+            "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+            "axis_source": joint["axis_source"],
+        }) for joint in semantic_joints),
+        cad_mapping_hashes=tuple(sorted(mapping.mapping_hash for mapping in mapping_by_physical.values())),
+        physical_pair_classification_set_hash=physical_pair_classification_set_hash(
+            mechanism.physical_pair_classification_bindings
+        ),
+        model=model, semantic_kinematic_model_hash=semantic_kinematic_model_hash(model),
+        inventory=inventory, inventory_hash=inventory.inventory_hash,
+        exact_pair_scope=scope, exact_pair_scope_hash=exact_pair_scope_hash(scope),
+        ordered_body_ids=tuple(body.body_id for body in model.bodies),
+        ordered_joint_ids=tuple(joint.joint_id for joint in model.joints),
+    )
+
+
+def validate_canonical_physical_to_m10_v2_bridge_v2(
+    bridge: PhysicalToM10V2BridgeV2,
+    *,
+    reconstruction: CanonicalMechanismReconstruction,
+    cad_realization: CanonicalCadRealizationV2,
+) -> PhysicalToM10V2BridgeV2:
+    bridge = _validated(bridge, PhysicalToM10V2BridgeV2, "canonical physical-to-M10 bridge@2")
+    expected = _derive_canonical_multi_joint_bridge_v2(reconstruction, cad_realization)
+    if bridge != expected:
+        raise ValueError("bridge@2 does not match trusted canonical/CAD/M13 inputs")
+    return bridge
 
 
 def _compile_physical_to_m10_core(
@@ -2647,12 +3569,37 @@ def _compile_physical_to_m10_core(
 class PhysicalToM10V2BridgeCompiler:
     """Compile candidate or canonical physical authority through one pure core."""
 
+    def compile_candidate_v2(
+        self,
+        candidate: MechanicalDesignCandidate,
+        cad_realization: CandidateCadRealizationV2,
+        placement_derivations=(),
+    ) -> PhysicalToM10V2BridgeV2:
+        bridge = _derive_candidate_multi_joint_bridge_v2(
+            candidate, cad_realization, placement_derivations
+        )
+        return validate_physical_to_m10_v2_bridge_v2(
+            bridge,
+            candidate=candidate,
+            cad_realization=cad_realization,
+            placement_derivations=placement_derivations,
+        )
+
     def compile_candidate(
         self,
         candidate: MechanicalDesignCandidate,
-        cad_realization: CandidateCadRealization,
+        cad_realization: CandidateCadRealization | CandidateCadRealizationV2,
         placement_derivations=(),
-    ) -> PhysicalToM10V2Bridge:
+    ) -> PhysicalToM10V2Bridge | PhysicalToM10V2BridgeV2:
+        if (
+            isinstance(candidate, MechanicalDesignCandidate)
+            and candidate.schema_version == "mechanical-design-candidate@2"
+        ):
+            if type(cad_realization) is not CandidateCadRealizationV2:
+                raise ValueError("candidate@2 bridge requires candidate CAD realization@2")
+            return self.compile_candidate_v2(
+                candidate, cad_realization, placement_derivations
+            )
         if type(candidate) is not MechanicalDesignCandidate:
             raise ValueError("candidate bridge input must be a typed MechanicalDesignCandidate")
         if type(cad_realization) is not CandidateCadRealization:
@@ -2707,8 +3654,12 @@ class PhysicalToM10V2BridgeCompiler:
     def compile_canonical(
         self,
         reconstruction: CanonicalMechanismReconstruction,
-        cad_realization: CanonicalCadRealization,
-    ) -> PhysicalToM10V2Bridge:
+        cad_realization: CanonicalCadRealization | CanonicalCadRealizationV2,
+    ) -> PhysicalToM10V2Bridge | PhysicalToM10V2BridgeV2:
+        if type(cad_realization) is CanonicalCadRealizationV2:
+            if type(reconstruction) is not CanonicalMechanismReconstruction:
+                raise ValueError("canonical bridge reconstruction must be a typed CanonicalMechanismReconstruction")
+            return _derive_canonical_multi_joint_bridge_v2(reconstruction, cad_realization)
         if type(cad_realization) is not CanonicalCadRealization:
             raise ValueError("canonical bridge CAD input must be CanonicalCadRealization")
         if type(reconstruction) is not CanonicalMechanismReconstruction:
@@ -2767,9 +3718,9 @@ class PhysicalToM10V2BridgeCompiler:
 
 def compile_candidate(
     candidate: MechanicalDesignCandidate,
-    cad_realization: CandidateCadRealization,
+    cad_realization: CandidateCadRealization | CandidateCadRealizationV2,
     placement_derivations=(),
-) -> PhysicalToM10V2Bridge:
+) -> PhysicalToM10V2Bridge | PhysicalToM10V2BridgeV2:
     return PhysicalToM10V2BridgeCompiler().compile_candidate(
         candidate, cad_realization, placement_derivations
     )
@@ -2777,8 +3728,8 @@ def compile_candidate(
 
 def compile_canonical(
     reconstruction: CanonicalMechanismReconstruction,
-    cad_realization: CanonicalCadRealization,
-) -> PhysicalToM10V2Bridge:
+    cad_realization: CanonicalCadRealization | CanonicalCadRealizationV2,
+) -> PhysicalToM10V2Bridge | PhysicalToM10V2BridgeV2:
     return PhysicalToM10V2BridgeCompiler().compile_canonical(
         reconstruction, cad_realization
     )
@@ -2800,16 +3751,25 @@ __all__ = [
     "validate_physical_body_pair_consistency",
     "MultiJointCollisionPairEntry",
     "MultiJointCollisionPairInventory",
+    "multi_joint_collision_pair_inventory_hash_v2",
+    "MultiJointCollisionPairInventoryV2",
     "derive_multi_joint_collision_pair_inventory",
+    "derive_multi_joint_collision_pair_inventory_v2",
     "exact_scope_from_inventory",
+    "exact_scope_from_inventory_v2",
     "lower_physical_axis_to_parent_body_reference",
     "derive_body_member_offsets",
     "compile_kinematic_model_v2",
     "PhysicalToM10V2Bridge",
+    "PhysicalToM10V2BridgeV2",
     "PhysicalToM10V2BridgeCompiler",
     "compile_candidate",
     "compile_canonical",
     "physical_to_m10_v2_model_id",
     "physical_to_m10_bridge_hash",
+    "physical_to_m10_bridge_hash_v2",
     "validate_physical_to_m10_v2_bridge",
+    "validate_physical_to_m10_v2_bridge_v2",
+    "validate_canonical_physical_to_m10_v2_bridge_v2",
+    "semantic_physical_revolute_joint_binding_hash_v2",
 ]

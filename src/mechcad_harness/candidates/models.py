@@ -16,7 +16,9 @@ from mechcad_harness.models.component_property import (
 from mechcad_harness.models.geometry_identity import (
     GeometryArtifactIdentity,
     candidate_geometry_reference_payload,
+    candidate_geometry_reference_wire_payload,
     reference_hash_payload,
+    semantic_reference_hash,
 )
 from mechcad_harness.models.supplied_component_interface import (
     MaterializedInterfaceVerifier,
@@ -186,10 +188,19 @@ class GeometrySourceReference(CandidateModel):
     format: Literal["step"] = "step"
     coordinate_system_id: str | None = None
     reference_hash: str = "pending"
+    content_identity: str | None = None
+    content_identity_algorithm: Literal["step-content-identity@1"] | None = None
+    semantic_reference_hash: str | None = None
 
     _validate_artifact_hash = field_validator("artifact_hash")(_require_hash)
     _validate_reference_hash = field_validator("reference_hash")(
         lambda value: value if value == "pending" else _require_hash(value)
+    )
+    _validate_content_identity = field_validator("content_identity")(
+        lambda value: value if value in (None, "pending") else _require_hash(value)
+    )
+    _validate_semantic_reference_hash = field_validator("semantic_reference_hash")(
+        lambda value: value if value in (None, "pending") else _require_hash(value)
     )
 
     @field_validator("coordinate_system_id")
@@ -201,22 +212,48 @@ class GeometrySourceReference(CandidateModel):
 
     @model_serializer(mode="wrap")
     def serialize_reference(self, handler):
-        from mechcad_harness.models.geometry_identity import candidate_geometry_reference_payload
+        from mechcad_harness.models.geometry_identity import candidate_geometry_reference_wire_payload
 
         del handler
-        return candidate_geometry_reference_payload(
+        return candidate_geometry_reference_wire_payload(
             self, m13=self.coordinate_system_id is not None
         )
 
     @model_validator(mode="after")
     def validate_reference(self):
-        from mechcad_harness.models.geometry_identity import reference_hash_payload
-
-        expected = _hash_payload(reference_hash_payload(self.model_dump(mode="json")))
+        trio = (
+            self.content_identity,
+            self.content_identity_algorithm,
+            self.semantic_reference_hash,
+        )
+        if self.content_identity is not None and self.content_identity_algorithm is None:
+            raise ValueError("semantic geometry reference fields must be all present or absent")
+        if self.content_identity is None and any(value is not None for value in trio[1:]):
+            raise ValueError("semantic geometry reference fields must be all present or absent")
+        pending_content_identity = self.content_identity == "pending"
+        if pending_content_identity:
+            if self.semantic_reference_hash not in (None, "pending"):
+                raise ValueError("pending semantic geometry content cannot have a concrete reference hash")
+            object.__setattr__(self, "semantic_reference_hash", "pending")
+        expected = _hash_payload(
+            reference_hash_payload(
+                candidate_geometry_reference_payload(
+                    self, m13=self.coordinate_system_id is not None
+                )
+            )
+        )
         if self.reference_hash == "pending":
             object.__setattr__(self, "reference_hash", expected)
         elif self.reference_hash != expected:
             raise ValueError("geometry source reference hash mismatch")
+        if self.content_identity is not None and self.semantic_reference_hash is None:
+            object.__setattr__(self, "semantic_reference_hash", "pending")
+        if self.content_identity is not None and not pending_content_identity:
+            expected_semantic = semantic_reference_hash(self)
+            if self.semantic_reference_hash == "pending":
+                object.__setattr__(self, "semantic_reference_hash", expected_semantic)
+            elif self.semantic_reference_hash != expected_semantic:
+                raise ValueError("semantic geometry reference hash mismatch")
         return self
 
 
@@ -259,6 +296,7 @@ class ComponentSpecificationSnapshot(CandidateModel):
         "component-specification@1",
         "component-specification@2",
         "component-specification@3",
+        "component-specification@4",
     ] = "component-specification@1"
     component_type: str = Field(min_length=1)
     manufacturer: str | None = None
@@ -285,20 +323,31 @@ class ComponentSpecificationSnapshot(CandidateModel):
             "geometry_source": (
                 None
                 if self.geometry_source is None
-                else candidate_geometry_reference_payload(
-                    self.geometry_source, m13=self.schema_version.endswith("@2")
+                else (
+                    candidate_geometry_reference_wire_payload(
+                        self.geometry_source,
+                        m13=True,
+                    )
+                    if self.schema_version == "component-specification@4"
+                    else candidate_geometry_reference_payload(
+                        self.geometry_source,
+                        m13=self.schema_version == "component-specification@2",
+                    )
                 )
             ),
             "interfaces": list(self.interfaces),
             "compatibility_declarations": list(self.compatibility_declarations),
         }
-        if self.schema_version.endswith("@3"):
+        if self.schema_version == "component-specification@3":
             payload["generated_part"] = (
                 None
                 if self.generated_part is None
                 else self.generated_part.model_dump(mode="json")
             )
-        if self.schema_version.endswith("@2"):
+        if self.schema_version in {
+            "component-specification@2",
+            "component-specification@4",
+        }:
             payload.update({
                 "supplied_reference_frames": [
                     frame.model_dump(mode="json") for frame in self.supplied_reference_frames
@@ -312,6 +361,8 @@ class ComponentSpecificationSnapshot(CandidateModel):
                     for transform in self.geometry_derivation_transforms
                 ],
             })
+        if self.schema_version == "component-specification@4" and self.generated_part is not None:
+            payload["generated_part"] = self.generated_part.model_dump(mode="json")
         payload["specification_hash"] = self.specification_hash
         return payload
 
@@ -327,12 +378,22 @@ class ComponentSpecificationSnapshot(CandidateModel):
 
     @model_validator(mode="after")
     def validate_specification(self):
+        if self.schema_version != "component-specification@4" and self.geometry_source is not None:
+            if any(
+                value is not None
+                for value in (
+                    self.geometry_source.content_identity,
+                    self.geometry_source.content_identity_algorithm,
+                    self.geometry_source.semantic_reference_hash,
+                )
+            ):
+                raise ValueError("legacy component specifications must not contain semantic geometry fields")
         keys = tuple(property.key for property in self.properties)
         if len(set(keys)) != len(keys):
             raise ValueError("component property keys must be unique")
         if any(not value.strip() for value in self.interfaces + self.compatibility_declarations):
             raise ValueError("component interface declarations must not be empty")
-        if self.schema_version.endswith("@1"):
+        if self.schema_version == "component-specification@1":
             if self.generated_part is not None:
                 raise ValueError("component-specification@1 must not contain generated_part")
             if any((
@@ -343,7 +404,7 @@ class ComponentSpecificationSnapshot(CandidateModel):
                 raise ValueError("component-specification@1 must not contain M13 records")
             if self.geometry_source is not None and self.geometry_source.coordinate_system_id is not None:
                 raise ValueError("component-specification@1 requires no coordinate system")
-        elif self.schema_version.endswith("@2"):
+        elif self.schema_version == "component-specification@2":
             if self.generated_part is not None:
                 raise ValueError("component-specification@2 must not contain generated_part")
             if any(
@@ -357,7 +418,7 @@ class ComponentSpecificationSnapshot(CandidateModel):
                 or self.geometry_source.coordinate_system_id is None
             ):
                 raise ValueError("component-specification@2 M13 records require a coordinate system")
-        else:
+        elif self.schema_version == "component-specification@3":
             if self.generated_part is None:
                 raise ValueError("component-specification@3 requires generated_part")
             if self.geometry_source is not None or any((
@@ -369,6 +430,21 @@ class ComponentSpecificationSnapshot(CandidateModel):
                     "component-specification@3 generated representation is exclusive"
                 )
             validate_generated_interface_registry(self.generated_part, self.interfaces)
+        else:
+            has_m13 = any((
+                self.supplied_reference_frames,
+                self.supplied_interface_definitions,
+                self.geometry_derivation_transforms,
+            ))
+            if self.generated_part is not None:
+                if self.geometry_source is not None or has_m13:
+                    raise ValueError("component-specification@4 generated representation is exclusive")
+                validate_generated_interface_registry(self.generated_part, self.interfaces)
+            else:
+                if self.geometry_source is None:
+                    raise ValueError("component-specification@4 supplied representation requires geometry_source")
+                if has_m13 and self.geometry_source.coordinate_system_id is None:
+                    raise ValueError("component-specification@4 M13 records require a coordinate system")
 
         frames = tuple(sorted(self.supplied_reference_frames, key=lambda frame: frame.frame_id))
         definitions = tuple(sorted(
@@ -426,11 +502,15 @@ class ComponentSpecificationSnapshot(CandidateModel):
             if isinstance(definition.mounting_face, MountingFaceInterface) and frame is not None:
                 _validate_mounting_face_frame(definition.mounting_face, frame)
 
-        expected = _hash_payload(self._specification_hash_payload())
-        if self.specification_hash == "pending":
-            object.__setattr__(self, "specification_hash", expected)
-        elif self.specification_hash != expected:
-            raise ValueError("component specification hash mismatch")
+        if self.schema_version == "component-specification@4":
+            if self.specification_hash != "pending":
+                _require_hash(self.specification_hash)
+        else:
+            expected = _hash_payload(self._specification_hash_payload())
+            if self.specification_hash == "pending":
+                object.__setattr__(self, "specification_hash", expected)
+            elif self.specification_hash != expected:
+                raise ValueError("component specification hash mismatch")
         return self
 
 
@@ -990,13 +1070,46 @@ class UnresolvedCandidateItem(CandidateModel):
 
 
 class CandidateSynthesisRequest(CandidateModel):
-    schema_version: Literal["candidate-synthesis-request@1"] = "candidate-synthesis-request@1"
+    schema_version: Literal[
+        "candidate-synthesis-request@1",
+        "candidate-synthesis-request@2",
+    ] = "candidate-synthesis-request@1"
     source_binding: CandidateSourceBinding
+    semantic_source_binding_hash: str = "pending"
     requested_joint_ids: tuple[str, ...] = ()
     required_joint_ids: tuple[str, ...] = ()
     out_of_scope_joint_ids: tuple[str, ...] = ()
     requested_evaluation_categories: tuple[str, ...] = ()
     request_hash: str = "pending"
+
+    @field_validator("semantic_source_binding_hash")
+    @classmethod
+    def validate_semantic_source_binding_hash(cls, value: str) -> str:
+        return value if value == "pending" else _require_hash(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_legacy_semantic_field(cls, value):
+        if isinstance(value, dict) and value.get("schema_version", "candidate-synthesis-request@1") == "candidate-synthesis-request@1":
+            if "semantic_source_binding_hash" in value:
+                raise ValueError("candidate-synthesis-request@1 cannot contain semantic binding")
+        return value
+
+    @model_serializer(mode="wrap")
+    def serialize_request(self, handler):
+        del handler
+        payload = {
+            "schema_version": self.schema_version,
+            "source_binding": self.source_binding.model_dump(mode="json"),
+            "requested_joint_ids": list(self.requested_joint_ids),
+            "required_joint_ids": list(self.required_joint_ids),
+            "out_of_scope_joint_ids": list(self.out_of_scope_joint_ids),
+            "requested_evaluation_categories": list(self.requested_evaluation_categories),
+            "request_hash": self.request_hash,
+        }
+        if self.schema_version == "candidate-synthesis-request@2":
+            payload["semantic_source_binding_hash"] = self.semantic_source_binding_hash
+        return payload
 
     @model_validator(mode="after")
     def validate_scope_and_hash(self):
@@ -1005,12 +1118,37 @@ class CandidateSynthesisRequest(CandidateModel):
         out_of_scope = set(self.out_of_scope_joint_ids)
         if len(requested) != len(self.requested_joint_ids) or not required <= requested or out_of_scope & required or not out_of_scope <= requested:
             raise ValueError("candidate synthesis joint scope is invalid")
-        expected = _hash(self, "request_hash")
-        if self.request_hash == "pending":
-            object.__setattr__(self, "request_hash", expected)
-        elif self.request_hash != expected:
-            raise ValueError("candidate synthesis request hash mismatch")
+        if self.schema_version == "candidate-synthesis-request@2" and self.semantic_source_binding_hash == "pending":
+            if self.request_hash != "pending":
+                raise ValueError("unbound candidate-synthesis-request@2 cannot have a request hash")
+        else:
+            expected = (
+                candidate_synthesis_request_hash_v2(self)
+                if self.schema_version == "candidate-synthesis-request@2"
+                else _hash(self, "request_hash")
+            )
+            if self.request_hash == "pending":
+                object.__setattr__(self, "request_hash", expected)
+            elif self.request_hash != expected:
+                raise ValueError("candidate synthesis request hash mismatch")
         return self
+
+
+def candidate_synthesis_request_hash_v2(request: CandidateSynthesisRequest) -> str:
+    if request.schema_version != "candidate-synthesis-request@2":
+        raise ValueError("candidate_synthesis_request_hash_v2 requires request@2")
+    if request.semantic_source_binding_hash == "pending":
+        raise ValueError("candidate synthesis semantic source binding is pending")
+    return _hash_payload(
+        {
+            "schema_version": request.schema_version,
+            "semantic_source_binding_hash": request.semantic_source_binding_hash,
+            "requested_joint_ids": list(request.requested_joint_ids),
+            "required_joint_ids": list(request.required_joint_ids),
+            "out_of_scope_joint_ids": list(request.out_of_scope_joint_ids),
+            "requested_evaluation_categories": list(request.requested_evaluation_categories),
+        }
+    )
 
 
 class PolicyEntrySemantics(StrEnum):
@@ -1124,8 +1262,12 @@ def _candidate_dimension_inputs(
 
 
 class MechanicalDesignCandidate(CandidateModel):
-    schema_version: Literal["mechanical-design-candidate@1"] = "mechanical-design-candidate@1"
+    schema_version: Literal[
+        "mechanical-design-candidate@1",
+        "mechanical-design-candidate@2",
+    ] = "mechanical-design-candidate@1"
     source_binding: CandidateSourceBinding
+    semantic_source_binding_hash: str = "pending"
     synthesis_request_hash: str
     synthesis_policy_hash: str
     component_specifications: tuple[ComponentSpecificationSnapshot, ...] = Field(min_length=1)
@@ -1140,13 +1282,37 @@ class MechanicalDesignCandidate(CandidateModel):
     candidate_hash: str = "pending"
 
     _validate_request_hash = field_validator("synthesis_request_hash", "synthesis_policy_hash")(_require_hash)
+    _validate_semantic_source_binding_hash = field_validator("semantic_source_binding_hash")(
+        lambda value: value if value == "pending" else _require_hash(value)
+    )
     @field_validator("parent_candidate_hash")
     @classmethod
     def validate_parent_hash(cls, value: str | None) -> str | None:
         return None if value is None else _require_hash(value)
 
+    @model_serializer(mode="wrap")
+    def serialize_candidate(self, handler):
+        payload = handler(self)
+        if self.schema_version == "mechanical-design-candidate@1":
+            payload.pop("semantic_source_binding_hash", None)
+        return payload
+
     @model_validator(mode="after")
     def validate_candidate(self):
+        if self.schema_version == "mechanical-design-candidate@2":
+            if any(
+                specification.schema_version != "component-specification@4"
+                for specification in self.component_specifications
+            ):
+                raise ValueError("mechanical-design-candidate@2 requires component-specification@4")
+        else:
+            if self.semantic_source_binding_hash != "pending":
+                raise ValueError("mechanical-design-candidate@1 cannot contain semantic binding")
+            if any(
+                specification.schema_version == "component-specification@4"
+                for specification in self.component_specifications
+            ):
+                raise ValueError("mechanical-design-candidate@1 cannot contain component-specification@4")
         specifications = {specification.specification_hash for specification in self.component_specifications}
         if len(specifications) != len(self.component_specifications):
             raise ValueError("component specification hashes must be unique")
@@ -1185,13 +1351,368 @@ class MechanicalDesignCandidate(CandidateModel):
                 raise ValueError(str(exc)) from exc
         if (self.parent_candidate_hash is None) != (self.derivation_kind is None):
             raise ValueError("candidate lineage must include parent hash and derivation kind together")
-        expected = candidate_hash(self)
-        if self.candidate_hash == "pending":
-            object.__setattr__(self, "candidate_hash", expected)
-        elif self.candidate_hash != expected:
-            raise ValueError("mechanical design candidate hash mismatch")
+        if self.schema_version == "mechanical-design-candidate@2":
+            if self.semantic_source_binding_hash == "pending" or any(
+                specification.specification_hash == "pending"
+                for specification in self.component_specifications
+            ):
+                if self.candidate_hash != "pending":
+                    raise ValueError("unbound mechanical-design-candidate@2 cannot have a candidate hash")
+            else:
+                expected = candidate_hash_v2(self)
+                if self.candidate_hash == "pending":
+                    object.__setattr__(self, "candidate_hash", expected)
+                elif self.candidate_hash != expected:
+                    raise ValueError("mechanical design candidate hash mismatch")
+        else:
+            expected = candidate_hash(self)
+            if self.candidate_hash == "pending":
+                object.__setattr__(self, "candidate_hash", expected)
+            elif self.candidate_hash != expected:
+                raise ValueError("mechanical design candidate hash mismatch")
         return self
 
 
 def candidate_hash(candidate: MechanicalDesignCandidate) -> str:
     return _hash(candidate, "candidate_hash")
+
+
+def candidate_hash_v2(candidate: MechanicalDesignCandidate) -> str:
+    if candidate.schema_version != "mechanical-design-candidate@2":
+        raise ValueError("candidate_hash_v2 requires mechanical-design-candidate@2")
+    if candidate.semantic_source_binding_hash == "pending":
+        raise ValueError("candidate semantic source binding is pending")
+    for specification in candidate.component_specifications:
+        if specification.schema_version != "component-specification@4":
+            raise ValueError("candidate@2 requires component-specification@4")
+        if specification.specification_hash == "pending":
+            raise ValueError("candidate component specification hash is pending")
+        geometry_source = specification.geometry_source
+        if geometry_source is not None and (
+            geometry_source.content_identity in (None, "pending")
+            or geometry_source.content_identity_algorithm != "step-content-identity@1"
+            or geometry_source.semantic_reference_hash in (None, "pending")
+        ):
+            raise ValueError("candidate component specification semantic geometry is pending")
+    specification_hashes = tuple(
+        specification.specification_hash for specification in candidate.component_specifications
+    )
+    if len(set(specification_hashes)) != len(specification_hashes):
+        raise ValueError("candidate component specification hashes must be unique")
+    unresolved_records = tuple(candidate.unresolved_items)
+    for item in unresolved_records:
+        _require_projection_model_fields(
+            item,
+            {"subject_path", "required_information", "reason", "source_context"},
+            "UnresolvedCandidateItem",
+        )
+    return _hash_payload(
+        {
+            "schema_version": candidate.schema_version,
+            "semantic_source_binding_hash": candidate.semantic_source_binding_hash,
+            "synthesis_request_hash": candidate.synthesis_request_hash,
+            "synthesis_policy_hash": candidate.synthesis_policy_hash,
+            "component_specifications": [
+                specification_hash
+                for specification_hash in sorted(specification_hashes)
+            ],
+            "realization": semantic_candidate_realization_payload(candidate.realization),
+            "design_variables": semantic_candidate_design_variable_records(
+                candidate.design_variables
+            ),
+            "unresolved_items": [
+                item.model_dump(mode="json")
+                for item in sorted(
+                    unresolved_records,
+                    key=lambda item: (
+                        item.subject_path,
+                        item.required_information,
+                        item.reason.value,
+                        (0, "") if item.source_context is None else (1, item.source_context),
+                    ),
+                )
+            ],
+            "generator_identity": candidate.generator_identity,
+            "generator_version": candidate.generator_version,
+            "parent_candidate_hash": candidate.parent_candidate_hash,
+            "derivation_kind": candidate.derivation_kind,
+            "generation_ordinal": candidate.generation_ordinal,
+        }
+    )
+
+
+def _require_projection_model_fields(
+    value: Model, expected_fields: set[str], model_name: str
+) -> dict[str, Any]:
+    if type(value).model_fields.keys() != expected_fields:
+        raise ValueError(f"{model_name} declared fields differ from the semantic projection")
+    payload = value.model_dump(mode="json")
+    if payload.keys() != expected_fields:
+        raise ValueError(f"{model_name} serialized fields differ from the semantic projection")
+    return payload
+
+
+def semantic_candidate_design_variable_records(
+    variables: tuple[CandidateDesignVariable, ...],
+) -> list[dict[str, Any]]:
+    """Return the complete candidate design-variable records in semantic name order."""
+    records = tuple(variables)
+    names = tuple(variable.name for variable in records)
+    if len(set(names)) != len(names):
+        raise ValueError("candidate design variable names must be unique")
+    payloads = []
+    for variable in records:
+        payloads.append(
+            _require_projection_model_fields(
+                variable,
+                {"name", "value", "canonical_path"},
+                "CandidateDesignVariable",
+            )
+        )
+    return [record for _, record in sorted(zip(names, payloads, strict=True))]
+
+
+def semantic_candidate_axis_source_payload(source: PhysicalAxisSource) -> dict[str, str]:
+    """Project a candidate axis source without consuming raw M13 references or hashes."""
+    source_fields = {
+        SuppliedRotationalInterfaceAxisSource: {
+            "schema_version", "source_kind", "source_physical_instance_id",
+            "interface_id", "interface_hash", "geometry_reference_hash",
+            "specification_hash", "source_hash",
+        },
+        SuppliedReferenceFrameAxisSource: {
+            "schema_version", "source_kind", "source_physical_instance_id",
+            "frame_id", "frame_hash", "geometry_reference_hash",
+            "specification_hash", "source_hash",
+        },
+        GeneratedRotationalInterfaceAxisSource: {
+            "schema_version", "source_kind", "source_physical_instance_id",
+            "interface_id", "interface_hash", "generated_specification_hash",
+            "source_hash",
+        },
+        GeneratedReferenceFrameAxisSource: {
+            "schema_version", "source_kind", "source_physical_instance_id",
+            "frame_id", "frame_hash", "generated_specification_hash", "source_hash",
+        },
+    }
+    expected_fields = source_fields.get(type(source))
+    if expected_fields is None:
+        raise TypeError("candidate axis source has an unsupported semantic type")
+    payload = _require_projection_model_fields(
+        source, expected_fields, type(source).__name__
+    )
+    projected = {
+        "schema_version": payload["schema_version"],
+        "source_kind": payload["source_kind"],
+        "source_physical_instance_id": payload["source_physical_instance_id"],
+    }
+    if "interface_id" in payload:
+        projected["interface_id"] = payload["interface_id"]
+    else:
+        projected["frame_id"] = payload["frame_id"]
+    projected["specification_hash"] = payload.get(
+        "specification_hash", payload.get("generated_specification_hash")
+    )
+    return projected
+
+
+def semantic_candidate_realization_payload(
+    realization: PhysicalMechanismRealization,
+) -> dict[str, Any]:
+    """Project candidate realization@1/@2 into its canonical semantic payload."""
+    if type(realization) is not PhysicalMechanismRealization:
+        raise TypeError("candidate realization projection requires PhysicalMechanismRealization")
+    if realization.schema_version not in {
+        "physical-mechanism-realization@1",
+        "physical-mechanism-realization@2",
+    }:
+        raise ValueError("unsupported physical mechanism realization schema")
+    declared_fields = {
+        "schema_version", "components", "connections", "joint_bindings",
+        "physical_rigid_body_bindings", "physical_revolute_joint_bindings",
+        "kinematic_root_physical_body_id", "kinematic_root_binding_hash",
+        "physical_pair_classification_bindings", "realization_hash",
+    }
+    if PhysicalMechanismRealization.model_fields.keys() != declared_fields:
+        raise ValueError("PhysicalMechanismRealization declared fields differ from the semantic projection")
+
+    expected_serialized_fields = {
+        "schema_version", "components", "connections", "joint_bindings", "realization_hash"
+    }
+    if realization.schema_version == "physical-mechanism-realization@2":
+        expected_serialized_fields.update(
+            {
+                "physical_rigid_body_bindings", "physical_revolute_joint_bindings",
+                "kinematic_root_physical_body_id", "kinematic_root_binding_hash",
+                "physical_pair_classification_bindings",
+            }
+        )
+    serialized = realization.model_dump(mode="json")
+    if serialized.keys() != expected_serialized_fields:
+        raise ValueError("PhysicalMechanismRealization serialized fields differ from its schema")
+
+    component_fields = {"instance_id", "specification_hash", "role", "interfaces"}
+    components = []
+    component_ids = []
+    for component in realization.components:
+        item = _require_projection_model_fields(
+            component, component_fields, "PhysicalComponentInstance"
+        )
+        interfaces = tuple(item["interfaces"])
+        if len(set(interfaces)) != len(interfaces):
+            raise ValueError("physical component interface IDs must be unique")
+        item["interfaces"] = sorted(interfaces)
+        components.append(item)
+        component_ids.append(item["instance_id"])
+    if len(set(component_ids)) != len(component_ids):
+        raise ValueError("physical component IDs must be unique")
+    components.sort(key=lambda item: item["instance_id"])
+
+    connection_fields = {
+        "connection_id", "kind", "from_instance_id", "from_interface_id",
+        "to_instance_id", "to_interface_id", "meanings",
+    }
+    connections = []
+    connection_ids = []
+    for connection in realization.connections:
+        item = _require_projection_model_fields(
+            connection, connection_fields, "MechanicalConnection"
+        )
+        meanings = tuple(item["meanings"])
+        if len(set(meanings)) != len(meanings):
+            raise ValueError("mechanical connection meanings must be unique")
+        item["meanings"] = sorted(meanings)
+        connections.append(item)
+        connection_ids.append(item["connection_id"])
+    if len(set(connection_ids)) != len(connection_ids):
+        raise ValueError("mechanical connection IDs must be unique")
+    connections.sort(key=lambda item: item["connection_id"])
+
+    joint_fields = {
+        "joint_id", "driven_instance_id", "realization_component_ids",
+        "actuator_path_connection_ids", "transmission_path_connection_ids",
+        "support_instance_ids", "hub_or_coupling_instance_id",
+        "mount_or_support_instance_ids", "axis_frame_reference",
+        "load_path_metadata_available",
+    }
+    set_semantic_joint_fields = (
+        "realization_component_ids", "actuator_path_connection_ids",
+        "transmission_path_connection_ids", "mount_or_support_instance_ids",
+    )
+    joint_bindings = []
+    joint_ids = []
+    for binding in realization.joint_bindings:
+        item = _require_projection_model_fields(
+            binding, joint_fields, "JointPhysicalRealizationBinding"
+        )
+        for field_name in set_semantic_joint_fields:
+            values = tuple(item[field_name])
+            if len(set(values)) != len(values):
+                raise ValueError(f"{field_name} must contain unique IDs")
+            item[field_name] = sorted(values)
+        support_ids = tuple(item["support_instance_ids"])
+        if len(set(support_ids)) != len(support_ids):
+            raise ValueError("support_instance_ids must contain unique IDs")
+        joint_bindings.append(item)
+        joint_ids.append(item["joint_id"])
+    if len(set(joint_ids)) != len(joint_ids):
+        raise ValueError("joint physical realization binding IDs must be unique")
+    joint_bindings.sort(key=lambda item: item["joint_id"])
+
+    payload: dict[str, Any] = {
+        "schema_version": realization.schema_version,
+        "components": components,
+        "connections": connections,
+        "joint_bindings": joint_bindings,
+    }
+    if realization.schema_version == "physical-mechanism-realization@2":
+        body_fields = {
+            "schema_version", "physical_body_id", "member_physical_instance_ids",
+            "reference_physical_instance_id", "binding_hash",
+        }
+        bodies = []
+        body_ids = []
+        for binding in realization.physical_rigid_body_bindings:
+            item = _require_projection_model_fields(
+                binding, body_fields, "PhysicalRigidBodyBinding"
+            )
+            members = tuple(item["member_physical_instance_ids"])
+            if len(set(members)) != len(members):
+                raise ValueError("physical rigid body member IDs must be unique")
+            item.pop("binding_hash")
+            item["member_physical_instance_ids"] = sorted(members)
+            bodies.append(item)
+            body_ids.append(item["physical_body_id"])
+        if len(set(body_ids)) != len(body_ids):
+            raise ValueError("physical rigid body IDs must be unique")
+        bodies.sort(key=lambda item: item["physical_body_id"])
+
+        revolute_fields = {
+            "schema_version", "physical_joint_id", "parent_physical_body_id",
+            "child_physical_body_id", "connection_id", "parent_physical_instance_id",
+            "parent_interface_id", "child_physical_instance_id", "child_interface_id",
+            "axis_source", "axis_owner_endpoint", "axis_sign", "motion_mode",
+            "min_angle_deg", "max_angle_deg", "zero_reference_semantics", "binding_hash",
+        }
+        revolute_joints = []
+        physical_joint_ids = []
+        for binding in realization.physical_revolute_joint_bindings:
+            item = _require_projection_model_fields(
+                binding, revolute_fields, "PhysicalRevoluteJointBinding"
+            )
+            item.pop("binding_hash")
+            item["axis_source"] = semantic_candidate_axis_source_payload(binding.axis_source)
+            revolute_joints.append(item)
+            physical_joint_ids.append(item["physical_joint_id"])
+        if len(set(physical_joint_ids)) != len(physical_joint_ids):
+            raise ValueError("physical revolute joint IDs must be unique")
+        revolute_joints.sort(key=lambda item: item["physical_joint_id"])
+
+        pair_fields = {
+            "schema_version", "first_physical_instance_id", "second_physical_instance_id",
+            "classification", "exclusion_reason", "binding_hash",
+        }
+        pairs = []
+        pair_keys = []
+        for binding in realization.physical_pair_classification_bindings:
+            item = _require_projection_model_fields(
+                binding, pair_fields, "PhysicalPairClassificationBinding"
+            )
+            item.pop("binding_hash")
+            key = (item["first_physical_instance_id"], item["second_physical_instance_id"])
+            pair_keys.append(key)
+            pairs.append(item)
+        if len(set(pair_keys)) != len(pair_keys):
+            raise ValueError("physical pair classification bindings must contain unique pairs")
+        pairs.sort(key=lambda item: (
+            item["first_physical_instance_id"], item["second_physical_instance_id"]
+        ))
+        payload.update(
+            {
+                "physical_rigid_body_bindings": bodies,
+                "physical_revolute_joint_bindings": revolute_joints,
+                "kinematic_root_physical_body_id": realization.kinematic_root_physical_body_id,
+                "kinematic_root_binding_hash": realization.kinematic_root_binding_hash,
+                "physical_pair_classification_bindings": pairs,
+            }
+        )
+    return payload
+
+
+def semantic_candidate_mechanism_hash(
+    realization: PhysicalMechanismRealization,
+) -> str:
+    """Return the restart-recomputable semantic identity for candidate realization@2."""
+    if type(realization) is not PhysicalMechanismRealization:
+        raise TypeError("candidate mechanism identity requires PhysicalMechanismRealization")
+    if realization.schema_version != "physical-mechanism-realization@2":
+        raise ValueError("semantic_candidate_mechanism_hash requires realization@2")
+    validated = PhysicalMechanismRealization.model_validate(
+        realization.model_dump(mode="json")
+    )
+    return _hash_payload(
+        {
+            "mechanism_contract": "candidate-mechanism-semantic@1",
+            "realization_semantics": semantic_candidate_realization_payload(validated),
+        }
+    )

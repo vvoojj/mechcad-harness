@@ -34,6 +34,7 @@ from mechcad_harness.candidates.services import (
     CandidateCurrentnessService,
     CandidateIntegrityError,
     CandidateIntegrityVerifier,
+    candidate_cad_required_raw_source_identities,
 )
 from mechcad_harness.candidates.generated_authority import (
     build_candidate_view,
@@ -67,6 +68,7 @@ from mechcad_harness.models.generated_placement import (
 from mechcad_harness.models.supplied_component_interface import (
     require_authoritatively_consumable_interface,
 )
+from mechcad_harness.step_content_identity import step_content_identity_v1
 from mechcad_harness.state.hashing import canonical_json
 
 
@@ -123,22 +125,51 @@ class CandidateCadRealizationService:
         candidate: MechanicalDesignCandidate,
         synthesis_request: CandidateSynthesisRequest,
         synthesis_policy: CandidateSynthesisPolicy,
-        request: "CandidateCadRealizationRequest",
-    ) -> "CandidateCadStageOutcome":
+        request: "CandidateCadRealizationRequest | CandidateCadRealizationRequestV3",
+    ) -> "CandidateCadStageOutcome | CandidateCadStageOutcomeV2":
         self._verify_candidate(candidate, synthesis_request, synthesis_policy, request)
-
         return self._realize_current(candidate, request)
 
     def validate_realization(self, candidate, request, realization) -> None:
         """Rebuild a candidate CAD result from current trusted inputs."""
         try:
             candidate = MechanicalDesignCandidate.model_validate(candidate.model_dump(mode="json"))
-            request = CandidateCadRealizationRequest.model_validate(request.model_dump(mode="json"))
-            realization = CandidateCadRealization.model_validate(realization.model_dump(mode="json"))
+            semantic_family = (
+                request.schema_version == "candidate-cad-realization-request@3"
+            )
+            if semantic_family:
+                if candidate.schema_version != "mechanical-design-candidate@2":
+                    raise CandidateCadIntegrityError(
+                        "request@3 CAD replay requires candidate@2"
+                    )
+                request = CandidateCadRealizationRequestV3.model_validate(
+                    request.model_dump(mode="json")
+                )
+                realization = CandidateCadRealizationV2.model_validate(
+                    realization.model_dump(mode="json")
+                )
+            else:
+                if candidate.schema_version == "mechanical-design-candidate@2":
+                    raise CandidateCadIntegrityError(
+                        "candidate@2 CAD replay requires request@3"
+                    )
+                request = CandidateCadRealizationRequest.model_validate(
+                    request.model_dump(mode="json")
+                )
+                realization = CandidateCadRealization.model_validate(
+                    realization.model_dump(mode="json")
+                )
             if request.candidate_hash != candidate.candidate_hash:
                 raise CandidateCadIntegrityError("CAD request candidate binding mismatch")
             if request.source_binding != candidate.source_binding:
                 raise CandidateCadIntegrityError("CAD request source binding mismatch")
+            if semantic_family and (
+                request.semantic_source_binding_hash
+                != candidate.semantic_source_binding_hash
+            ):
+                raise CandidateCadIntegrityError(
+                    "CAD request semantic source binding mismatch"
+                )
             if request.source_binding.project_id != self.project_id:
                 raise CandidateCadIntegrityError("candidate source project does not match realization project")
             if realization.candidate_hash != candidate.candidate_hash:
@@ -157,7 +188,9 @@ class CandidateCadRealizationService:
             raise CandidateCadIntegrityError(str(exc) or "candidate CAD replay integrity failure") from exc
 
     def _realize_current(self, candidate, request):
-
+        semantic_family = (
+            request.schema_version == "candidate-cad-realization-request@3"
+        )
         specifications = {
             specification.specification_hash: specification
             for specification in candidate.component_specifications
@@ -167,6 +200,8 @@ class CandidateCadRealizationService:
         imported_components = []
         instances = []
         verified_sources = []
+        verified_source_contents = []
+        verified_source_artifact_hashes: dict[str, str] = {}
         unresolved_reasons: list[CandidateCadStageReason] = []
 
         for mapping in request.mappings:
@@ -186,41 +221,70 @@ class CandidateCadRealizationService:
             )
             if (
                 request.schema_version.endswith("@2")
-                and specification.generated_part is not None
+                or semantic_family
+            ) and (
+                specification.generated_part is not None
                 and derivation is None
             ):
-                return CandidateCadStageOutcome(
-                    status=CandidateCadStageStatus.UNRESOLVED,
+                return self._stage_outcome(
+                    request,
+                    CandidateCadStageStatus.UNRESOLVED,
                     reasons=(CandidateCadStageReason.INVALID_PLACEMENT_PROVENANCE,),
                 )
             if derivation is not None:
                 try:
                     self._derived_placement(request, mapping, specifications, candidate)
                 except CandidateCadIntegrityError:
-                    return CandidateCadStageOutcome(
-                        status=CandidateCadStageStatus.UNRESOLVED,
+                    return self._stage_outcome(
+                        request,
+                        CandidateCadStageStatus.UNRESOLVED,
                         reasons=(CandidateCadStageReason.INVALID_PLACEMENT_PROVENANCE,),
                     )
                 except Exception:
                     unresolved_reasons.append(CandidateCadStageReason.GEOMETRY_UNAVAILABLE)
                     continue
             elif self._placement_error(candidate, mapping):
-                return CandidateCadStageOutcome(
-                    status=CandidateCadStageStatus.UNRESOLVED,
+                return self._stage_outcome(
+                    request,
+                    CandidateCadStageStatus.UNRESOLVED,
                     reasons=(CandidateCadStageReason.INVALID_PLACEMENT_PROVENANCE,),
                 )
 
             if specification.geometry_source is not None:
-                imported, reason = self._resolve_trusted_source(specification, mapping, candidate)
+                if semantic_family:
+                    imported, reason, content_identity, source_artifact_id = (
+                        self._resolve_trusted_source_v2(
+                            specification, mapping, candidate
+                        )
+                    )
+                    if reason is None:
+                        verified_source_contents.append(content_identity)
+                        verified_source_artifact_hashes[source_artifact_id] = (
+                            imported.artifact_hash
+                        )
+                else:
+                    imported, reason = self._resolve_trusted_source(
+                        specification, mapping, candidate
+                    )
                 if reason is not None:
                     unresolved_reasons.append(reason)
                     continue
                 assert imported is not None
                 imported_components.append(imported)
-                verified_sources.append(imported.artifact_hash)
-                expected_representation = imported_component_hash(imported)
+                if not semantic_family:
+                    verified_sources.append(imported.artifact_hash)
+                expected_representation = (
+                    trusted_representation_identity(
+                        slot=mapping.cad_instance_id,
+                        content_identity=content_identity,
+                    )
+                    if semantic_family
+                    else imported_component_hash(imported)
+                )
                 if mapping.representation_identity != expected_representation:
-                    raise CandidateCadIntegrityError("trusted imported representation identity mismatch")
+                    raise CandidateCadIntegrityError(
+                        "trusted imported representation identity mismatch"
+                    )
                 instances.append(
                     CadComponentInstance(
                         instance_id=mapping.cad_instance_id,
@@ -255,10 +319,54 @@ class CandidateCadRealizationService:
             )
 
         if unresolved_reasons:
-            return CandidateCadStageOutcome(
-                status=CandidateCadStageStatus.UNRESOLVED,
+            return self._stage_outcome(
+                request,
+                CandidateCadStageStatus.UNRESOLVED,
                 reasons=tuple(dict.fromkeys(unresolved_reasons)),
             )
+
+        if semantic_family:
+            required_raw_sources = candidate_cad_required_raw_source_identities(
+                candidate,
+                state_manager=self.state_manager,
+                project_id=self.project_id,
+            )
+            verified_raw_hashes = {}
+            for artifact_id, identity in sorted(required_raw_sources.items()):
+                if identity.format != "step":
+                    raise CandidateCadIntegrityError(
+                        "candidate CAD raw source is not a STEP artifact"
+                    )
+                try:
+                    verified = self._lookup_store.read_verified_in_project(
+                        artifact_id,
+                        expected_type=ArtifactType.STEP,
+                        expected_hash=identity.artifact_hash,
+                    )
+                except Exception as exc:
+                    raise CandidateCadIntegrityError(
+                        f"candidate CAD required raw source verification failed: {exc}"
+                    ) from exc
+                if verified is None:
+                    raise CandidateCadIntegrityError(
+                        "candidate CAD required raw source is missing or ambiguous"
+                    )
+                artifact, _ = verified
+                if (
+                    artifact.project_id != candidate.source_binding.project_id
+                    or artifact.artifact_id != artifact_id
+                    or artifact.artifact_type is not ArtifactType.STEP
+                    or artifact.sha256 != identity.artifact_hash
+                    or artifact.bound_revision
+                    != candidate.source_binding.source_revision
+                    or artifact.bound_state_hash
+                    != candidate.source_binding.source_state_hash
+                ):
+                    raise CandidateCadIntegrityError(
+                        "candidate CAD required raw source binding mismatch"
+                    )
+                verified_raw_hashes[artifact_id] = artifact.sha256
+            verified_source_artifact_hashes = verified_raw_hashes
 
         assembly = CadAssemblyProgram(
             assembly_id=f"candidate-cad-{candidate.candidate_hash[7:23]}",
@@ -266,21 +374,59 @@ class CandidateCadRealizationService:
             imported_components=tuple(imported_components),
             instances=tuple(instances),
         )
-        realization = CandidateCadRealization(
-            candidate_hash=candidate.candidate_hash,
-            request_hash=request.request_hash,
-            mappings=request.mappings,
-            assembly=assembly,
-            assembly_hash=assembly_hash(assembly),
-            placement_derivations_hash=request.placement_derivations_hash,
-            verified_source_content_identities=tuple(dict.fromkeys(verified_sources)),
-            compiler_identity=request.compiler_identity,
-            compiler_version=request.compiler_version,
-            provider_identity=self.provider_identity,
-        )
-        return CandidateCadStageOutcome(
-            status=CandidateCadStageStatus.SUCCESS,
+        if semantic_family:
+            ordered_mappings = tuple(
+                sorted(request.mappings, key=lambda item: item.physical_instance_id)
+            )
+            realization = CandidateCadRealizationV2(
+                candidate_hash=candidate.candidate_hash,
+                request_hash=request.request_hash,
+                mappings=ordered_mappings,
+                assembly=assembly,
+                assembly_hash=assembly_hash(assembly),
+                representation_identities=tuple(
+                    mapping.representation_identity for mapping in ordered_mappings
+                ),
+                semantic_placement_derivations_hash=(
+                    request.semantic_placement_derivations_hash
+                ),
+                verified_source_content_identities=tuple(
+                    dict.fromkeys(verified_source_contents)
+                ),
+                verified_source_artifact_hashes=tuple(
+                    verified_source_artifact_hashes.values()
+                ),
+                compiler_identity=request.compiler_identity,
+                compiler_version=request.compiler_version,
+                provider_identity=self.provider_identity,
+            )
+        else:
+            realization = CandidateCadRealization(
+                candidate_hash=candidate.candidate_hash,
+                request_hash=request.request_hash,
+                mappings=request.mappings,
+                assembly=assembly,
+                assembly_hash=assembly_hash(assembly),
+                placement_derivations_hash=request.placement_derivations_hash,
+                verified_source_content_identities=tuple(dict.fromkeys(verified_sources)),
+                compiler_identity=request.compiler_identity,
+                compiler_version=request.compiler_version,
+                provider_identity=self.provider_identity,
+            )
+        return self._stage_outcome(
+            request,
+            CandidateCadStageStatus.SUCCESS,
             realization=realization,
+        )
+
+    @staticmethod
+    def _stage_outcome(request, status, *, realization=None, reasons=()):
+        if request.schema_version == "candidate-cad-realization-request@3":
+            return CandidateCadStageOutcomeV2(
+                status=status, realization=realization, reasons=reasons
+            )
+        return CandidateCadStageOutcome(
+            status=status, realization=realization, reasons=reasons
         )
 
     def _derived_placement(self, request, mapping, specifications, candidate):
@@ -480,7 +626,12 @@ class CandidateCadRealizationService:
             if target_derivation.target_generated_interface_ref is not None
             else target_derivation.target_generated_frame_ref.frame_hash
         )
-        expected_origin = CandidatePlacementOrigin(
+        origin_model = (
+            SemanticPlacementOrigin
+            if type(mapping.placement_origin) is SemanticPlacementOrigin
+            else CandidatePlacementOrigin
+        )
+        expected_origin = origin_model(
             authority="deterministic_derived_relation",
             input_identities=(
                 f"candidate:generated-placement:{target_derivation.derivation_id}",
@@ -501,7 +652,35 @@ class CandidateCadRealizationService:
     def _verify_candidate(self, candidate, synthesis_request, synthesis_policy, request) -> None:
         try:
             CandidateIntegrityVerifier().verify(candidate, synthesis_request, synthesis_policy)
-            CandidateCadRealizationRequest.model_validate(request.model_dump(mode="json"))
+            if (
+                candidate.schema_version == "mechanical-design-candidate@2"
+                and request.schema_version != "candidate-cad-realization-request@3"
+            ):
+                raise CandidateCadIntegrityError(
+                    "candidate@2 CAD realization requires request@3"
+                )
+            if (
+                request.schema_version == "candidate-cad-realization-request@3"
+                and candidate.schema_version != "mechanical-design-candidate@2"
+            ):
+                raise CandidateCadIntegrityError(
+                    "request@3 CAD realization requires candidate@2"
+                )
+            if request.schema_version == "candidate-cad-realization-request@3":
+                CandidateCadRealizationRequestV3.model_validate(
+                    request.model_dump(mode="json")
+                )
+                if (
+                    request.semantic_source_binding_hash
+                    != candidate.semantic_source_binding_hash
+                ):
+                    raise CandidateCadIntegrityError(
+                        "CAD request semantic source binding mismatch"
+                    )
+            else:
+                CandidateCadRealizationRequest.model_validate(
+                    request.model_dump(mode="json")
+                )
             if request.candidate_hash != candidate.candidate_hash:
                 raise CandidateCadIntegrityError("CAD request is bound to a different candidate")
             if request.source_binding != candidate.source_binding:
@@ -529,6 +708,9 @@ class CandidateCadRealizationService:
             raise CandidateCadIntegrityError(str(exc) or "candidate CAD integrity failure") from exc
 
     def _validate_request_input_identities(self, candidate, request) -> None:
+        if request.schema_version == "candidate-cad-realization-request@3":
+            self._validate_request_input_identities_v2(candidate, request)
+            return
         specifications = {
             specification.specification_hash: specification
             for specification in candidate.component_specifications
@@ -605,6 +787,174 @@ class CandidateCadRealizationService:
         if requested_interface_identities != declared_interface_identities:
             raise CandidateCadIntegrityError(
                 "CAD request component interface identities do not match declared realization inputs"
+            )
+
+    def _validate_request_input_identities_v2(self, candidate, request) -> None:
+        specifications = {
+            specification.specification_hash: specification
+            for specification in candidate.component_specifications
+        }
+        components = {
+            component.instance_id: component
+            for component in candidate.realization.components
+        }
+        candidate_design_variable_identities = {
+            f"candidate:design-variable:{variable.name}"
+            for variable in candidate.design_variables
+        }
+        candidate_interface_identities = {
+            f"candidate:component-interface:{component.instance_id}:{interface}"
+            for component in candidate.realization.components
+            for interface in (
+                set(component.interfaces)
+                & set(specifications[component.specification_hash].interfaces)
+            )
+        }
+        declared_inputs = semantic_declared_inputs(request.mappings)
+
+        for mapping in request.mappings:
+            component = components[mapping.physical_instance_id]
+            specification = specifications[component.specification_hash]
+            source = specification.geometry_source
+            if mapping.fidelity is CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY:
+                if source is None or mapping.source_geometry_identity is None:
+                    raise CandidateCadIntegrityError(
+                        "trusted CAD mapping has no authoritative semantic source"
+                    )
+                if (
+                    source.content_identity in (None, "pending")
+                    or source.content_identity_algorithm != "step-content-identity@1"
+                    or source.semantic_reference_hash in (None, "pending")
+                    or mapping.source_geometry_identity.content_identity
+                    != source.content_identity
+                    or mapping.source_geometry_identity.content_identity_algorithm
+                    != source.content_identity_algorithm
+                    or mapping.geometry_definition_identities
+                    != (source.content_identity,)
+                ):
+                    raise CandidateCadIntegrityError(
+                        "trusted CAD mapping semantic source does not match its component specification"
+                    )
+            elif mapping.source_geometry_identity is not None:
+                raise CandidateCadIntegrityError(
+                    "non-source CAD mapping cannot claim semantic source geometry"
+                )
+
+            if (
+                specification.generated_part is not None
+                and mapping.fidelity is CandidateGeometryFidelity.EXACT_GENERATED_GEOMETRY
+                and mapping.geometry_definition_identities
+                != generated_geometry_definition_identities(specification.generated_part)
+            ):
+                raise CandidateCadIntegrityError(
+                    "generated geometry definition identities mismatch"
+                )
+
+            origin = mapping.placement_origin
+            if mapping.placement != origin.transform:
+                raise CandidateCadIntegrityError(
+                    "CAD placement transform does not match semantic placement provenance"
+                )
+            placement_variables = {
+                f"candidate:design-variable:{variable.name}"
+                for variable in candidate.design_variables
+                if variable.name in {
+                    f"{mapping.physical_instance_id}.placement.{axis}"
+                    for axis in ("x_mm", "y_mm", "z_mm")
+                }
+                or variable.name in {
+                    f"placement.{mapping.physical_instance_id}.{axis}"
+                    for axis in ("x_mm", "y_mm", "z_mm")
+                }
+            }
+            component_interfaces = {
+                f"candidate:component-interface:{mapping.physical_instance_id}:{interface}"
+                for interface in set(component.interfaces) & set(specification.interfaces)
+            }
+            source_authority_inputs = set()
+            if source is not None:
+                source_authority_inputs = {
+                    source.content_identity,
+                    f"candidate:source-authority:{source.source_identity}",
+                }
+            allowed = {
+                f"candidate:/realization/components/{mapping.physical_instance_id}",
+                f"candidate:placement:{mapping.physical_instance_id}",
+                *placement_variables,
+                *component_interfaces,
+                f"candidate:policy:{request.representation_policy_version}",
+                *source_authority_inputs,
+            }
+            derivation = next(
+                (
+                    item
+                    for item in request.placement_derivations
+                    if item.target_physical_instance_id == mapping.physical_instance_id
+                ),
+                None,
+            )
+            if derivation is not None:
+                target_hash = (
+                    derivation.target_generated_interface_ref.interface_hash
+                    if derivation.target_generated_interface_ref is not None
+                    else derivation.target_generated_frame_ref.frame_hash
+                )
+                expected_inputs = {
+                    f"candidate:generated-placement:{derivation.derivation_id}",
+                    derivation.source_interface_ref.interface_hash,
+                    target_hash,
+                    *(item.input_hash for item in derivation.inputs),
+                    *(() if derivation.rotation is None else (derivation.rotation.input_hash,)),
+                }
+                if (
+                    origin.authority != "deterministic_derived_relation"
+                    or origin.derivation != derivation.rule_id
+                    or set(origin.input_identities) != expected_inputs
+                    or len(origin.input_identities) != len(expected_inputs)
+                ):
+                    raise CandidateCadIntegrityError(
+                        "CAD mapping contains foreign semantic placement provenance"
+                    )
+            else:
+                identities = set(origin.input_identities)
+                if not identities <= allowed:
+                    raise CandidateCadIntegrityError(
+                        "CAD mapping contains foreign semantic placement provenance"
+                    )
+                authority_inputs = {
+                    "source_authority": identities & source_authority_inputs,
+                    "candidate_design_variable": identities & placement_variables,
+                    "candidate_interface": identities & component_interfaces,
+                    "explicit_policy_assumption": identities
+                    & {f"candidate:policy:{request.representation_policy_version}"},
+                }
+                required = authority_inputs.get(origin.authority)
+                if required is not None and not required:
+                    raise CandidateCadIntegrityError(
+                        "CAD placement authority is not owned by its semantic mapping"
+                    )
+
+        requested_design_variable_identities = set(request.design_variable_identities)
+        requested_interface_identities = set(request.component_interface_identities)
+        if not requested_design_variable_identities <= candidate_design_variable_identities:
+            raise CandidateCadIntegrityError(
+                "CAD request contains a foreign design variable identity"
+            )
+        if not requested_interface_identities <= candidate_interface_identities:
+            raise CandidateCadIntegrityError(
+                "CAD request contains a foreign component interface identity"
+            )
+        if requested_design_variable_identities != (
+            declared_inputs & candidate_design_variable_identities
+        ):
+            raise CandidateCadIntegrityError(
+                "CAD request design variable identities do not match declared inputs"
+            )
+        if requested_interface_identities != (
+            declared_inputs & candidate_interface_identities
+        ):
+            raise CandidateCadIntegrityError(
+                "CAD request component interface identities do not match declared inputs"
             )
 
     @staticmethod
@@ -725,6 +1075,77 @@ class CandidateCadRealizationService:
         except ImportedComponentError as exc:
             raise CandidateCadIntegrityError(str(exc)) from exc
         return imported, None
+
+    def _resolve_trusted_source_v2(self, specification, mapping, candidate):
+        source = specification.geometry_source
+        assert source is not None
+        if mapping.fidelity is not CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY:
+            return None, CandidateCadStageReason.UNSUPPORTED_REPRESENTATION, None, None
+        if (
+            source.content_identity in (None, "pending")
+            or source.content_identity_algorithm != "step-content-identity@1"
+            or source.semantic_reference_hash in (None, "pending")
+        ):
+            raise CandidateCadIntegrityError(
+                "candidate source geometry semantic identity is unbound"
+            )
+        try:
+            verified = self._lookup_store.read_verified_in_project(
+                source.artifact_id,
+                expected_type=ArtifactType.STEP,
+                expected_hash=source.artifact_hash,
+            )
+        except Exception as exc:
+            raise CandidateCadIntegrityError(
+                f"trusted source artifact verification failed: {exc}"
+            ) from exc
+        if verified is None:
+            raise CandidateCadIntegrityError(
+                "trusted source artifact is missing or failed integrity verification"
+            )
+        artifact, raw_bytes = verified
+        if (
+            artifact.project_id != candidate.source_binding.project_id
+            or artifact.artifact_id != source.artifact_id
+            or artifact.artifact_type is not ArtifactType.STEP
+            or artifact.sha256 != source.artifact_hash
+            or artifact.bound_revision != candidate.source_binding.source_revision
+            or artifact.bound_state_hash != candidate.source_binding.source_state_hash
+        ):
+            raise CandidateCadIntegrityError("trusted source artifact binding mismatch")
+
+        content_identity = step_content_identity_v1(raw_bytes).content_hash
+        if content_identity != source.content_identity:
+            raise CandidateCadIntegrityError(
+                "trusted source semantic content identity mismatch"
+            )
+        expected_semantic_source = SemanticSourceGeometryIdentity(
+            content_identity=content_identity,
+            content_identity_algorithm="step-content-identity@1",
+        )
+        if (
+            mapping.source_geometry_identity != expected_semantic_source
+            or mapping.geometry_definition_identities != (content_identity,)
+        ):
+            raise CandidateCadIntegrityError(
+                "candidate CAD mapping semantic source identity mismatch"
+            )
+        try:
+            store = ArtifactStore(
+                self.workspace,
+                project_id=artifact.project_id,
+                run_id=artifact.run_id,
+                task_id=artifact.task_id,
+            )
+            imported = resolve_imported_component(
+                source.artifact_id,
+                source.artifact_hash,
+                store,
+                component_id=mapping.cad_instance_id,
+            )
+        except ImportedComponentError as exc:
+            raise CandidateCadIntegrityError(str(exc)) from exc
+        return imported, None, content_identity, artifact.artifact_id
 
     def _compile_generated(self, specification, mapping, candidate):
         if specification.generated_part is not None:
@@ -1244,4 +1665,756 @@ class CandidateCadStageOutcome(CandidateCadModel):
             object.__setattr__(self, "outcome_hash", expected)
         elif self.outcome_hash != expected:
             raise ValueError("candidate CAD stage outcome hash mismatch")
+        return self
+
+
+# ---- Deterministic STEP content identity: candidate CAD @2/@3 family (P3) ----
+#
+# New semantic records are additive and dispatched from the typed request@3
+# through the shared realization lowering. Every legacy @1/@2 record, hash
+# payload, and validator above remains frozen for replay.
+
+_SEMANTIC_CONTENT_IDENTITY_ALGORITHM = "step-content-identity@1"
+_TRUSTED_REPRESENTATION_CONTRACT = "trusted-source-geometry@1"
+
+
+def trusted_representation_identity(
+    *,
+    slot: str,
+    content_identity: str,
+    content_identity_algorithm: str = _SEMANTIC_CONTENT_IDENTITY_ALGORITHM,
+) -> str:
+    """Compute the exact trusted representation identity (Spec §8).
+
+    Pure semantic projection over already-bound values. No raw artifact ID or
+    SHA, no revision/state, no imported-component hash, no path, and no
+    run/task identity enters.
+    """
+
+    if not isinstance(slot, str) or not slot.strip():
+        raise ValueError("trusted representation slot must not be empty")
+    _require_hash(content_identity)
+    if content_identity_algorithm != _SEMANTIC_CONTENT_IDENTITY_ALGORITHM:
+        raise ValueError("unsupported semantic geometry identity algorithm")
+    payload = {
+        "representation_contract": _TRUSTED_REPRESENTATION_CONTRACT,
+        "slot": slot,
+        "content_identity": content_identity,
+        "content_identity_algorithm": content_identity_algorithm,
+    }
+    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+def collapse_placement_origin_inputs(
+    authority: str,
+    input_identities: tuple[str, ...] | list[str],
+    *,
+    content_by_artifact,
+) -> tuple[str, ...]:
+    """Collapse legacy placement provenance tokens to semantic tokens (Spec §8).
+
+    For `source_authority` origins, raw artifact IDs/hashes resolve through the
+    caller-supplied bound content map to the same single content token (which
+    deduplicates); `candidate:`-scoped tokens are retained as-is; anything
+    else fails closed. Other authorities retain their tokens unchanged.
+    Output is lexicographically sorted with post-transformation duplicates
+    removed by construction.
+    """
+
+    tokens: list[str] = []
+    for token in tuple(input_identities):
+        if not isinstance(token, str) or not token.strip():
+            raise ValueError("placement provenance input identities must not be empty")
+        if authority == "source_authority" and not token.startswith("candidate:"):
+            content = content_by_artifact.get(token)
+            if content is None:
+                raise ValueError(
+                    f"placement origin input does not resolve to bound content: {token}"
+                )
+            tokens.append(_require_hash(content))
+        else:
+            tokens.append(token)
+    return tuple(sorted(set(tokens)))
+
+
+def semantic_placement_origin_payload(
+    *,
+    authority: str,
+    input_identities,
+    derivation: str,
+    transform: CadRigidTransform,
+) -> dict:
+    return {
+        "authority": authority,
+        "input_identities": list(input_identities),
+        "derivation": derivation,
+        "transform": transform.model_dump(mode="json"),
+    }
+
+
+def semantic_placement_origin_hash(
+    *,
+    authority: str,
+    input_identities,
+    derivation: str,
+    transform: CadRigidTransform,
+) -> str:
+    return "sha256:" + hashlib.sha256(
+        canonical_json(
+            semantic_placement_origin_payload(
+                authority=authority,
+                input_identities=input_identities,
+                derivation=derivation,
+                transform=transform,
+            )
+        )
+    ).hexdigest()
+
+
+def bind_semantic_placement_origin(
+    authority: str,
+    legacy_input_identities,
+    derivation: str,
+    transform: CadRigidTransform,
+    *,
+    content_by_artifact,
+) -> "SemanticPlacementOrigin":
+    """Build a semantic placement origin from legacy provenance tokens."""
+
+    return SemanticPlacementOrigin(
+        authority=authority,
+        input_identities=collapse_placement_origin_inputs(
+            authority, legacy_input_identities, content_by_artifact=content_by_artifact
+        ),
+        derivation=derivation,
+        transform=transform,
+    )
+
+
+class SemanticSourceGeometryIdentity(CandidateCadModel):
+    content_identity: str
+    content_identity_algorithm: Literal["step-content-identity@1"] = (
+        "step-content-identity@1"
+    )
+
+    _validate_content = field_validator("content_identity")(_require_hash)
+
+
+class SemanticPlacementOrigin(CandidateCadModel):
+    authority: Literal[
+        "source_authority",
+        "candidate_design_variable",
+        "deterministic_derived_relation",
+        "explicit_policy_assumption",
+    ]
+    input_identities: tuple[str, ...] = Field(min_length=1)
+    derivation: str = Field(min_length=1)
+    transform: CadRigidTransform
+    origin_hash: str = "pending"
+
+    _validate_hash = field_validator("origin_hash")(_require_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_semantic_origin(self) -> "SemanticPlacementOrigin":
+        if any(not value.strip() for value in self.input_identities):
+            raise ValueError("placement provenance input identities must not be empty")
+        if len(set(self.input_identities)) != len(self.input_identities):
+            raise ValueError("semantic placement origin input identities must be unique")
+        object.__setattr__(
+            self, "input_identities", tuple(sorted(self.input_identities))
+        )
+        if not self.derivation.strip():
+            raise ValueError("placement origin derivation must not be empty")
+        expected = semantic_placement_origin_hash(
+            authority=self.authority,
+            input_identities=self.input_identities,
+            derivation=self.derivation,
+            transform=self.transform,
+        )
+        if self.origin_hash == "pending":
+            object.__setattr__(self, "origin_hash", expected)
+        elif self.origin_hash != expected:
+            raise ValueError("semantic placement origin hash mismatch")
+        return self
+
+
+def candidate_mapping_hash_v2(mapping: "CandidateCadInstanceMappingV2") -> str:
+    """Compute the exact `candidate-cad-instance-mapping@2` hash (Spec §8)."""
+
+    source = mapping.source_geometry_identity
+    payload = {
+        "schema_version": mapping.schema_version,
+        "candidate_hash": mapping.candidate_hash,
+        "physical_instance_id": mapping.physical_instance_id,
+        "cad_instance_id": mapping.cad_instance_id,
+        "fidelity": mapping.fidelity.value,
+        "representation_identity": mapping.representation_identity,
+        "source_geometry_identity": (
+            None
+            if source is None
+            else {
+                "content_identity": source.content_identity,
+                "content_identity_algorithm": source.content_identity_algorithm,
+            }
+        ),
+        "geometry_definition_identities": list(mapping.geometry_definition_identities),
+        "placement": mapping.placement.model_dump(mode="json"),
+        "placement_origin": semantic_placement_origin_payload(
+            authority=mapping.placement_origin.authority,
+            input_identities=mapping.placement_origin.input_identities,
+            derivation=mapping.placement_origin.derivation,
+            transform=mapping.placement_origin.transform,
+        ),
+    }
+    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+class CandidateCadInstanceMappingV2(CandidateCadModel):
+    schema_version: Literal["candidate-cad-instance-mapping@2"] = (
+        "candidate-cad-instance-mapping@2"
+    )
+    candidate_hash: str
+    physical_instance_id: str = Field(min_length=1)
+    cad_instance_id: str = Field(min_length=1)
+    fidelity: CandidateGeometryFidelity
+    representation_identity: str
+    source_geometry_identity: SemanticSourceGeometryIdentity | None = None
+    geometry_definition_identities: tuple[str, ...] = Field(min_length=1)
+    placement: CadRigidTransform
+    placement_origin: SemanticPlacementOrigin
+    mapping_hash: str = "pending"
+
+    _validate_hashes = field_validator("candidate_hash", "representation_identity")(
+        _require_hash
+    )
+    _validate_mapping_hash = field_validator("mapping_hash")(_require_hash_or_pending)
+    _validate_ids = field_validator("physical_instance_id", "cad_instance_id")(
+        _require_nonblank
+    )
+
+    @model_validator(mode="after")
+    def validate_mapping_v2(self) -> "CandidateCadInstanceMappingV2":
+        if any(not value.strip() for value in self.geometry_definition_identities):
+            raise ValueError("geometry definition identities must not be empty")
+        if type(self.placement_origin) is not SemanticPlacementOrigin:
+            raise ValueError("candidate-cad-instance-mapping@2 requires a semantic origin")
+        if self.placement != self.placement_origin.transform:
+            raise ValueError("placement transform must match its provenance")
+        source = self.source_geometry_identity
+        if self.fidelity is CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY:
+            if source is None:
+                raise ValueError("trusted source geometry requires source geometry identity")
+            if self.geometry_definition_identities != (source.content_identity,):
+                raise ValueError(
+                    "trusted source geometry requires the singular content tuple"
+                )
+            expected_representation = trusted_representation_identity(
+                slot=self.cad_instance_id,
+                content_identity=source.content_identity,
+                content_identity_algorithm=source.content_identity_algorithm,
+            )
+            if self.representation_identity != expected_representation:
+                raise ValueError("trusted representation identity mismatch")
+        else:
+            if source is not None:
+                raise ValueError("non-source fidelity cannot claim source geometry")
+            if self.fidelity is CandidateGeometryFidelity.EXACT_GENERATED_GEOMETRY:
+                if len(set(self.geometry_definition_identities)) != len(
+                    self.geometry_definition_identities
+                ):
+                    raise ValueError("generated geometry definition identities must be unique")
+                object.__setattr__(
+                    self,
+                    "geometry_definition_identities",
+                    tuple(sorted(self.geometry_definition_identities)),
+                )
+        expected = candidate_mapping_hash_v2(self)
+        if self.mapping_hash == "pending":
+            object.__setattr__(self, "mapping_hash", expected)
+        elif self.mapping_hash != expected:
+            raise ValueError("candidate CAD mapping@2 hash mismatch")
+        return self
+
+
+def semantic_derivation_projection(derivation: GeneratedPlacementDerivation) -> dict:
+    """Project one placement derivation to its semantic closure (Spec §7).
+
+    Listed fields only; the legacy `derivation_hash` self-hash is excluded;
+    inputs commit by recomputed `input_hash` sorted by `input_id`; rotation
+    commits by `input_hash` or null. No projection version is embedded: the
+    subprojection is versioned by the containing request contract.
+    """
+
+    def _interface_ref(reference):
+        if reference is None:
+            return None
+        return {
+            "interface_id": reference.interface_id,
+            "interface_hash": reference.interface_hash,
+        }
+
+    def _frame_ref(reference):
+        if reference is None:
+            return None
+        return {
+            "frame_id": reference.frame_id,
+            "frame_hash": reference.frame_hash,
+        }
+
+    placement_ref = derivation.source_placement_ref
+    placement_payload: dict = {"kind": placement_ref.kind}
+    if placement_ref.kind == "derivation":
+        placement_payload["derivation_id"] = placement_ref.derivation_id
+    rotation = derivation.rotation
+    return {
+        "derivation_id": derivation.derivation_id,
+        "rule_id": derivation.rule_id,
+        "source_physical_instance_id": derivation.source_physical_instance_id,
+        "source_interface_ref": _interface_ref(derivation.source_interface_ref),
+        "source_frame_ref": _frame_ref(derivation.source_frame_ref),
+        "source_placement_ref": placement_payload,
+        "target_physical_instance_id": derivation.target_physical_instance_id,
+        "target_generated_interface_ref": _interface_ref(
+            derivation.target_generated_interface_ref
+        ),
+        "target_generated_frame_ref": _frame_ref(
+            derivation.target_generated_frame_ref
+        ),
+        "inputs": [
+            item.input_hash
+            for item in sorted(derivation.inputs, key=lambda item: item.input_id)
+        ],
+        "rotation": None if rotation is None else rotation.input_hash,
+    }
+
+
+def semantic_placement_derivations_hash(
+    derivations: tuple[GeneratedPlacementDerivation, ...] | list[GeneratedPlacementDerivation],
+) -> str:
+    """Hash the `derivation_id`-sorted semantic derivation closure (Spec §7).
+
+    Required even for the empty tuple (hash of the empty canonical tuple).
+    """
+
+    from mechcad_harness.models.generated_placement import _validate_acyclic
+
+    records = tuple(derivations)
+    _validate_acyclic(records)
+    projections = sorted(
+        (semantic_derivation_projection(item) for item in records),
+        key=lambda projection: projection["derivation_id"],
+    )
+    return "sha256:" + hashlib.sha256(canonical_json(projections)).hexdigest()
+
+
+def semantic_declared_inputs(
+    mappings,
+) -> set[str]:
+    """Union semantic geometry-definition and placement-origin inputs (Spec §7)."""
+
+    declared: set[str] = set()
+    for mapping in mappings:
+        declared.update(mapping.geometry_definition_identities)
+        declared.update(mapping.placement_origin.input_identities)
+    return declared
+
+
+def candidate_request_hash_v3(request: "CandidateCadRealizationRequestV3") -> str:
+    """Compute the exact `candidate-cad-realization-request@3` hash (Spec §7)."""
+
+    if request.schema_version != "candidate-cad-realization-request@3":
+        raise ValueError("candidate_request_hash_v3 requires request@3")
+    if request.semantic_source_binding_hash == "pending":
+        raise ValueError("candidate CAD semantic source binding is pending")
+    ordered = sorted(request.mappings, key=lambda item: item.physical_instance_id)
+    payload = {
+        "schema_version": request.schema_version,
+        "candidate_hash": request.candidate_hash,
+        "semantic_source_binding_hash": request.semantic_source_binding_hash,
+        "representation_policy_version": request.representation_policy_version,
+        "compiler_identity": request.compiler_identity,
+        "compiler_version": request.compiler_version,
+        "candidate_instance_ids": list(request.candidate_instance_ids),
+        "mappings": [mapping.mapping_hash for mapping in ordered],
+        "semantic_placement_derivations_hash": request.semantic_placement_derivations_hash,
+        "design_variable_identities": list(request.design_variable_identities),
+        "component_interface_identities": list(request.component_interface_identities),
+    }
+    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+class CandidateCadRealizationRequestV3(CandidateCadModel):
+    schema_version: Literal["candidate-cad-realization-request@3"] = (
+        "candidate-cad-realization-request@3"
+    )
+    candidate_hash: str
+    source_binding: CandidateSourceBinding
+    source_binding_hash: str = "pending"
+    semantic_source_binding_hash: str = "pending"
+    representation_policy_version: str = Field(min_length=1)
+    compiler_identity: str = Field(min_length=1)
+    compiler_version: str = Field(min_length=1)
+    candidate_instance_ids: tuple[str, ...] = Field(min_length=1)
+    mappings: tuple[CandidateCadInstanceMappingV2, ...] = Field(min_length=1)
+    placement_derivations: tuple[GeneratedPlacementDerivation, ...] = ()
+    semantic_placement_derivations_hash: str = "pending"
+    design_variable_identities: tuple[str, ...] = ()
+    component_interface_identities: tuple[str, ...] = ()
+    request_hash: str = "pending"
+
+    _validate_hashes = field_validator("candidate_hash")(_require_hash)
+    _validate_derived_hashes = field_validator(
+        "source_binding_hash", "semantic_source_binding_hash", "request_hash"
+    )(_require_hash_or_pending)
+    _validate_semantic_derivations_hash = field_validator(
+        "semantic_placement_derivations_hash"
+    )(_require_hash_or_pending)
+    _validate_provenance = field_validator(
+        "representation_policy_version", "compiler_identity", "compiler_version"
+    )(_require_nonblank)
+
+    @model_validator(mode="after")
+    def validate_manifest_and_hash_v3(self) -> "CandidateCadRealizationRequestV3":
+        if self.representation_policy_version != "candidate-cad-policy@1":
+            raise ValueError("candidate-cad-realization-request@3 requires policy@1")
+        if (
+            self.compiler_identity != "candidate-cad-compiler"
+            or self.compiler_version != "1"
+        ):
+            raise ValueError("candidate-cad-realization-request@3 requires compiler@1")
+        if any(not value.strip() for value in self.candidate_instance_ids):
+            raise ValueError("candidate physical instance IDs must not be empty")
+        if len(set(self.candidate_instance_ids)) != len(self.candidate_instance_ids):
+            raise ValueError("candidate physical instance IDs must be unique")
+        object.__setattr__(
+            self, "candidate_instance_ids", tuple(sorted(self.candidate_instance_ids))
+        )
+        physical_ids = tuple(mapping.physical_instance_id for mapping in self.mappings)
+        if len(set(physical_ids)) != len(physical_ids):
+            raise ValueError("candidate physical instance mappings must be unique")
+        cad_ids = tuple(mapping.cad_instance_id for mapping in self.mappings)
+        if len(set(cad_ids)) != len(cad_ids):
+            raise ValueError("CAD instance mappings must be unique")
+        if set(physical_ids) != set(self.candidate_instance_ids):
+            raise ValueError("mapping must cover every candidate physical instance")
+        if any(mapping.candidate_hash != self.candidate_hash for mapping in self.mappings):
+            raise ValueError("CAD mapping is bound to a different candidate")
+        object.__setattr__(
+            self,
+            "mappings",
+            tuple(sorted(self.mappings, key=lambda item: item.physical_instance_id)),
+        )
+        expected_source_hash = _hash(self.source_binding)
+        if self.source_binding_hash == "pending":
+            object.__setattr__(self, "source_binding_hash", expected_source_hash)
+        elif self.source_binding_hash != expected_source_hash:
+            raise ValueError("candidate source binding hash mismatch")
+        derivation_ids = tuple(item.derivation_id for item in self.placement_derivations)
+        if len(set(derivation_ids)) != len(derivation_ids):
+            raise ValueError("placement derivation IDs must be unique")
+        object.__setattr__(
+            self,
+            "placement_derivations",
+            tuple(sorted(self.placement_derivations, key=lambda item: item.derivation_id)),
+        )
+        expected_derivations_hash = semantic_placement_derivations_hash(
+            self.placement_derivations
+        )
+        if self.semantic_placement_derivations_hash == "pending":
+            object.__setattr__(
+                self,
+                "semantic_placement_derivations_hash",
+                expected_derivations_hash,
+            )
+        elif self.semantic_placement_derivations_hash != expected_derivations_hash:
+            raise ValueError("semantic placement derivations hash mismatch")
+        declared = semantic_declared_inputs(self.mappings)
+        for field_name, universe in (
+            ("design_variable_identities", "candidate:design-variable:"),
+            ("component_interface_identities", "candidate:component-interface:"),
+        ):
+            values = getattr(self, field_name)
+            if any(not value.strip() for value in values):
+                raise ValueError("candidate realization input identities must not be empty")
+            if len(set(values)) != len(values):
+                raise ValueError("candidate realization input identities must be unique")
+            object.__setattr__(self, field_name, tuple(sorted(values)))
+            expected_identities = tuple(
+                sorted(value for value in declared if value.startswith(universe))
+            )
+            if tuple(getattr(self, field_name)) != expected_identities:
+                raise ValueError(
+                    "candidate realization input identities do not match declared inputs"
+                )
+        if self.semantic_source_binding_hash == "pending":
+            if self.request_hash != "pending":
+                raise ValueError("unbound candidate-cad-realization-request@3 cannot have a request hash")
+        else:
+            expected = candidate_request_hash_v3(self)
+            if self.request_hash == "pending":
+                object.__setattr__(self, "request_hash", expected)
+            elif self.request_hash != expected:
+                raise ValueError("candidate CAD realization request@3 hash mismatch")
+        return self
+
+
+def semantic_assembly_hash(assembly: CadAssemblyProgram, mappings) -> str:
+    """Compute the §10 semantic assembly identity (option A).
+
+    Parts commit by program hash (sorted by `part_id`); trusted sources commit
+    by bound content identity (sorted by the mapping slot key); instances
+    commit by placement (sorted by `instance_id`). Raw artifact IDs/hashes,
+    revisions, state hashes, paths, and the legacy raw `assembly_hash` never
+    enter. Duplicate keys are rejected by `CadAssemblyProgram` validation.
+    """
+
+    trusted_sources = []
+    for mapping in sorted(mappings, key=lambda item: item.cad_instance_id):
+        source = mapping.source_geometry_identity
+        if source is None:
+            continue
+        trusted_sources.append(
+            {
+                "slot": mapping.cad_instance_id,
+                "content_identity": source.content_identity,
+                "content_identity_algorithm": source.content_identity_algorithm,
+            }
+        )
+    payload = {
+        "parts": [
+            {"part_id": part.part_id, "program_hash": cad_program_hash(part)}
+            for part in sorted(assembly.parts, key=lambda part: part.part_id)
+        ],
+        "trusted_sources": trusted_sources,
+        "instances": [
+            {
+                "instance_id": instance.instance_id,
+                "part_slot_ref": instance.part_id,
+                "placement": instance.placement.model_dump(mode="json"),
+            }
+            for instance in sorted(assembly.instances, key=lambda item: item.instance_id)
+        ],
+    }
+    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+def candidate_realization_hash_v2(realization: "CandidateCadRealizationV2") -> str:
+    """Compute the exact `candidate-cad-realization@2` hash (Spec §9)."""
+
+    if realization.schema_version != "candidate-cad-realization@2":
+        raise ValueError("candidate_realization_hash_v2 requires realization@2")
+    ordered = sorted(realization.mappings, key=lambda item: item.physical_instance_id)
+    payload = {
+        "schema_version": realization.schema_version,
+        "candidate_hash": realization.candidate_hash,
+        "request_hash": realization.request_hash,
+        "mapping_hashes": [mapping.mapping_hash for mapping in ordered],
+        "semantic_assembly_hash": semantic_assembly_hash(
+            realization.assembly, realization.mappings
+        ),
+        "verified_source_content_identities": list(
+            realization.verified_source_content_identities
+        ),
+        "representation_identities": list(realization.representation_identities),
+        "semantic_placement_derivations_hash": (
+            realization.semantic_placement_derivations_hash
+        ),
+        "compiler_identity": realization.compiler_identity,
+        "compiler_version": realization.compiler_version,
+    }
+    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+class CandidateCadRealizationV2(CandidateCadModel):
+    schema_version: Literal["candidate-cad-realization@2"] = (
+        "candidate-cad-realization@2"
+    )
+    candidate_hash: str
+    request_hash: str
+    mappings: tuple[CandidateCadInstanceMappingV2, ...] = Field(min_length=1)
+    assembly: CadAssemblyProgram
+    assembly_hash: str
+    representation_identities: tuple[str, ...] = ()
+    semantic_placement_derivations_hash: str = "pending"
+    verified_source_content_identities: tuple[str, ...] = ()
+    verified_source_artifact_hashes: tuple[str, ...] = ()
+    compiler_identity: str = Field(min_length=1)
+    compiler_version: str = Field(min_length=1)
+    provider_identity: str = Field(min_length=1)
+    realization_hash: str = "pending"
+
+    _validate_hashes = field_validator(
+        "candidate_hash", "request_hash", "assembly_hash"
+    )(_require_hash)
+    _validate_derivations_hash = field_validator("semantic_placement_derivations_hash")(
+        _require_hash_or_pending
+    )
+    _validate_content_identities = field_validator("verified_source_content_identities")(
+        lambda values: tuple(_require_hash(value) for value in values)
+    )
+    _validate_artifact_hashes = field_validator("verified_source_artifact_hashes")(
+        lambda values: tuple(_require_hash(value) for value in values)
+    )
+    _validate_realization_hash = field_validator("realization_hash")(
+        _require_hash_or_pending
+    )
+    _validate_provenance = field_validator(
+        "compiler_identity", "compiler_version", "provider_identity"
+    )(_require_nonblank)
+
+    @model_validator(mode="after")
+    def validate_realization_v2(self) -> "CandidateCadRealizationV2":
+        if self.compiler_identity != "candidate-cad-compiler":
+            raise ValueError("candidate-cad-realization@2 requires compiler@1")
+        if self.compiler_version != "1":
+            raise ValueError("candidate-cad-realization@2 requires compiler@1")
+        for mapping in self.mappings:
+            if type(mapping) is not CandidateCadInstanceMappingV2:
+                raise ValueError(
+                    "candidate-cad-realization@2 requires mapping@2 records"
+                )
+        physical_ids = tuple(mapping.physical_instance_id for mapping in self.mappings)
+        cad_ids = tuple(mapping.cad_instance_id for mapping in self.mappings)
+        if len(set(physical_ids)) != len(physical_ids):
+            raise ValueError("candidate physical instance mappings must be unique")
+        if len(set(cad_ids)) != len(cad_ids):
+            raise ValueError("CAD instance mappings must be unique")
+        if any(mapping.candidate_hash != self.candidate_hash for mapping in self.mappings):
+            raise ValueError("CAD mapping is bound to a different candidate")
+        object.__setattr__(
+            self,
+            "mappings",
+            tuple(sorted(self.mappings, key=lambda item: item.physical_instance_id)),
+        )
+        assembly_instances = {
+            instance.instance_id: instance for instance in self.assembly.instances
+        }
+        if set(cad_ids) != set(assembly_instances):
+            raise ValueError("candidate CAD assembly instances must match mappings")
+        if any(
+            assembly_instances[mapping.cad_instance_id].placement != mapping.placement
+            for mapping in self.mappings
+        ):
+            raise ValueError("candidate CAD assembly placement must match mapping")
+        parts_by_id = {part.part_id for part in self.assembly.parts}
+        imported_by_id = {
+            component.component_id for component in self.assembly.imported_components
+        }
+        for mapping in self.mappings:
+            instance = assembly_instances[mapping.cad_instance_id]
+            if mapping.fidelity is CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY:
+                if instance.part_id not in imported_by_id:
+                    raise ValueError(
+                        "trusted CAD mapping must reference an imported assembly component"
+                    )
+                source = mapping.source_geometry_identity
+                assert source is not None
+                expected_representation = trusted_representation_identity(
+                    slot=mapping.cad_instance_id,
+                    content_identity=source.content_identity,
+                    content_identity_algorithm=source.content_identity_algorithm,
+                )
+                if mapping.representation_identity != expected_representation:
+                    raise ValueError("candidate CAD trusted representation identity mismatch")
+            elif instance.part_id not in parts_by_id:
+                raise ValueError(
+                    "non-source CAD mapping must reference a CadPartProgram assembly component"
+                )
+        if self.assembly_hash != assembly_hash(self.assembly):
+            raise ValueError("candidate CAD assembly hash mismatch")
+        if tuple(self.representation_identities) != tuple(
+            mapping.representation_identity for mapping in self.mappings
+        ):
+            raise ValueError("candidate CAD representation manifest mismatch")
+        trusted_contents = tuple(
+            mapping.source_geometry_identity.content_identity
+            for mapping in self.mappings
+            if mapping.fidelity is CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY
+        )
+        for value in self.verified_source_content_identities:
+            _require_hash(value)
+        if tuple(dict.fromkeys(trusted_contents)) != tuple(
+            self.verified_source_content_identities
+        ):
+            if trusted_contents:
+                raise ValueError(
+                    "trusted source geometry identity must match verified source content identity"
+                )
+            if self.verified_source_content_identities:
+                raise ValueError("non-source CAD realization cannot claim verified source content")
+        expected = candidate_realization_hash_v2(self)
+        if self.realization_hash == "pending":
+            object.__setattr__(self, "realization_hash", expected)
+        elif self.realization_hash != expected:
+            raise ValueError("candidate CAD realization@2 hash mismatch")
+        return self
+
+
+def candidate_cad_stage_outcome_hash_v2(outcome: "CandidateCadStageOutcomeV2") -> str:
+    """Compute the exact `candidate-cad-stage-outcome@2` hash (Spec §9)."""
+
+    if outcome.schema_version != "candidate-cad-stage-outcome@2":
+        raise ValueError("candidate_cad_stage_outcome_hash_v2 requires outcome@2")
+    payload = {
+        "schema_version": outcome.schema_version,
+        "status": outcome.status.value,
+        "realization_hash": outcome.realization_hash,
+        "reasons": [reason.value for reason in outcome.reasons],
+    }
+    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+class CandidateCadStageOutcomeV2(CandidateCadModel):
+    schema_version: Literal["candidate-cad-stage-outcome@2"] = (
+        "candidate-cad-stage-outcome@2"
+    )
+    status: CandidateCadStageStatus
+    realization: CandidateCadRealizationV2 | None = None
+    realization_hash: str | None = None
+    reasons: tuple[CandidateCadStageReason, ...] = ()
+    outcome_hash: str = "pending"
+
+    @field_validator("realization_hash")
+    @classmethod
+    def validate_realization_hash(cls, value: str | None) -> str | None:
+        return None if value is None else _require_hash(value)
+
+    @field_validator("outcome_hash")
+    @classmethod
+    def validate_outcome_hash(cls, value: str) -> str:
+        return _require_hash_or_pending(value)
+
+    @model_validator(mode="after")
+    def validate_status_and_hash_v2(self) -> "CandidateCadStageOutcomeV2":
+        if self.status is CandidateCadStageStatus.SUCCESS:
+            if self.realization is None or self.reasons:
+                raise ValueError("successful CAD stage requires exactly one realization")
+            if type(self.realization) is not CandidateCadRealizationV2:
+                raise ValueError("candidate-cad-stage-outcome@2 requires realization@2")
+            expected_realization_hash = candidate_realization_hash_v2(self.realization)
+            if self.realization.realization_hash != expected_realization_hash:
+                raise ValueError("CAD stage realization identity mismatch")
+            if self.realization_hash is None:
+                object.__setattr__(
+                    self, "realization_hash", expected_realization_hash
+                )
+            elif self.realization_hash != expected_realization_hash:
+                raise ValueError("CAD stage realization identity mismatch")
+        elif self.status is CandidateCadStageStatus.UNRESOLVED:
+            if CandidateCadStageReason.PRIOR_STAGE_FAILED in self.reasons:
+                raise ValueError("unresolved CAD stage cannot use prior stage reason")
+            if self.realization is not None or self.realization_hash is not None:
+                raise ValueError("unresolved or unreached CAD stage cannot carry a realization")
+            if not self.reasons:
+                raise ValueError("unresolved or unreached CAD stage requires a typed reason")
+        else:
+            if self.realization is not None or self.realization_hash is not None:
+                raise ValueError("unresolved or unreached CAD stage cannot carry a realization")
+            if self.reasons != (CandidateCadStageReason.PRIOR_STAGE_FAILED,):
+                raise ValueError("not-reached CAD stage requires exactly the prior-stage reason")
+        expected = candidate_cad_stage_outcome_hash_v2(self)
+        if self.outcome_hash == "pending":
+            object.__setattr__(self, "outcome_hash", expected)
+        elif self.outcome_hash != expected:
+            raise ValueError("candidate CAD stage outcome@2 hash mismatch")
         return self

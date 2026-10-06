@@ -16,10 +16,26 @@ from pydantic import (
     model_validator,
 )
 
-from mechcad_harness.cad_assembly import CadAssemblyProgram, assembly_hash
-from mechcad_harness.candidates.canonical_cad import CanonicalCadRealization
+from mechcad_harness.cad_assembly import (
+    M10_EXECUTION_SEMANTICS_VERSION,
+    CadAssemblyProgram,
+    _require_semantic_fields,
+    assembly_hash,
+    verified_semantic_assembly_hash,
+)
+from mechcad_harness.candidates.canonical_cad import (
+    CanonicalCadRealization,
+    CanonicalCadRealizationV2,
+    CanonicalPhysicalCadMappingV2,
+)
 from mechcad_harness.candidates.canonical_mechanism import (
     CanonicalMechanismReconstruction,
+)
+from mechcad_harness.continuous_proof import (
+    _semantic_proof_request_hash_from_assembly_identity,
+    _semantic_proof_result_hash_from_assembly_identity,
+    semantic_proof_request_hash,
+    semantic_proof_result_hash,
 )
 from mechcad_harness.candidates.m10_result_validation import (
     ContinuousM10ResultValidationContract,
@@ -36,6 +52,10 @@ from mechcad_harness.kinematic_sweep import (
     CadKinematicSweepResult,
     RevoluteAxis,
     SweepAggregateClassification,
+    _semantic_sweep_request_hash_from_assembly_identity,
+    _semantic_sweep_result_hash_from_assembly_identity,
+    semantic_sweep_request_hash,
+    semantic_sweep_result_hash,
 )
 from mechcad_harness.models import (
     CanonicalConnectionMeaning,
@@ -51,6 +71,7 @@ from mechcad_harness.multi_joint_kinematics import (
     kinematic_model_hash,
     transform_apply,
 )
+from mechcad_harness.semantic_m10_kinematics import semantic_single_joint_kinematic_model_hash
 from mechcad_harness.state.hashing import canonical_json
 
 from .promotion_models import PrePromotionM10ScopeProjection
@@ -167,6 +188,111 @@ class CanonicalM10PairClassificationRecord(CanonicalM10Model):
         return self
 
 
+class CanonicalM10ConstituentDispositionV2(CanonicalM10Model):
+    schema_version: Literal["canonical-m10-constituent-disposition@2"] = (
+        "canonical-m10-constituent-disposition@2"
+    )
+    physical_instance_id: StrictStr = Field(min_length=1)
+    cad_instance_id: StrictStr = Field(min_length=1)
+    disposition: CanonicalM10BodyDisposition
+    output_transform_group: StrictStr | None = None
+    disposition_hash: StrictStr = "pending"
+
+    _validate_hash = field_validator("disposition_hash")(_require_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_disposition_v2(self) -> "CanonicalM10ConstituentDispositionV2":
+        if self.disposition is CanonicalM10BodyDisposition.OUTPUT_RIGID:
+            if self.output_transform_group is not None and not self.output_transform_group.strip():
+                raise ValueError("canonical output transform group must not be empty")
+        elif self.output_transform_group is not None:
+            raise ValueError("only output-rigid canonical constituents may declare a transform group")
+        expected = canonical_m10_constituent_disposition_hash_v2(self)
+        if self.disposition_hash == "pending":
+            object.__setattr__(self, "disposition_hash", expected)
+        elif self.disposition_hash != expected:
+            raise ValueError("canonical M10 constituent disposition@2 hash mismatch")
+        return self
+
+
+def canonical_m10_constituent_disposition_hash_v2(
+    disposition: CanonicalM10ConstituentDispositionV2,
+) -> str:
+    _require_semantic_fields(
+        disposition,
+        CanonicalM10ConstituentDispositionV2,
+        {
+            "schema_version", "physical_instance_id", "cad_instance_id",
+            "disposition", "output_transform_group", "disposition_hash",
+        },
+        "CanonicalM10ConstituentDispositionV2",
+    )
+    return _hash_payload(
+        {
+            "schema_version": disposition.schema_version,
+            "physical_instance_id": disposition.physical_instance_id,
+            "cad_instance_id": disposition.cad_instance_id,
+            "disposition": disposition.disposition.value,
+            "output_transform_group": disposition.output_transform_group,
+            "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+        }
+    )
+
+
+class CanonicalM10PairClassificationRecordV2(CanonicalM10Model):
+    schema_version: Literal["canonical-m10-pair-classification@2"] = (
+        "canonical-m10-pair-classification@2"
+    )
+    pair: tuple[StrictStr, StrictStr]
+    classification: CanonicalM10PairClassification
+    reason: StrictStr | None = None
+    requires_home_exact_check: StrictBool = False
+    classification_hash: StrictStr = "pending"
+
+    _validate_hash = field_validator("classification_hash")(_require_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_classification_v2(self) -> "CanonicalM10PairClassificationRecordV2":
+        pair = _canonical_pair(self.pair)
+        if pair != self.pair:
+            object.__setattr__(self, "pair", pair)
+        if self.classification is CanonicalM10PairClassification.CHECK_CLEARANCE:
+            if self.reason is not None:
+                raise ValueError("checked canonical M10 pairs cannot carry an exclusion reason")
+        elif self.reason is None or not self.reason.strip():
+            raise ValueError("excluded canonical M10 pairs require an explicit reason")
+        expected = canonical_m10_pair_classification_hash_v2(self)
+        if self.classification_hash == "pending":
+            object.__setattr__(self, "classification_hash", expected)
+        elif self.classification_hash != expected:
+            raise ValueError("canonical M10 pair classification@2 hash mismatch")
+        return self
+
+
+def canonical_m10_pair_classification_hash_v2(
+    classification: CanonicalM10PairClassificationRecordV2,
+) -> str:
+    _require_semantic_fields(
+        classification,
+        CanonicalM10PairClassificationRecordV2,
+        {
+            "schema_version", "pair", "classification", "reason",
+            "requires_home_exact_check", "classification_hash",
+        },
+        "CanonicalM10PairClassificationRecordV2",
+    )
+    return _hash_payload(
+        {
+            "schema_version": classification.schema_version,
+            "pair": list(classification.pair),
+            "classification": classification.classification.value,
+            "reason": classification.reason,
+            "requires_home_exact_check": classification.requires_home_exact_check,
+            "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+        }
+    )
+
+
 class CanonicalM10PairInventory(CanonicalM10Model):
     schema_version: Literal["canonical-m10-pair-inventory@1"] = (
         "canonical-m10-pair-inventory@1"
@@ -277,6 +403,238 @@ class CanonicalM10EvaluationRequest(CanonicalM10Model):
         return self
 
 
+class CanonicalM10PairInventoryV2(CanonicalM10Model):
+    schema_version: Literal["canonical-m10-pair-inventory@2"] = (
+        "canonical-m10-pair-inventory@2"
+    )
+    project_id: StrictStr = Field(min_length=1)
+    revision: StrictInt = Field(gt=0)
+    state_hash: StrictStr
+    mechanism_id: StrictStr = Field(min_length=1)
+    mechanism_hash: StrictStr
+    cad_realization_hash: StrictStr
+    semantic_scope_hash: StrictStr
+    constituent_dispositions: tuple[CanonicalM10ConstituentDispositionV2, ...] = Field(
+        min_length=1
+    )
+    expected_pair_universe: tuple[tuple[StrictStr, StrictStr], ...] = Field(min_length=1)
+    classifications: tuple[CanonicalM10PairClassificationRecordV2, ...] = Field(
+        min_length=1
+    )
+    checked_pairs: tuple[tuple[StrictStr, StrictStr], ...] = ()
+    excluded_pairs: tuple[tuple[StrictStr, StrictStr], ...] = ()
+    inventory_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "state_hash", "mechanism_hash", "cad_realization_hash", "semantic_scope_hash"
+    )(_require_hash)
+    _validate_inventory_hash = field_validator("inventory_hash")(_require_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_inventory_v2(self) -> "CanonicalM10PairInventoryV2":
+        dispositions = tuple(
+            CanonicalM10ConstituentDispositionV2.model_validate(
+                item.model_dump(mode="json")
+            )
+            for item in self.constituent_dispositions
+        )
+        disposition_keys = tuple(
+            (item.physical_instance_id, item.cad_instance_id) for item in dispositions
+        )
+        physical_ids = tuple(item.physical_instance_id for item in dispositions)
+        cad_ids = tuple(item.cad_instance_id for item in dispositions)
+        if (
+            len(set(disposition_keys)) != len(disposition_keys)
+            or len(set(physical_ids)) != len(physical_ids)
+            or len(set(cad_ids)) != len(cad_ids)
+        ):
+            raise ValueError("canonical M10 inventory@2 dispositions must be unique")
+        classifications = tuple(
+            CanonicalM10PairClassificationRecordV2.model_validate(
+                item.model_dump(mode="json")
+            )
+            for item in self.classifications
+        )
+        expected_pairs = tuple(itertools.combinations(sorted(cad_ids), 2))
+        if self.expected_pair_universe != expected_pairs:
+            raise ValueError("canonical M10 inventory@2 pair universe is incomplete or unordered")
+        actual_pairs = tuple(item.pair for item in classifications)
+        if len(set(actual_pairs)) != len(actual_pairs) or set(actual_pairs) != set(expected_pairs):
+            raise ValueError("canonical M10 inventory@2 classifications are incomplete or duplicated")
+        checked = tuple(sorted(
+            item.pair
+            for item in classifications
+            if item.classification is CanonicalM10PairClassification.CHECK_CLEARANCE
+        ))
+        excluded = tuple(sorted(
+            item.pair
+            for item in classifications
+            if item.classification is not CanonicalM10PairClassification.CHECK_CLEARANCE
+        ))
+        if self.checked_pairs != checked:
+            raise ValueError("canonical M10 inventory@2 checked pair projection mismatch")
+        if self.excluded_pairs != excluded:
+            raise ValueError("canonical M10 inventory@2 excluded pair projection mismatch")
+        if dispositions != self.constituent_dispositions:
+            object.__setattr__(self, "constituent_dispositions", dispositions)
+        if classifications != self.classifications:
+            object.__setattr__(self, "classifications", classifications)
+        expected_hash = canonical_m10_pair_inventory_hash_v2(self)
+        if self.inventory_hash == "pending":
+            object.__setattr__(self, "inventory_hash", expected_hash)
+        elif self.inventory_hash != expected_hash:
+            raise ValueError("canonical M10 pair inventory@2 hash mismatch")
+        return self
+
+
+def canonical_m10_pair_inventory_hash_v2(inventory: CanonicalM10PairInventoryV2) -> str:
+    _require_semantic_fields(
+        inventory,
+        CanonicalM10PairInventoryV2,
+        {
+            "schema_version", "project_id", "revision", "state_hash", "mechanism_id",
+            "mechanism_hash", "cad_realization_hash", "semantic_scope_hash",
+            "constituent_dispositions", "expected_pair_universe", "classifications",
+            "checked_pairs", "excluded_pairs", "inventory_hash",
+        },
+        "CanonicalM10PairInventoryV2",
+    )
+    dispositions = tuple(
+        sorted(
+            (
+                CanonicalM10ConstituentDispositionV2.model_validate(
+                    item.model_dump(mode="json")
+                )
+                for item in inventory.constituent_dispositions
+            ),
+            key=lambda item: (item.physical_instance_id, item.cad_instance_id),
+        )
+    )
+    classifications = tuple(
+        sorted(
+            (
+                CanonicalM10PairClassificationRecordV2.model_validate(
+                    item.model_dump(mode="json")
+                )
+                for item in inventory.classifications
+            ),
+            key=lambda item: item.pair,
+        )
+    )
+    return _hash_payload(
+        {
+            "schema_version": inventory.schema_version,
+            "project_id": inventory.project_id,
+            "mechanism_id": inventory.mechanism_id,
+            "mechanism_hash": inventory.mechanism_hash,
+            "cad_realization_hash": inventory.cad_realization_hash,
+            "semantic_scope_hash": inventory.semantic_scope_hash,
+            "constituent_disposition_hashes": [
+                item.disposition_hash for item in dispositions
+            ],
+            "expected_pair_universe": [
+                list(pair) for pair in inventory.expected_pair_universe
+            ],
+            "classification_hashes": [
+                item.classification_hash for item in classifications
+            ],
+            "checked_pairs": [list(pair) for pair in inventory.checked_pairs],
+            "excluded_pairs": [list(pair) for pair in inventory.excluded_pairs],
+        }
+    )
+
+
+class CanonicalM10EvaluationRequestV2(CanonicalM10Model):
+    schema_version: Literal["canonical-m10-evaluation-request@2"] = (
+        "canonical-m10-evaluation-request@2"
+    )
+    project_id: StrictStr = Field(min_length=1)
+    revision: StrictInt = Field(gt=0)
+    state_hash: StrictStr
+    mechanism_id: StrictStr = Field(min_length=1)
+    mechanism_hash: StrictStr
+    cad_realization_hash: StrictStr
+    semantic_single_joint_kinematic_model_hash: StrictStr
+    mapping_hashes: tuple[StrictStr, ...] = Field(min_length=1)
+    semantic_scope_hash: StrictStr
+    inventory: CanonicalM10PairInventoryV2
+    request_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "state_hash", "mechanism_hash", "cad_realization_hash",
+        "semantic_single_joint_kinematic_model_hash", "semantic_scope_hash",
+    )(_require_hash)
+    _validate_mapping_hashes = field_validator("mapping_hashes")(
+        lambda values: tuple(_require_hash(value) for value in values)
+    )
+    _validate_request_hash = field_validator("request_hash")(_require_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_request_v2(self) -> "CanonicalM10EvaluationRequestV2":
+        inventory = CanonicalM10PairInventoryV2.model_validate(
+            self.inventory.model_dump(mode="json")
+        )
+        object.__setattr__(self, "inventory", inventory)
+        if (
+            inventory.project_id != self.project_id
+            or inventory.revision != self.revision
+            or inventory.state_hash != self.state_hash
+        ):
+            raise ValueError("canonical M10 request@2 inventory coordinate mismatch")
+        if (
+            inventory.mechanism_id != self.mechanism_id
+            or inventory.mechanism_hash != self.mechanism_hash
+            or inventory.cad_realization_hash != self.cad_realization_hash
+        ):
+            raise ValueError("canonical M10 request@2 inventory mechanism/CAD binding mismatch")
+        if inventory.semantic_scope_hash != self.semantic_scope_hash:
+            raise ValueError("canonical M10 request@2 semantic scope mismatch")
+        if tuple(sorted(self.mapping_hashes)) != self.mapping_hashes or len(
+            set(self.mapping_hashes)
+        ) != len(self.mapping_hashes):
+            raise ValueError("canonical M10 request@2 mapping hashes must be sorted and unique")
+        expected = canonical_m10_evaluation_request_hash_v2(self)
+        if self.request_hash == "pending":
+            object.__setattr__(self, "request_hash", expected)
+        elif self.request_hash != expected:
+            raise ValueError("canonical M10 evaluation request@2 hash mismatch")
+        return self
+
+
+def canonical_m10_evaluation_request_hash_v2(
+    request: CanonicalM10EvaluationRequestV2,
+) -> str:
+    _require_semantic_fields(
+        request,
+        CanonicalM10EvaluationRequestV2,
+        {
+            "schema_version", "project_id", "revision", "state_hash", "mechanism_id",
+            "mechanism_hash", "cad_realization_hash",
+            "semantic_single_joint_kinematic_model_hash", "mapping_hashes",
+            "semantic_scope_hash", "inventory", "request_hash",
+        },
+        "CanonicalM10EvaluationRequestV2",
+    )
+    inventory = CanonicalM10PairInventoryV2.model_validate(
+        request.inventory.model_dump(mode="json")
+    )
+    return _hash_payload(
+        {
+            "schema_version": request.schema_version,
+            "project_id": request.project_id,
+            "mechanism_id": request.mechanism_id,
+            "mechanism_hash": request.mechanism_hash,
+            "cad_realization_hash": request.cad_realization_hash,
+            "semantic_single_joint_kinematic_model_hash": (
+                request.semantic_single_joint_kinematic_model_hash
+            ),
+            "mapping_hashes": list(request.mapping_hashes),
+            "semantic_scope_hash": request.semantic_scope_hash,
+            "inventory_hash": inventory.inventory_hash,
+        }
+    )
+
+
 class CanonicalM10PairProof(CanonicalM10Model):
     schema_version: Literal["canonical-m10-pair-proof@1"] = "canonical-m10-pair-proof@1"
     pair: tuple[StrictStr, StrictStr]
@@ -365,6 +723,384 @@ class CanonicalM10HomeExactCheck(CanonicalM10Model):
         return self
 
 
+class CanonicalM10PairProofV2(CanonicalM10Model):
+    schema_version: Literal["canonical-m10-pair-proof@2"] = "canonical-m10-pair-proof@2"
+    pair: tuple[StrictStr, StrictStr]
+    moving_instance_id: StrictStr = Field(min_length=1)
+    stationary_instance_id: StrictStr = Field(min_length=1)
+    request: ContinuousSingleAxisProofRequest
+    result: ContinuousSingleAxisProofResult
+    request_hash: StrictStr
+    result_hash: StrictStr
+    semantic_assembly_hash: StrictStr
+    proof_hash: StrictStr = "pending"
+
+    _validate_replay_and_semantic_hashes = field_validator(
+        "request_hash", "result_hash", "semantic_assembly_hash"
+    )(_require_hash)
+    _validate_proof_hash = field_validator("proof_hash")(_require_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_proof_v2(self) -> "CanonicalM10PairProofV2":
+        request = ContinuousSingleAxisProofRequest.model_validate(
+            self.request.model_dump(mode="json")
+        )
+        result = ContinuousSingleAxisProofResult.model_validate(
+            self.result.model_dump(mode="json")
+        )
+        object.__setattr__(self, "request", request)
+        object.__setattr__(self, "result", result)
+        pair = _canonical_pair(self.pair)
+        if pair != self.pair or {self.moving_instance_id, self.stationary_instance_id} != set(pair):
+            raise ValueError("canonical M10 proof@2 pair does not match its partitions")
+        if (
+            request.moving_instance_ids != (self.moving_instance_id,)
+            or request.stationary_instance_ids != (self.stationary_instance_id,)
+            or result.moving_instance_ids != (self.moving_instance_id,)
+            or result.stationary_instance_ids != (self.stationary_instance_id,)
+        ):
+            raise ValueError("canonical M10 proof@2 embedded partitions do not match its pair")
+        if (
+            request.request_hash != self.request_hash
+            or result.request_hash != self.request_hash
+            or result.result_hash != self.result_hash
+            or result.source_assembly_hash != request.source_assembly_hash
+        ):
+            raise ValueError("canonical M10 proof@2 raw replay identities do not bind")
+        if result.result_hash != m10_result_hash(result):
+            raise ValueError("canonical M10 proof@2 raw result hash mismatch")
+        CanonicalM10VerificationService.CONTINUOUS_RESULT_VALIDATION.validate(
+            request, result
+        )
+        expected = canonical_m10_pair_proof_hash_v2(self)
+        if self.proof_hash == "pending":
+            object.__setattr__(self, "proof_hash", expected)
+        elif self.proof_hash != expected:
+            raise ValueError("canonical M10 pair proof@2 hash mismatch")
+        return self
+
+    def validate_against(self, assembly: CadAssemblyProgram, mappings) -> None:
+        semantic_assembly = verified_semantic_assembly_hash(
+            assembly, mappings, self.request.source_assembly_hash
+        )
+        if semantic_assembly != self.semantic_assembly_hash:
+            raise ValueError("canonical M10 proof@2 semantic assembly binding mismatch")
+        CanonicalM10VerificationService.CONTINUOUS_RESULT_VALIDATION.validate(
+            self.request, self.result, assembly
+        )
+        if semantic_proof_request_hash(self.request, assembly, mappings) != (
+            _semantic_proof_request_hash_from_assembly_identity(
+                self.request, self.semantic_assembly_hash
+            )
+        ):
+            raise ValueError("canonical M10 proof@2 semantic request projection mismatch")
+        if semantic_proof_result_hash(self.result, self.request, assembly, mappings) != (
+            _semantic_proof_result_hash_from_assembly_identity(
+                self.result, self.request, self.semantic_assembly_hash
+            )
+        ):
+            raise ValueError("canonical M10 proof@2 semantic result projection mismatch")
+
+def canonical_m10_pair_proof_hash_v2(proof: CanonicalM10PairProofV2) -> str:
+    _require_semantic_fields(
+        proof,
+        CanonicalM10PairProofV2,
+        {
+            "schema_version", "pair", "moving_instance_id", "stationary_instance_id",
+            "request", "result", "request_hash", "result_hash",
+            "semantic_assembly_hash", "proof_hash",
+        },
+        "CanonicalM10PairProofV2",
+    )
+    return _hash_payload(
+        {
+            "schema_version": proof.schema_version,
+            "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+            "pair": list(proof.pair),
+            "moving_instance_id": proof.moving_instance_id,
+            "stationary_instance_id": proof.stationary_instance_id,
+            "semantic_proof_request_hash": _semantic_proof_request_hash_from_assembly_identity(
+                proof.request, proof.semantic_assembly_hash
+            ),
+            "semantic_proof_result_hash": _semantic_proof_result_hash_from_assembly_identity(
+                proof.result, proof.request, proof.semantic_assembly_hash
+            ),
+            "semantic_assembly_hash": proof.semantic_assembly_hash,
+        }
+    )
+
+
+class CanonicalM10HomeExactCheckV2(CanonicalM10Model):
+    schema_version: Literal["canonical-m10-home-exact-check@2"] = (
+        "canonical-m10-home-exact-check@2"
+    )
+    pair: tuple[StrictStr, StrictStr]
+    moving_instance_id: StrictStr = Field(min_length=1)
+    stationary_instance_id: StrictStr = Field(min_length=1)
+    request: CadKinematicSweepRequest
+    result: CadKinematicSweepResult
+    request_hash: StrictStr
+    result_hash: StrictStr
+    semantic_assembly_hash: StrictStr
+    check_hash: StrictStr = "pending"
+
+    _validate_replay_and_semantic_hashes = field_validator(
+        "request_hash", "result_hash", "semantic_assembly_hash"
+    )(_require_hash)
+    _validate_check_hash = field_validator("check_hash")(_require_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_home_check_v2(self) -> "CanonicalM10HomeExactCheckV2":
+        request = CadKinematicSweepRequest.model_validate(
+            self.request.model_dump(mode="json")
+        )
+        result = CadKinematicSweepResult.model_validate(
+            self.result.model_dump(mode="json")
+        )
+        object.__setattr__(self, "request", request)
+        object.__setattr__(self, "result", result)
+        pair = _canonical_pair(self.pair)
+        if pair != self.pair or {self.moving_instance_id, self.stationary_instance_id} != set(pair):
+            raise ValueError("canonical M10 home check@2 pair does not match its partitions")
+        if (
+            request.moving_instance_ids != (self.moving_instance_id,)
+            or request.stationary_instance_ids != (self.stationary_instance_id,)
+            or any(
+                pair_result.moving_instance_id != self.moving_instance_id
+                or pair_result.stationary_instance_id != self.stationary_instance_id
+                for sample in result.samples
+                for pair_result in sample.pair_results
+            )
+        ):
+            raise ValueError("canonical M10 home check@2 embedded partitions do not match its pair")
+        if request.sample_angles_deg != (0.0,):
+            raise ValueError("canonical M10 home check@2 must use the zero-angle sample")
+        if (
+            result.sweep_version != request.sweep_version
+            or request.request_hash != self.request_hash
+            or result.request_hash != self.request_hash
+            or result.result_hash != self.result_hash
+            or result.source_assembly_hash != request.source_assembly_hash
+        ):
+            raise ValueError("canonical M10 home check@2 raw replay identities do not bind")
+        if result.result_hash != m10_result_hash(result):
+            raise ValueError("canonical M10 home check@2 raw result hash mismatch")
+        CanonicalM10VerificationService.HOME_RESULT_VALIDATION.validate(request, result)
+        expected = canonical_m10_home_exact_check_hash_v2(self)
+        if self.check_hash == "pending":
+            object.__setattr__(self, "check_hash", expected)
+        elif self.check_hash != expected:
+            raise ValueError("canonical M10 home exact check@2 hash mismatch")
+        return self
+
+    def validate_against(self, assembly: CadAssemblyProgram, mappings) -> None:
+        semantic_assembly = verified_semantic_assembly_hash(
+            assembly, mappings, self.request.source_assembly_hash
+        )
+        if semantic_assembly != self.semantic_assembly_hash:
+            raise ValueError("canonical M10 home check@2 semantic assembly binding mismatch")
+        CanonicalM10VerificationService.HOME_RESULT_VALIDATION.validate(
+            self.request, self.result, assembly
+        )
+        if semantic_sweep_request_hash(self.request, assembly, mappings) != (
+            _semantic_sweep_request_hash_from_assembly_identity(
+                self.request, self.semantic_assembly_hash
+            )
+        ):
+            raise ValueError("canonical M10 home check@2 semantic request projection mismatch")
+        if semantic_sweep_result_hash(self.result, self.request, assembly, mappings) != (
+            _semantic_sweep_result_hash_from_assembly_identity(
+                self.result, self.request, self.semantic_assembly_hash
+            )
+        ):
+            raise ValueError("canonical M10 home check@2 semantic result projection mismatch")
+
+
+def canonical_m10_home_exact_check_hash_v2(
+    check: CanonicalM10HomeExactCheckV2,
+) -> str:
+    _require_semantic_fields(
+        check,
+        CanonicalM10HomeExactCheckV2,
+        {
+            "schema_version", "pair", "moving_instance_id", "stationary_instance_id",
+            "request", "result", "request_hash", "result_hash",
+            "semantic_assembly_hash", "check_hash",
+        },
+        "CanonicalM10HomeExactCheckV2",
+    )
+    return _hash_payload(
+        {
+            "schema_version": check.schema_version,
+            "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+            "pair": list(check.pair),
+            "moving_instance_id": check.moving_instance_id,
+            "stationary_instance_id": check.stationary_instance_id,
+            "semantic_sweep_request_hash": _semantic_sweep_request_hash_from_assembly_identity(
+                check.request, check.semantic_assembly_hash
+            ),
+            "semantic_sweep_result_hash": _semantic_sweep_result_hash_from_assembly_identity(
+                check.result, check.request, check.semantic_assembly_hash
+            ),
+            "semantic_assembly_hash": check.semantic_assembly_hash,
+        }
+    )
+
+
+class CanonicalM10VerificationOutcomeV2(CanonicalM10Model):
+    schema_version: Literal["canonical-m10-verification-outcome@2"] = (
+        "canonical-m10-verification-outcome@2"
+    )
+    project_id: StrictStr = Field(min_length=1)
+    revision: StrictInt = Field(gt=0)
+    state_hash: StrictStr
+    mechanism_id: StrictStr = Field(min_length=1)
+    mechanism_hash: StrictStr
+    cad_realization_hash: StrictStr
+    scope: "DerivedCanonicalM10Scope"
+    inventory: CanonicalM10PairInventoryV2
+    request: CanonicalM10EvaluationRequestV2
+    status: CanonicalM10VerificationStatus
+    pair_proofs: tuple[CanonicalM10PairProofV2, ...] = ()
+    home_exact_checks: tuple[CanonicalM10HomeExactCheckV2, ...] = ()
+    outcome_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "state_hash", "mechanism_hash", "cad_realization_hash"
+    )(_require_hash)
+    _validate_outcome_hash = field_validator("outcome_hash")(_require_hash_or_pending)
+
+    @property
+    def evaluation_request(self) -> CanonicalM10EvaluationRequestV2:
+        return self.request
+
+    @model_validator(mode="after")
+    def validate_outcome_v2(self) -> "CanonicalM10VerificationOutcomeV2":
+        scope = DerivedCanonicalM10Scope.model_validate(
+            self.scope.model_dump(mode="json")
+        )
+        inventory = CanonicalM10PairInventoryV2.model_validate(
+            self.inventory.model_dump(mode="json")
+        )
+        request = CanonicalM10EvaluationRequestV2.model_validate(
+            self.request.model_dump(mode="json")
+        )
+        proofs = tuple(
+            CanonicalM10PairProofV2.model_validate(item.model_dump(mode="json"))
+            for item in self.pair_proofs
+        )
+        checks = tuple(
+            CanonicalM10HomeExactCheckV2.model_validate(item.model_dump(mode="json"))
+            for item in self.home_exact_checks
+        )
+        object.__setattr__(self, "scope", scope)
+        object.__setattr__(self, "inventory", inventory)
+        object.__setattr__(self, "request", request)
+        object.__setattr__(self, "pair_proofs", proofs)
+        object.__setattr__(self, "home_exact_checks", checks)
+
+        if (
+            scope.project_id != self.project_id
+            or scope.revision != self.revision
+            or scope.state_hash != self.state_hash
+            or scope.mechanism_id != self.mechanism_id
+            or scope.mechanism_hash != self.mechanism_hash
+        ):
+            raise ValueError("canonical M10 outcome@2 scope coordinate binding mismatch")
+        if (
+            inventory.project_id != self.project_id
+            or inventory.revision != self.revision
+            or inventory.state_hash != self.state_hash
+            or inventory.mechanism_id != self.mechanism_id
+            or inventory.mechanism_hash != self.mechanism_hash
+            or inventory.cad_realization_hash != self.cad_realization_hash
+        ):
+            raise ValueError("canonical M10 outcome@2 inventory binding mismatch")
+        if (
+            request.project_id != self.project_id
+            or request.revision != self.revision
+            or request.state_hash != self.state_hash
+            or request.mechanism_id != self.mechanism_id
+            or request.mechanism_hash != self.mechanism_hash
+            or request.cad_realization_hash != self.cad_realization_hash
+        ):
+            raise ValueError("canonical M10 outcome@2 request binding mismatch")
+        semantic_scope = semantic_canonical_m10_scope_hash(scope)
+        if (
+            inventory.semantic_scope_hash != semantic_scope
+            or request.semantic_scope_hash != inventory.semantic_scope_hash
+            or request.inventory != inventory
+        ):
+            raise ValueError("canonical M10 outcome@2 semantic scope chain mismatch")
+
+        expected_proof_pairs = set(inventory.checked_pairs)
+        proof_pairs = tuple(proof.pair for proof in proofs)
+        if len(proof_pairs) != len(set(proof_pairs)) or set(proof_pairs) != expected_proof_pairs:
+            raise ValueError("canonical M10 outcome@2 pair proofs do not exactly cover checked pairs")
+        expected_home_pairs = {
+            item.pair
+            for item in inventory.classifications
+            if item.requires_home_exact_check
+        }
+        check_pairs = tuple(check.pair for check in checks)
+        if len(check_pairs) != len(set(check_pairs)) or set(check_pairs) != expected_home_pairs:
+            raise ValueError("canonical M10 outcome@2 home checks do not exactly cover required pairs")
+        expected_status = _aggregate_status(
+            [proof.result.status for proof in proofs],
+            [check.result.aggregate_classification for check in checks],
+        )
+        if self.status is not expected_status:
+            raise ValueError("canonical M10 outcome@2 status is inconsistent with nested results")
+
+        expected = canonical_m10_verification_outcome_hash_v2(self)
+        if self.outcome_hash == "pending":
+            object.__setattr__(self, "outcome_hash", expected)
+        elif self.outcome_hash != expected:
+            raise ValueError("canonical M10 verification outcome@2 hash mismatch")
+        return self
+
+    def validate_against(
+        self,
+        reconstruction: CanonicalMechanismReconstruction,
+        cad: CanonicalCadRealizationV2,
+    ) -> None:
+        CanonicalM10VerificationService.verify_persisted(
+            self, reconstruction, cad
+        )
+
+
+def canonical_m10_verification_outcome_hash_v2(
+    outcome: CanonicalM10VerificationOutcomeV2,
+) -> str:
+    _require_semantic_fields(
+        outcome,
+        CanonicalM10VerificationOutcomeV2,
+        {
+            "schema_version", "project_id", "revision", "state_hash", "mechanism_id",
+            "mechanism_hash", "cad_realization_hash", "scope", "inventory", "request",
+            "status", "pair_proofs", "home_exact_checks", "outcome_hash",
+        },
+        "CanonicalM10VerificationOutcomeV2",
+    )
+    proofs = tuple(sorted(outcome.pair_proofs, key=lambda item: item.pair))
+    checks = tuple(sorted(outcome.home_exact_checks, key=lambda item: item.pair))
+    return _hash_payload(
+        {
+            "schema_version": outcome.schema_version,
+            "project_id": outcome.project_id,
+            "mechanism_id": outcome.mechanism_id,
+            "mechanism_hash": outcome.mechanism_hash,
+            "cad_realization_hash": outcome.cad_realization_hash,
+            "semantic_scope_hash": semantic_canonical_m10_scope_hash(outcome.scope),
+            "inventory_hash": outcome.inventory.inventory_hash,
+            "request_hash": outcome.request.request_hash,
+            "status": outcome.status.value,
+            "proof_hashes": [proof.proof_hash for proof in proofs],
+            "check_hashes": [check.check_hash for check in checks],
+        }
+    )
+
+
 def _aggregate_status(proof_statuses, home_aggregates):
     if (
         ContinuousSingleAxisProofStatus.COLLISION_WITNESS in proof_statuses
@@ -430,6 +1166,74 @@ class DerivedCanonicalM10Scope(CanonicalM10Model):
         elif self.scope_hash != expected:
             raise ValueError("canonical M10 scope hash mismatch")
         return self
+
+
+CanonicalM10VerificationOutcomeV2.model_rebuild()
+
+
+def _semantic_canonical_m10_scope_payload(
+    scope: DerivedCanonicalM10Scope,
+) -> dict[str, object]:
+    _require_semantic_fields(
+        scope,
+        DerivedCanonicalM10Scope,
+        {
+            "schema_version", "project_id", "revision", "state_hash",
+            "mechanism_id", "mechanism_hash", "joint_semantic_key",
+            "angle_interval_deg", "path_semantics", "required_clearance_mm",
+            "physical_pair_requirements", "fidelity_requirements",
+            "required_home_check_semantics", "bounded_limitations", "scope_hash",
+        },
+        "DerivedCanonicalM10Scope",
+    )
+    requirement_fields = {
+        "requirement_key", "first_instance_id", "first_interface_id",
+        "second_instance_id", "second_interface_id",
+        "requires_home_exact_check", "requirement_hash",
+    }
+    requirements = []
+    for requirement in scope.physical_pair_requirements:
+        _require_semantic_fields(
+            requirement,
+            CanonicalPhysicalPairRequirement,
+            requirement_fields,
+            "CanonicalPhysicalPairRequirement",
+        )
+        requirements.append(
+            {
+                "requirement_key": requirement.requirement_key,
+                "first_instance_id": requirement.first_instance_id,
+                "first_interface_id": requirement.first_interface_id,
+                "second_instance_id": requirement.second_instance_id,
+                "second_interface_id": requirement.second_interface_id,
+                "requires_home_exact_check": requirement.requires_home_exact_check,
+            }
+        )
+    requirement_keys = tuple(item["requirement_key"] for item in requirements)
+    if len(set(requirement_keys)) != len(requirement_keys):
+        raise ValueError("canonical M10 semantic scope requirement keys must be unique")
+    requirements.sort(key=lambda item: item["requirement_key"])
+
+    return {
+        "scope_contract": "derived-canonical-m10-scope@1",
+        "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+        "joint_semantic_key": scope.joint_semantic_key,
+        "angle_interval_deg": list(scope.angle_interval_deg),
+        "path_semantics": scope.path_semantics,
+        "required_clearance_mm": scope.required_clearance_mm,
+        "physical_pair_requirements": requirements,
+        "fidelity_requirements": [
+            [key, fidelity.value] for key, fidelity in scope.fidelity_requirements
+        ],
+        "required_home_check_semantics": list(scope.required_home_check_semantics),
+        "bounded_limitations": list(scope.bounded_limitations),
+    }
+
+
+def semantic_canonical_m10_scope_hash(scope: DerivedCanonicalM10Scope) -> str:
+    """Hash the N2-S semantic scope while leaving the legacy scope hash replay-only."""
+
+    return _hash_payload(_semantic_canonical_m10_scope_payload(scope))
 
 
 class CanonicalM10ScopeEquivalenceResult(CanonicalM10Model):
@@ -572,6 +1376,71 @@ class CanonicalM10VerificationOutcome(CanonicalM10Model):
         return self
 
 
+def canonical_m10_aggregate_summary(
+    outcome: CanonicalM10VerificationOutcome,
+) -> tuple[CanonicalM10VerificationStatus, float | None, tuple[str, str] | None]:
+    """Validate proof certificates and derive the bounded aggregate summary.
+
+    The summary is deliberately not persisted on the outcome: its existing
+    fields and outcome hash are the canonical result identity.
+    """
+    outcome = CanonicalM10VerificationOutcome.model_validate(
+        outcome.model_dump(mode="json")
+    )
+    for proof in outcome.pair_proofs:
+        CanonicalM10VerificationService.CONTINUOUS_RESULT_VALIDATION.validate(
+            proof.request, proof.result
+        )
+    for check in outcome.home_exact_checks:
+        CanonicalM10VerificationService.HOME_RESULT_VALIDATION.validate(
+            check.request, check.result
+        )
+
+    expected_status = _aggregate_status(
+        [proof.result.status for proof in outcome.pair_proofs],
+        [check.result.aggregate_classification for check in outcome.home_exact_checks],
+    )
+    if outcome.status is not expected_status:
+        raise ValueError("canonical M10 aggregate status mismatch")
+    if outcome.status is not CanonicalM10VerificationStatus.VERIFIED_CLEAR:
+        return outcome.status, None, None
+
+    limiting_metric = None
+    limiting_pair = None
+    for proof in outcome.pair_proofs:
+        for certificate in proof.result.certified_leaf_certificates:
+            if not certificate.pair_certificates:
+                raise ValueError("canonical M10 interval certificate cannot be empty")
+            pair_values = tuple(
+                pair.certified_lower_clearance_mm
+                for pair in certificate.pair_certificates
+            )
+            if not all(math.isfinite(value) and value >= 0 for value in pair_values):
+                raise ValueError(
+                    "canonical M10 certificate clearance values must be finite and non-negative"
+                )
+            expected_minimum = min(pair_values)
+            if certificate.minimum_certified_lower_clearance_mm != expected_minimum:
+                raise ValueError("canonical M10 interval certificate minimum is inconsistent")
+            if any(
+                value <= proof.result.required_clearance_mm + proof.result.proof_guard_mm
+                for value in pair_values
+            ):
+                raise ValueError(
+                    "canonical M10 lower bound does not exceed required clearance and proof guard"
+                )
+            for pair, value in zip(certificate.pair_certificates, pair_values):
+                if limiting_metric is None or value < limiting_metric:
+                    limiting_metric = value
+                    limiting_pair = (
+                        pair.moving_instance_id,
+                        pair.stationary_instance_id,
+                    )
+    if limiting_metric is None:
+        raise ValueError("canonical M10 verified-clear result requires certificates")
+    return outcome.status, limiting_metric, limiting_pair
+
+
 class CanonicalM10ScopeEquivalenceService:
     """Compare the frozen pre-promotion scope without participating in execution."""
 
@@ -677,11 +1546,21 @@ class CanonicalM10VerificationService:
     def execute(
         self,
         reconstruction: CanonicalMechanismReconstruction,
-        cad: CanonicalCadRealization,
-    ) -> CanonicalM10VerificationOutcome:
+        cad: CanonicalCadRealization | CanonicalCadRealizationV2,
+    ) -> CanonicalM10VerificationOutcome | CanonicalM10VerificationOutcomeV2:
         reconstruction = CanonicalMechanismReconstruction.model_validate(
             reconstruction.model_dump(mode="json")
         )
+        mechanism_v2 = (
+            reconstruction.mechanism.schema_version == "canonical-physical-mechanism@4"
+        )
+        cad_v2 = type(cad) is CanonicalCadRealizationV2
+        if mechanism_v2 != cad_v2:
+            raise ValueError(
+                "canonical M10 requires canonical mechanism@4 and CAD realization@2 together"
+            )
+        if mechanism_v2:
+            return self._execute_v2(reconstruction, cad)
         cad = cad.validated_canonical_copy()
         mechanism = reconstruction.mechanism
         obligation, binding, model, axis, dispositions, scope = self._derive_canonical_inputs(
@@ -811,11 +1690,268 @@ class CanonicalM10VerificationService:
             home_exact_checks=tuple(home_checks),
         )
 
+    def _execute_v2(
+        self,
+        reconstruction: CanonicalMechanismReconstruction,
+        cad: CanonicalCadRealizationV2,
+    ) -> CanonicalM10VerificationOutcomeV2:
+        if type(cad) is not CanonicalCadRealizationV2:
+            raise TypeError("canonical M10 @2 requires canonical CAD realization@2")
+        if reconstruction.mechanism.schema_version != "canonical-physical-mechanism@4":
+            raise ValueError("canonical M10 @2 requires canonical physical mechanism@4")
+        cad = CanonicalCadRealizationV2.model_validate(cad.model_dump(mode="json"))
+        mechanism = reconstruction.mechanism
+        obligation, binding, model, axis, _, scope = self._derive_canonical_inputs(
+            reconstruction, cad
+        )
+        self._validate_cad_binding(reconstruction, cad)
+        dispositions = self._derive_dispositions(
+            mechanism,
+            binding,
+            {mapping.physical_instance_id: mapping.cad_instance_id for mapping in cad.mappings},
+            semantic_v2=True,
+        )
+        inventory = self._derive_inventory(
+            reconstruction,
+            cad,
+            obligation,
+            dispositions,
+            scope,
+            semantic_v2=True,
+        )
+        request = CanonicalM10EvaluationRequestV2(
+            project_id=reconstruction.project_id,
+            revision=reconstruction.revision,
+            state_hash=reconstruction.state_hash,
+            mechanism_id=mechanism.id,
+            mechanism_hash=mechanism.mechanism_hash,
+            cad_realization_hash=cad.realization_hash,
+            semantic_single_joint_kinematic_model_hash=(
+                semantic_single_joint_kinematic_model_hash(model)
+            ),
+            mapping_hashes=tuple(sorted(mapping.mapping_hash for mapping in cad.mappings)),
+            semantic_scope_hash=semantic_canonical_m10_scope_hash(scope),
+            inventory=inventory,
+        )
+
+        mappings_by_cad = {mapping.cad_instance_id: mapping for mapping in cad.mappings}
+        disposition_by_cad = {item.cad_instance_id: item for item in dispositions}
+        proofs: list[CanonicalM10PairProofV2] = []
+        home_checks: list[CanonicalM10HomeExactCheckV2] = []
+        for item in inventory.classifications:
+            first, second = item.pair
+            first_disposition = disposition_by_cad[first]
+            second_disposition = disposition_by_cad[second]
+            if item.classification is CanonicalM10PairClassification.CHECK_CLEARANCE:
+                moving, stationary = self._directional_pair(first_disposition, second_disposition)
+                pair_assembly = self._induced_pair_assembly(cad.assembly, moving, stationary)
+                pair_mappings = tuple(
+                    mappings_by_cad[instance.instance_id]
+                    for instance in pair_assembly.instances
+                )
+                proof_request = ContinuousSingleAxisProofRequest(
+                    source_assembly_id=pair_assembly.assembly_id,
+                    source_assembly_hash=assembly_hash(pair_assembly),
+                    axis=axis,
+                    start_angle_deg=scope.angle_interval_deg[0],
+                    end_angle_deg=scope.angle_interval_deg[1],
+                    moving_instance_ids=(moving,),
+                    stationary_instance_ids=(stationary,),
+                    required_clearance_mm=scope.required_clearance_mm,
+                    proof_guard_mm=self.proof_guard_mm,
+                    max_depth=self.max_depth,
+                    minimum_interval_deg=self.minimum_interval_deg,
+                    max_exact_evaluations=self.max_exact_evaluations,
+                )
+                raw_result = self.application.prove_continuous_single_axis_clearance(
+                    source_revision=reconstruction.revision,
+                    source_state_hash=reconstruction.state_hash,
+                    assembly=pair_assembly,
+                    axis=axis,
+                    moving_instance_ids=(moving,),
+                    stationary_instance_ids=(stationary,),
+                    start_angle_deg=scope.angle_interval_deg[0],
+                    end_angle_deg=scope.angle_interval_deg[1],
+                    required_clearance_mm=scope.required_clearance_mm,
+                    proof_guard_mm=self.proof_guard_mm,
+                    max_depth=self.max_depth,
+                    minimum_interval_deg=self.minimum_interval_deg,
+                    max_exact_evaluations=self.max_exact_evaluations,
+                )
+                result = ContinuousSingleAxisProofResult.model_validate(
+                    raw_result.model_dump(mode="json")
+                )
+                self._validate_continuous_result(proof_request, result, pair_assembly)
+                semantic_assembly = verified_semantic_assembly_hash(
+                    pair_assembly, pair_mappings, proof_request.source_assembly_hash
+                )
+                proofs.append(
+                    CanonicalM10PairProofV2(
+                        pair=item.pair,
+                        moving_instance_id=moving,
+                        stationary_instance_id=stationary,
+                        request=proof_request,
+                        result=result,
+                        request_hash=proof_request.request_hash,
+                        result_hash=result.result_hash,
+                        semantic_assembly_hash=semantic_assembly,
+                    )
+                )
+
+            if item.requires_home_exact_check:
+                moving, stationary = self._home_directional_pair(
+                    first_disposition, second_disposition
+                )
+                pair_assembly = self._induced_pair_assembly(cad.assembly, moving, stationary)
+                pair_mappings = tuple(
+                    mappings_by_cad[instance.instance_id]
+                    for instance in pair_assembly.instances
+                )
+                home_request = CadKinematicSweepRequest(
+                    source_assembly_id=pair_assembly.assembly_id,
+                    source_assembly_hash=assembly_hash(pair_assembly),
+                    axis=axis,
+                    sample_angles_deg=(0.0,),
+                    moving_instance_ids=(moving,),
+                    stationary_instance_ids=(stationary,),
+                )
+                raw_result = self.application.analyze_assembly_kinematics(
+                    source_revision=reconstruction.revision,
+                    source_state_hash=reconstruction.state_hash,
+                    assembly=pair_assembly,
+                    axis=axis,
+                    moving_instance_ids=(moving,),
+                    stationary_instance_ids=(stationary,),
+                    sample_angles_deg=(0.0,),
+                )
+                result = CadKinematicSweepResult.model_validate(
+                    raw_result.model_dump(mode="json")
+                )
+                self._validate_home_result(home_request, result, pair_assembly)
+                semantic_assembly = verified_semantic_assembly_hash(
+                    pair_assembly, pair_mappings, home_request.source_assembly_hash
+                )
+                home_checks.append(
+                    CanonicalM10HomeExactCheckV2(
+                        pair=item.pair,
+                        moving_instance_id=moving,
+                        stationary_instance_id=stationary,
+                        request=home_request,
+                        result=result,
+                        request_hash=home_request.request_hash,
+                        result_hash=result.result_hash,
+                        semantic_assembly_hash=semantic_assembly,
+                    )
+                )
+
+        outcome = CanonicalM10VerificationOutcomeV2(
+            project_id=reconstruction.project_id,
+            revision=reconstruction.revision,
+            state_hash=reconstruction.state_hash,
+            mechanism_id=mechanism.id,
+            mechanism_hash=mechanism.mechanism_hash,
+            cad_realization_hash=cad.realization_hash,
+            scope=scope,
+            inventory=inventory,
+            request=request,
+            status=_aggregate_status(
+                [proof.result.status for proof in proofs],
+                [check.result.aggregate_classification for check in home_checks],
+            ),
+            pair_proofs=tuple(proofs),
+            home_exact_checks=tuple(home_checks),
+        )
+        outcome.validate_against(reconstruction, cad)
+        return outcome
+
+    @staticmethod
+    def verify_persisted(
+        outcome: CanonicalM10VerificationOutcomeV2,
+        reconstruction: CanonicalMechanismReconstruction,
+        cad: CanonicalCadRealizationV2,
+    ) -> None:
+        """Revalidate persisted canonical M10 @2 identities without executing providers."""
+
+        if type(outcome) is not CanonicalM10VerificationOutcomeV2:
+            raise TypeError("canonical M10 restart requires verification outcome@2")
+        reconstruction = CanonicalMechanismReconstruction.model_validate(
+            reconstruction.model_dump(mode="json")
+        )
+        cad = CanonicalCadRealizationV2.model_validate(cad.model_dump(mode="json"))
+        outcome = CanonicalM10VerificationOutcomeV2.model_validate(
+            outcome.model_dump(mode="json")
+        )
+        if reconstruction.mechanism.schema_version != "canonical-physical-mechanism@4":
+            raise ValueError("canonical M10 restart requires canonical mechanism@4")
+        CanonicalM10VerificationService._validate_cad_binding(reconstruction, cad)
+        service = CanonicalM10VerificationService(application=None)
+        obligation, binding, model, _, _, scope = service._derive_canonical_inputs(
+            reconstruction, cad
+        )
+        if outcome.scope != scope:
+            raise ValueError("canonical M10 restart scope does not match mechanism@4")
+        if semantic_canonical_m10_scope_hash(scope) != outcome.request.semantic_scope_hash:
+            raise ValueError("canonical M10 restart semantic scope does not match N2-S")
+        if (
+            outcome.request.semantic_single_joint_kinematic_model_hash
+            != semantic_single_joint_kinematic_model_hash(model)
+        ):
+            raise ValueError("canonical M10 restart semantic model identity mismatch")
+        expected_mapping_hashes = tuple(sorted(mapping.mapping_hash for mapping in cad.mappings))
+        if outcome.request.mapping_hashes != expected_mapping_hashes:
+            raise ValueError("canonical M10 restart CAD mapping references mismatch")
+
+        dispositions = service._derive_dispositions(
+            reconstruction.mechanism,
+            binding,
+            {
+                mapping.physical_instance_id: mapping.cad_instance_id
+                for mapping in cad.mappings
+            },
+            semantic_v2=True,
+        )
+        expected_inventory = service._derive_inventory(
+            reconstruction,
+            cad,
+            obligation,
+            dispositions,
+            scope,
+            semantic_v2=True,
+        )
+        if outcome.inventory != expected_inventory:
+            raise ValueError("canonical M10 restart inventory does not match canonical inputs")
+
+        mapping_by_cad = {mapping.cad_instance_id: mapping for mapping in cad.mappings}
+        for wrapper in outcome.pair_proofs:
+            assembly = service._induced_pair_assembly(
+                cad.assembly, wrapper.moving_instance_id, wrapper.stationary_instance_id
+            )
+            mappings = tuple(
+                mapping_by_cad[instance.instance_id] for instance in assembly.instances
+            )
+            wrapper.validate_against(assembly, mappings)
+        for wrapper in outcome.home_exact_checks:
+            assembly = service._induced_pair_assembly(
+                cad.assembly, wrapper.moving_instance_id, wrapper.stationary_instance_id
+            )
+            mappings = tuple(
+                mapping_by_cad[instance.instance_id] for instance in assembly.instances
+            )
+            wrapper.validate_against(assembly, mappings)
+
     @staticmethod
     def _validate_cad_binding(
         reconstruction: CanonicalMechanismReconstruction,
-        cad: CanonicalCadRealization,
+        cad: CanonicalCadRealization | CanonicalCadRealizationV2,
     ) -> None:
+        mechanism_v2 = (
+            reconstruction.mechanism.schema_version == "canonical-physical-mechanism@4"
+        )
+        cad_v2 = type(cad) is CanonicalCadRealizationV2
+        if mechanism_v2 != cad_v2:
+            raise ValueError(
+                "canonical M10 requires canonical mechanism@4 and CAD realization@2 together"
+            )
         if (
             cad.project_id != reconstruction.project_id
             or cad.revision != reconstruction.revision
@@ -894,7 +2030,13 @@ class CanonicalM10VerificationService:
         return obligation, binding, model, axis, tuple(dispositions), scope
 
     @staticmethod
-    def _derive_dispositions(mechanism, binding, cad_instance_by_physical=None):
+    def _derive_dispositions(
+        mechanism,
+        binding,
+        cad_instance_by_physical=None,
+        *,
+        semantic_v2: bool = False,
+    ):
         cad_instance_by_physical = cad_instance_by_physical or {}
         component_by_id = {component.instance_id: component for component in mechanism.components}
         gear_driver_ids = {
@@ -934,8 +2076,13 @@ class CanonicalM10VerificationService:
             if instance_id == binding.expected_child_instance_id
             or component_by_id[instance_id].role not in fixed_roles
         }
-        return tuple(
-            CanonicalM10ConstituentDisposition(
+        disposition_type = (
+            CanonicalM10ConstituentDispositionV2
+            if semantic_v2
+            else CanonicalM10ConstituentDisposition
+        )
+        dispositions = tuple(
+            disposition_type(
                 physical_instance_id=component.instance_id,
                 cad_instance_id=cad_instance_by_physical.get(
                     component.instance_id, component.instance_id
@@ -955,6 +2102,14 @@ class CanonicalM10VerificationService:
             )
             for component in mechanism.components
         )
+        if semantic_v2:
+            return tuple(
+                sorted(
+                    dispositions,
+                    key=lambda item: (item.physical_instance_id, item.cad_instance_id),
+                )
+            )
+        return dispositions
 
     @staticmethod
     def _joint_semantic_hash(binding) -> str:
@@ -1001,7 +2156,15 @@ class CanonicalM10VerificationService:
         )
 
     @staticmethod
-    def _derive_inventory(reconstruction, cad, obligation, dispositions, scope):
+    def _derive_inventory(
+        reconstruction,
+        cad,
+        obligation,
+        dispositions,
+        scope,
+        *,
+        semantic_v2: bool = False,
+    ):
         mechanism = reconstruction.mechanism
         mapping_by_physical = {mapping.physical_instance_id: mapping for mapping in cad.mappings}
         disposition_by_physical = {item.physical_instance_id: item for item in dispositions}
@@ -1018,6 +2181,11 @@ class CanonicalM10VerificationService:
         }
         component_by_id = {component.instance_id: component for component in mechanism.components}
         classifications = []
+        classification_type = (
+            CanonicalM10PairClassificationRecordV2
+            if semantic_v2
+            else CanonicalM10PairClassificationRecord
+        )
         cad_ids = tuple(sorted(mapping.cad_instance_id for mapping in cad.mappings))
         for first, second in itertools.combinations(cad_ids, 2):
             first_physical = next(
@@ -1031,7 +2199,7 @@ class CanonicalM10VerificationService:
             if physical_pair in gear_pairs:
                 if requirement is not None:
                     raise ValueError("canonical M10 cannot require clearance across a gear mesh")
-                record = CanonicalM10PairClassificationRecord(
+                record = classification_type(
                     pair=(first, second),
                     classification=CanonicalM10PairClassification.INTENDED_CONTACT_EXCLUDED,
                     reason="declared gear mesh interface is outside M10 scope",
@@ -1044,7 +2212,7 @@ class CanonicalM10VerificationService:
                     CanonicalM10BodyDisposition.OUTPUT_RIGID,
                 }:
                     raise ValueError("canonical M10 clearance pair must contain one fixed and one output-rigid body")
-                record = CanonicalM10PairClassificationRecord(
+                record = classification_type(
                     pair=(first, second),
                     classification=CanonicalM10PairClassification.CHECK_CLEARANCE,
                     requires_home_exact_check=requirement.requires_home_exact_check,
@@ -1056,7 +2224,7 @@ class CanonicalM10VerificationService:
                     disposition_by_physical[second_physical],
                 )
             ):
-                record = CanonicalM10PairClassificationRecord(
+                record = classification_type(
                     pair=(first, second),
                     classification=CanonicalM10PairClassification.UNMODELED_MOTION_OUT_OF_SCOPE,
                     reason="internal driver motion is outside M10 scope",
@@ -1069,19 +2237,46 @@ class CanonicalM10VerificationService:
                     disposition_by_physical[second_physical],
                 )
             ):
-                record = CanonicalM10PairClassificationRecord(
+                record = classification_type(
                     pair=(first, second),
                     classification=CanonicalM10PairClassification.SAME_RIGID_GROUP_EXCLUDED,
                     reason="both constituents share the accepted output rigid transform",
                 )
             else:
-                record = CanonicalM10PairClassificationRecord(
+                record = classification_type(
                     pair=(first, second),
                     classification=CanonicalM10PairClassification.OTHER_EXPLICIT_OUT_OF_SCOPE,
                     reason="not required by the canonical M10 engineering obligation",
                 )
             classifications.append(record)
         expected_pairs = tuple(itertools.combinations(cad_ids, 2))
+        checked_pairs = tuple(sorted(
+            item.pair for item in classifications
+            if item.classification is CanonicalM10PairClassification.CHECK_CLEARANCE
+        ))
+        excluded_pairs = tuple(sorted(
+            item.pair for item in classifications
+            if item.classification is not CanonicalM10PairClassification.CHECK_CLEARANCE
+        ))
+        if semantic_v2:
+            semantic_scope_hash = semantic_canonical_m10_scope_hash(scope)
+            inventory = CanonicalM10PairInventoryV2(
+                project_id=reconstruction.project_id,
+                revision=reconstruction.revision,
+                state_hash=reconstruction.state_hash,
+                mechanism_id=mechanism.id,
+                mechanism_hash=mechanism.mechanism_hash,
+                cad_realization_hash=cad.realization_hash,
+                semantic_scope_hash=semantic_scope_hash,
+                constituent_dispositions=tuple(dispositions),
+                expected_pair_universe=expected_pairs,
+                classifications=tuple(classifications),
+                checked_pairs=checked_pairs,
+                excluded_pairs=excluded_pairs,
+            )
+            if inventory.semantic_scope_hash != semantic_canonical_m10_scope_hash(scope):
+                raise ValueError("canonical M10 inventory@2 semantic scope mismatch")
+            return inventory
         return CanonicalM10PairInventory(
             project_id=reconstruction.project_id,
             revision=reconstruction.revision,
@@ -1093,14 +2288,8 @@ class CanonicalM10VerificationService:
             constituent_dispositions=dispositions,
             expected_pair_universe=expected_pairs,
             classifications=tuple(classifications),
-            checked_pairs=tuple(sorted(
-                item.pair for item in classifications
-                if item.classification is CanonicalM10PairClassification.CHECK_CLEARANCE
-            )),
-            excluded_pairs=tuple(sorted(
-                item.pair for item in classifications
-                if item.classification is not CanonicalM10PairClassification.CHECK_CLEARANCE
-            )),
+            checked_pairs=checked_pairs,
+            excluded_pairs=excluded_pairs,
         )
 
     @staticmethod
@@ -1151,16 +2340,32 @@ class CanonicalM10VerificationService:
 __all__ = [
     "CanonicalM10BodyDisposition",
     "CanonicalM10ConstituentDisposition",
+    "CanonicalM10ConstituentDispositionV2",
     "CanonicalM10EvaluationRequest",
+    "CanonicalM10EvaluationRequestV2",
     "CanonicalM10HomeExactCheck",
+    "CanonicalM10HomeExactCheckV2",
     "CanonicalM10PairClassification",
     "CanonicalM10PairClassificationRecord",
+    "CanonicalM10PairClassificationRecordV2",
     "CanonicalM10PairInventory",
+    "CanonicalM10PairInventoryV2",
     "CanonicalM10PairProof",
+    "CanonicalM10PairProofV2",
     "CanonicalM10ScopeEquivalenceResult",
     "CanonicalM10ScopeEquivalenceService",
     "CanonicalM10VerificationOutcome",
+    "CanonicalM10VerificationOutcomeV2",
     "CanonicalM10VerificationService",
     "CanonicalM10VerificationStatus",
+    "canonical_m10_aggregate_summary",
+    "canonical_m10_constituent_disposition_hash_v2",
+    "canonical_m10_evaluation_request_hash_v2",
+    "canonical_m10_home_exact_check_hash_v2",
+    "canonical_m10_pair_classification_hash_v2",
+    "canonical_m10_pair_inventory_hash_v2",
+    "canonical_m10_pair_proof_hash_v2",
+    "canonical_m10_verification_outcome_hash_v2",
     "DerivedCanonicalM10Scope",
+    "semantic_canonical_m10_scope_hash",
 ]

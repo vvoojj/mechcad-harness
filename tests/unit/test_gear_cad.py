@@ -8,6 +8,7 @@ from mechcad_harness.artifacts import ArtifactType
 from mechcad_harness.backends.gearworks_cad import build_spur_gear_cad
 from mechcad_harness.cad import SpurGearCadInput, SpurGearPairCadInput
 from mechcad_harness.backends.gearworks_cad import build_spur_gear_pair_cad
+from mechcad_harness.step_content_identity import step_content_identity_v1
 from mechcad_harness.changes import ChangeEngine, OwnershipPolicy
 from mechcad_harness.dependency import DependencyGraph, EvidenceStore
 from mechcad_harness.models import Component, DesignState
@@ -60,6 +61,37 @@ def test_specialized_gear_records_actual_build123d_provenance(tmp_path):
     assert metadata["build123d_provenance"]["library_name"] == "build123d"
     assert metadata["build123d_provenance"]["library_version"] == expected_version
     assert metadata["build123d_provenance"]["library_version"] == expected_version
+
+
+@pytest.mark.skipif(not (GEAR_AVAILABLE and BUILD123D_AVAILABLE), reason="gear and build123d extras are not installed")
+def test_gearworks_step_emits_accepted_timestamp_and_semantic_identity(tmp_path):
+    def export(teeth, run_id):
+        result = build_spur_gear_cad(
+            SpurGearCadInput(
+                module_mm=1,
+                teeth=teeth,
+                face_width_mm=5,
+                pressure_angle_deg=20,
+                requested_formats=("step",),
+            ),
+            tmp_path,
+            project_id="PRJ-1",
+            run_id=run_id,
+        )
+        artifact = result.artifact_references[0]
+        content = (tmp_path / artifact.relative_path).read_bytes()
+        return content, step_content_identity_v1(content).content_hash
+
+    first_bytes, first_identity = export(20, "RUN-1")
+    repeated_bytes, repeated_identity = export(20, "RUN-2")
+    changed_bytes, changed_identity = export(21, "RUN-3")
+
+    assert b"'2000-01-01T00:00:00'" in first_bytes
+    assert b"'2000-01-01T00:00:00Z'" not in first_bytes
+    assert first_identity == repeated_identity
+    assert changed_identity != first_identity
+    assert b"'2000-01-01T00:00:00'" in repeated_bytes
+    assert b"'2000-01-01T00:00:00'" in changed_bytes
 
 
 @pytest.mark.skipif(not GEAR_AVAILABLE, reason="gear extra is not installed")

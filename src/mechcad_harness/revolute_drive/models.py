@@ -12,6 +12,7 @@ from mechcad_harness.candidates.models import (
     ComponentPropertyAuthority,
     ComponentSpecificationSnapshot,
     MechanicalDesignCandidate,
+    semantic_candidate_design_variable_records,
 )
 from mechcad_harness.engineering.scalar_projection import CanonicalScalarProjection
 from mechcad_harness.models.common import Model
@@ -408,7 +409,10 @@ class EngineeringCheck(RevoluteDriveModel):
 
 
 class RevoluteDriveAdmissibilityResult(RevoluteDriveModel):
-    schema_version: Literal["revolute-drive-admissibility@1"] = "revolute-drive-admissibility@1"
+    schema_version: Literal[
+        "revolute-drive-admissibility@1",
+        "revolute-drive-admissibility@2",
+    ] = "revolute-drive-admissibility@1"
     candidate_hash: str
     source_binding_hash: str
     synthesis_request_hash: str
@@ -432,6 +436,11 @@ class RevoluteDriveAdmissibilityResult(RevoluteDriveModel):
 
     @model_validator(mode="after")
     def validate_result(self) -> RevoluteDriveAdmissibilityResult:
+        if self.schema_version not in (
+            "revolute-drive-admissibility@1",
+            "revolute-drive-admissibility@2",
+        ):
+            raise ValueError("unsupported revolute-drive admissibility schema")
         statuses = {check.status for check in self.checks}
         if EngineeringCheckStatus.VIOLATED in statuses:
             expected_status = DriveAdmissibility.INADMISSIBLE
@@ -442,7 +451,7 @@ class RevoluteDriveAdmissibilityResult(RevoluteDriveModel):
         if self.status is not None and self.status is not expected_status:
             raise ValueError("admissibility status does not match required checks")
         object.__setattr__(self, "status", expected_status)
-        expected_hash = _hash(self, "result_hash")
+        expected_hash = admissibility_result_hash(self)
         if self.result_hash == "pending":
             object.__setattr__(self, "result_hash", expected_hash)
         elif self.result_hash != expected_hash:
@@ -451,6 +460,12 @@ class RevoluteDriveAdmissibilityResult(RevoluteDriveModel):
 
 
 def admissibility_result_hash(result: RevoluteDriveAdmissibilityResult) -> str:
+    if result.schema_version == "revolute-drive-admissibility@2":
+        payload = result.model_dump(mode="json")
+        payload["design_variables"] = semantic_candidate_design_variable_records(
+            result.design_variables
+        )
+        return _hash(payload, "result_hash")
     return _hash(result, "result_hash")
 
 

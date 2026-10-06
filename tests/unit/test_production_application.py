@@ -1347,6 +1347,112 @@ def test_injected_adapter_cannot_override_production_identity_or_role(tmp_path):
     )
 
 
+def test_select_candidate_fails_closed_when_comparison_artifact_is_missing(tmp_path, monkeypatch):
+    import mechcad_harness.application as application_module
+    from mechcad_harness.candidates import CandidateProvenanceIntegrityError, CandidateSelection
+
+    application = build_application(tmp_path, CountingAdapter())
+    identity = "sha256:" + "0" * 64
+
+    class FakeCandidate:
+        candidate_hash = identity
+        source_binding = SimpleNamespace(project_id=application.project_id)
+
+    class FakeEvaluation:
+        evaluation_hash = identity
+        cad_realization_hash = identity
+        source_binding_hash = identity
+        evaluation_scope_hash = identity
+
+    selection = CandidateSelection(
+        candidate_hash=identity,
+        evaluation_hash=identity,
+        source_binding_hash=identity,
+        evaluation_scope_hash=identity,
+        selector_identity="test-selector",
+        rationale="test selection",
+        comparison_used=True,
+        comparison_result_hash=identity,
+    )
+    comparison = SimpleNamespace(project_id=application.project_id)
+
+    monkeypatch.setattr(application, "_require_candidate_project", lambda *args: None)
+    monkeypatch.setattr(application, "_candidate_comparison_artifact", lambda _value: None)
+    monkeypatch.setattr(
+        application.candidate_selection_service,
+        "select",
+        lambda *args, **kwargs: selection,
+    )
+    monkeypatch.setattr(application_module, "CandidateEvaluation", FakeEvaluation)
+
+    with pytest.raises(CandidateProvenanceIntegrityError, match="comparison artifact"):
+        application.select_candidate(
+            FakeCandidate(),
+            FakeEvaluation(),
+            "test-selector",
+            "test selection",
+            comparison=comparison,
+        )
+
+
+def test_select_candidate_without_comparison_publishes_selection_without_comparison_artifact(
+    tmp_path, monkeypatch
+):
+    import mechcad_harness.application as application_module
+    from mechcad_harness.candidates import CandidateSelection
+
+    application = build_application(tmp_path, CountingAdapter())
+    identity = "sha256:" + "0" * 64
+
+    class FakeCandidate:
+        candidate_hash = identity
+        source_binding = SimpleNamespace(project_id=application.project_id)
+
+    class FakeEvaluation:
+        candidate_hash = identity
+        evaluation_hash = identity
+        cad_realization_hash = identity
+
+    selection = CandidateSelection(
+        candidate_hash=identity,
+        evaluation_hash=identity,
+        source_binding_hash=identity,
+        evaluation_scope_hash=identity,
+        selector_identity="test-selector",
+        rationale="test selection",
+    )
+    published = []
+
+    monkeypatch.setattr(application, "_require_candidate_project", lambda *args: None)
+    monkeypatch.setattr(
+        application.candidate_selection_service,
+        "select",
+        lambda *args, **kwargs: selection,
+    )
+    monkeypatch.setattr(
+        application,
+        "_candidate_comparison_artifact",
+        lambda *args: pytest.fail("comparison artifact lookup must not run"),
+    )
+    monkeypatch.setattr(application_module, "CandidateEvaluation", FakeEvaluation)
+    monkeypatch.setattr(
+        application.candidate_provenance_artifact_service,
+        "publish_candidate_selection",
+        lambda *args: published.append(args),
+    )
+
+    result = application.select_candidate(
+        FakeCandidate(),
+        FakeEvaluation(),
+        "test-selector",
+        "test selection",
+    )
+
+    assert result == selection
+    assert len(published) == 1
+    assert published[0][-1] is None
+
+
 def test_gateway_uses_registered_transmission_role_not_test_role(tmp_path):
     adapter = CountingAdapter()
     application = build_application(tmp_path, adapter)

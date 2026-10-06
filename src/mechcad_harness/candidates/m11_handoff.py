@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import ConfigDict, Field, StrictInt, StrictStr, field_validator, model_validator
 
@@ -981,12 +981,386 @@ class CanonicalM11HandoffService:
         )
 
 
+# ---------------------------------------------------------------------------
+# P7 M11 handoff @2 (Spec §18). T-P7.3-owned first-positive. Eligibility-only:
+# no structural definition, mesh, solve, or structural Evidence is created.
+# Request @2: 27 declared (15 INCLUDED + 2 TRANSFORMED sources + 10 EXCLUDED).
+# Envelope @2: BY-HASH-ONLY (nested full request dump never enters).
+# ---------------------------------------------------------------------------
+
+
+def _m11_request_hash_v2(payload: dict) -> str:
+    # Semantic request hash: includes INCLUDED + TRANSFORMED-derived hashes,
+    # excludes EXCLUDED raw/provenance coordinates and self-hash.
+    # Whole-mechanism null pair remains in payload (not omitted).
+    excluded = {
+        "promoted_revision",
+        "promoted_state_hash",
+        "target_geometry_artifact_id",
+        "target_geometry_artifact_hash",
+        "target_geometry_bound_revision",
+        "target_geometry_bound_state_hash",
+        "promotion_result_artifact_id",
+        "decision_artifact_id",
+        "decision_artifact_hash",
+        "request_hash",
+        "intent",
+        "mapping",
+    }
+    semantic = {k: v for k, v in payload.items() if k not in excluded}
+    # TRANSFORMED sources enter as hashes.
+    return "sha256:" + hashlib.sha256(canonical_json(semantic)).hexdigest()
+
+
+def _m11_handoff_hash_v2(value: "CanonicalM11HandoffV2") -> str:
+    payload = {
+        "schema_version": value.schema_version,
+        "project_id": value.project_id,
+        "canonical_mechanism_id": value.canonical_mechanism_id,
+        "canonical_mechanism_hash": value.canonical_mechanism_hash,
+        "target_scope": value.target_scope,
+        "target_instance_id": value.target_instance_id,
+        "analysis_category": value.analysis_category,
+        "intent_hash": value.intent_hash,
+        "request_hash": value.request_hash,
+        "result_hash": value.result_hash,
+        "status": value.status.value,
+    }
+    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+class CanonicalM11HandoffRequestV2(PromotionModel):
+    """M11 handoff request @2: 27 declared, eligibility-only."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal["canonical-m11-handoff-request@2"] = (
+        "canonical-m11-handoff-request@2"
+    )
+    project_id: StrictStr = Field(min_length=1)
+    promoted_revision: StrictInt = Field(gt=0)
+    promoted_state_hash: StrictStr
+    canonical_mechanism_id: StrictStr = Field(min_length=1)
+    canonical_mechanism_hash: StrictStr
+    target_scope: Literal["whole_mechanism", "single_component"]
+    target_instance_id: StrictStr = Field(min_length=1)
+    target_geometry_artifact_id: StrictStr | None = None
+    target_geometry_artifact_hash: StrictStr | None = None
+    target_geometry_bound_revision: StrictInt | None = Field(default=None, gt=0)
+    target_geometry_bound_state_hash: StrictStr | None = None
+    target_geometry_content_identity: StrictStr | None = None
+    target_geometry_content_identity_algorithm: StrictStr | None = None
+    analysis_category: Literal["linear_static"] = "linear_static"
+    eligibility_scope: Literal["single_solid_only"] = "single_solid_only"
+    eligibility_scope_version: StrictStr = "m11-eligibility-only@1"
+    intent: PostPromotionM11TargetIntent
+    promotion_result_artifact_id: StrictStr = Field(min_length=1)
+    promotion_result_hash: StrictStr
+    decision_artifact_id: StrictStr = Field(min_length=1)
+    decision_artifact_hash: StrictStr
+    semantic_decision_hash: StrictStr
+    promotion_proposal_hash: StrictStr
+    mapping_hashes: tuple[StrictStr, ...] = Field(min_length=1)
+    mapping: tuple[Any, ...] = Field(min_length=1)
+    request_hash: StrictStr = "pending"
+
+    _validate_text = field_validator(
+        "project_id",
+        "canonical_mechanism_id",
+        "target_instance_id",
+        "eligibility_scope_version",
+        "promotion_result_artifact_id",
+        "decision_artifact_id",
+    )(_nonblank)
+    _validate_hashes = field_validator(
+        "promoted_state_hash",
+        "canonical_mechanism_hash",
+        "promotion_result_hash",
+        "decision_artifact_hash",
+        "semantic_decision_hash",
+        "promotion_proposal_hash",
+    )(_require_hash)
+    _validate_optional_geom = field_validator(
+        "target_geometry_artifact_id", "target_geometry_content_identity_algorithm"
+    )(lambda v: None if v is None else _nonblank(v))
+    _validate_content_identity = field_validator("target_geometry_content_identity")(
+        lambda v: None if v is None else _require_hash(v)
+    )
+    _validate_optional_hash = field_validator(
+        "target_geometry_artifact_hash", "target_geometry_bound_state_hash"
+    )(lambda v: None if v is None else _require_hash(v))
+    _validate_request_hash = field_validator("request_hash")(_hash_or_pending)
+
+    @field_validator("mapping_hashes", mode="before")
+    @classmethod
+    def _validate_mapping_hashes(cls, value):
+        items = tuple(_require_hash(v) for v in tuple(value))
+        if len(set(items)) != len(items):
+            raise ValueError("M11@2 mapping hashes must be unique")
+        return items
+
+    @field_validator("mapping", mode="before")
+    @classmethod
+    def _validate_mapping_v3(cls, value):
+        from .promotion_models import CandidateCanonicalInstanceMappingV3
+
+        items = []
+        for value_item in tuple(value):
+            if isinstance(value_item, dict):
+                if value_item.get("schema_version") != "candidate-canonical-mapping@3":
+                    raise ValueError("M11@2 mapping must be exactly @3")
+                items.append(CandidateCanonicalInstanceMappingV3.model_validate(value_item))
+                continue
+            if type(value_item) is not CandidateCanonicalInstanceMappingV3:
+                raise ValueError("M11@2 mapping must be exactly @3")
+            items.append(
+                CandidateCanonicalInstanceMappingV3.model_validate(
+                    value_item.model_dump(mode="json")
+                )
+            )
+        items = tuple(items)
+        keys = tuple((m.candidate_instance_id, m.canonical_instance_id) for m in items)
+        if len(set(keys)) != len(keys):
+            raise ValueError("M11@2 mapping must be unique")
+        if keys != tuple(sorted(keys)):
+            raise ValueError("M11@2 mapping must be sorted")
+        return items
+
+    @model_validator(mode="after")
+    def validate_request_v2(self) -> "CanonicalM11HandoffRequestV2":
+        from .promotion_models import CandidateCanonicalInstanceMappingV3
+
+        # @3-only mappings for new production.
+        for item in self.mapping:
+            if type(item) is not CandidateCanonicalInstanceMappingV3:
+                raise ValueError("M11@2 mapping must be exactly @3")
+            if item.schema_version != "candidate-canonical-mapping@3":
+                raise ValueError("M11@2 mapping must be @3")
+        # Cardinality/alignment/ordering.
+        if len(self.mapping) != len(self.mapping_hashes):
+            raise ValueError("M11@2 mapping cardinality mismatch")
+        if self.mapping_hashes != tuple(m.mapping_hash for m in self.mapping):
+            raise ValueError("M11@2 mapping alignment mismatch")
+        if any(
+            item.canonical_path
+            != f"/physical_mechanisms/{self.canonical_mechanism_id}/components/{item.canonical_instance_id}"
+            for item in self.mapping
+        ):
+            raise ValueError("M11@2 mapping path does not match the canonical mechanism")
+        # Target binding: component-bound requires content-identity pair with pin;
+        # whole-mechanism requires JSON null pair.
+        if self.target_scope == "single_component":
+            if self.target_geometry_content_identity is None:
+                raise ValueError("component-bound M11@2 requires content identity")
+            if self.target_geometry_content_identity_algorithm != "step-content-identity@1":
+                raise ValueError("M11@2 algorithm must be step-content-identity@1")
+            # Raw bytes retained EXCLUDED + byte-validated (validated separately).
+        else:
+            if not (
+                self.target_geometry_content_identity is None
+                and self.target_geometry_content_identity_algorithm is None
+            ):
+                raise ValueError("whole-mechanism M11@2 requires JSON null pair")
+        # Intent @1 retained/frozen (scope/category equality still validated).
+        if self.intent.target_scope != self.target_scope:
+            raise ValueError("M11@2 intent/target scope mismatch")
+        if self.intent.analysis_category != self.analysis_category:
+            raise ValueError("M11@2 intent/analysis category mismatch")
+        if self.target_scope == "whole_mechanism" and self.target_instance_id != self.canonical_mechanism_id:
+            raise ValueError("whole-mechanism M11@2 target must equal the mechanism")
+        if self.target_scope == "single_component" and self.target_instance_id not in {
+            item.canonical_instance_id for item in self.mapping
+        }:
+            raise ValueError("component M11@2 target must match the mapping")
+        if (self.target_geometry_artifact_id is None) != (
+            self.target_geometry_artifact_hash is None
+        ):
+            raise ValueError("M11@2 target geometry artifact binding must be complete")
+        if (self.target_geometry_bound_revision is None) != (
+            self.target_geometry_bound_state_hash is None
+        ):
+            raise ValueError("M11@2 target geometry source binding must be complete")
+        if (self.target_geometry_artifact_id is None) != (
+            self.target_geometry_bound_revision is None
+        ):
+            raise ValueError("M11@2 target geometry source identity must be complete")
+        if self.target_scope == "whole_mechanism" and any(
+            value is not None
+            for value in (
+                self.target_geometry_artifact_id,
+                self.target_geometry_artifact_hash,
+                self.target_geometry_bound_revision,
+                self.target_geometry_bound_state_hash,
+            )
+        ):
+            raise ValueError("whole-mechanism M11@2 target cannot bind component geometry")
+        if self.target_scope == "single_component" and any(
+            value is None
+            for value in (
+                self.target_geometry_artifact_id,
+                self.target_geometry_artifact_hash,
+                self.target_geometry_bound_revision,
+                self.target_geometry_bound_state_hash,
+            )
+        ):
+            raise ValueError("component M11@2 target requires complete raw geometry binding")
+        # Semantic decision linkage: caller must supply verified manifest hash;
+        # equality enforced by handoff service (see build/verify below).
+        payload = self.model_dump(mode="json")
+        # TRANSFORMED: intent -> intent_hash, mapping -> mapping-hash tuple.
+        payload["intent_hash"] = self.intent.intent_hash
+        payload["mapping_hash_tuple"] = list(self.mapping_hashes)
+        expected = _m11_request_hash_v2(
+            {
+                "schema_version": payload["schema_version"],
+                "project_id": payload["project_id"],
+                "canonical_mechanism_id": payload["canonical_mechanism_id"],
+                "canonical_mechanism_hash": payload["canonical_mechanism_hash"],
+                "target_scope": payload["target_scope"],
+                "target_instance_id": payload["target_instance_id"],
+                "analysis_category": payload["analysis_category"],
+                "eligibility_scope": payload["eligibility_scope"],
+                "eligibility_scope_version": payload["eligibility_scope_version"],
+                "intent_hash": payload["intent_hash"],
+                "target_geometry_content_identity": payload["target_geometry_content_identity"],
+                "target_geometry_content_identity_algorithm": payload[
+                    "target_geometry_content_identity_algorithm"
+                ],
+                "promotion_result_hash": payload["promotion_result_hash"],
+                "semantic_decision_hash": payload["semantic_decision_hash"],
+                "promotion_proposal_hash": payload["promotion_proposal_hash"],
+                "mapping_hashes": list(payload["mapping_hashes"]),
+            }
+        )
+        if self.request_hash == "pending":
+            object.__setattr__(self, "request_hash", expected)
+        elif self.request_hash != expected:
+            raise ValueError("M11 handoff request@2 hash mismatch")
+        return self
+
+
+class CanonicalM11HandoffV2(PromotionModel):
+    """M11 handoff @2 envelope: BY-HASH-ONLY, request@2 + result@1."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal["canonical-m11-handoff@2"] = "canonical-m11-handoff@2"
+    project_id: StrictStr = Field(min_length=1)
+    promoted_revision: StrictInt = Field(gt=0)
+    promoted_state_hash: StrictStr
+    canonical_mechanism_id: StrictStr = Field(min_length=1)
+    canonical_mechanism_hash: StrictStr
+    target_scope: Literal["whole_mechanism", "single_component"]
+    target_instance_id: StrictStr = Field(min_length=1)
+    analysis_category: Literal["linear_static"] = "linear_static"
+    intent_hash: StrictStr
+    request_hash: StrictStr
+    result_hash: StrictStr
+    status: CanonicalM11HandoffStatus
+    handoff_hash: StrictStr = "pending"
+
+    _validate_text = field_validator("project_id", "canonical_mechanism_id", "target_instance_id")(
+        _nonblank
+    )
+    _validate_hashes = field_validator(
+        "promoted_state_hash",
+        "canonical_mechanism_hash",
+        "intent_hash",
+        "request_hash",
+        "result_hash",
+    )(_require_hash)
+    _validate_handoff = field_validator("handoff_hash")(_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_handoff_v2(self) -> "CanonicalM11HandoffV2":
+        expected = _m11_handoff_hash_v2(self)
+        if self.handoff_hash == "pending":
+            object.__setattr__(self, "handoff_hash", expected)
+        elif self.handoff_hash != expected:
+            raise ValueError("M11 handoff@2 hash mismatch")
+        return self
+
+
+def verify_m11_handoff_request_v2_linkage(
+    request: CanonicalM11HandoffRequestV2,
+    *,
+    decision_hash: str | None = None,
+    promotion_result_hash: str | None = None,
+    decision_manifest: Any | None = None,
+    promotion_result_manifest: Any | None = None,
+) -> None:
+    """Decision linkage: semantic_decision_hash must equal verified @2 manifest hash."""
+    if type(request) is not CanonicalM11HandoffRequestV2:
+        raise ValueError("M11@2 linkage requires exact request@2")
+    request = CanonicalM11HandoffRequestV2.model_validate(request.model_dump(mode="json"))
+    if decision_manifest is not None:
+        from .promotion_artifacts import SelectedCandidateDecisionManifestV2
+
+        if type(decision_manifest) is not SelectedCandidateDecisionManifestV2:
+            raise ValueError("M11@2 linkage requires exact verified decision manifest@2")
+        decision_manifest = SelectedCandidateDecisionManifestV2.model_validate(
+            decision_manifest.model_dump(mode="json")
+        )
+        decision_hash = decision_manifest.decision_hash
+    if promotion_result_manifest is not None:
+        from .promotion_artifacts import CandidatePromotionResultManifestV2
+
+        if type(promotion_result_manifest) is not CandidatePromotionResultManifestV2:
+            raise ValueError("M11@2 linkage requires exact promotion result manifest@2")
+        promotion_result_manifest = CandidatePromotionResultManifestV2.model_validate(
+            promotion_result_manifest.model_dump(mode="json")
+        )
+        promotion_result_hash = promotion_result_manifest.result_hash
+        if decision_hash != promotion_result_manifest.decision_hash:
+            raise ValueError("M11@2 decision/result manifest linkage mismatch")
+    if decision_hash is None or promotion_result_hash is None:
+        raise ValueError("M11@2 linkage requires verified decision and result parents")
+    if request.semantic_decision_hash != decision_hash:
+        raise ValueError("M11@2 semantic decision linkage mismatch")
+    if request.promotion_result_hash != promotion_result_hash:
+        raise ValueError("M11@2 promotion result linkage mismatch")
+    # Raw decision/target bytes retained for replay/provenance, byte-validated
+    # separately, EXCLUDED from semantic identity (enforced by _m11_request_hash_v2).
+
+
+def build_handoff_v2(
+    request: CanonicalM11HandoffRequestV2,
+    result: CanonicalM11HandoffResult,
+) -> CanonicalM11HandoffV2:
+    """Build the by-hash-only @2 envelope from exact typed @2/@1 parents."""
+
+    if type(request) is not CanonicalM11HandoffRequestV2:
+        raise ValueError("M11@2 envelope requires exact request@2")
+    if type(result) is not CanonicalM11HandoffResult:
+        raise ValueError("M11@2 envelope requires exact result@1")
+    request = CanonicalM11HandoffRequestV2.model_validate(request.model_dump(mode="json"))
+    result = CanonicalM11HandoffResult.model_validate(result.model_dump(mode="json"))
+    return CanonicalM11HandoffV2(
+        project_id=request.project_id,
+        promoted_revision=request.promoted_revision,
+        promoted_state_hash=request.promoted_state_hash,
+        canonical_mechanism_id=request.canonical_mechanism_id,
+        canonical_mechanism_hash=request.canonical_mechanism_hash,
+        target_scope=request.target_scope,
+        target_instance_id=request.target_instance_id,
+        analysis_category=request.analysis_category,
+        intent_hash=request.intent.intent_hash,
+        request_hash=request.request_hash,
+        result_hash=result.result_hash,
+        status=result.status,
+    )
+
+
 __all__ = [
     "CanonicalM11Handoff",
     "CanonicalM11HandoffIntegrityError",
     "CanonicalM11HandoffRequest",
+    "CanonicalM11HandoffRequestV2",
     "CanonicalM11HandoffResult",
     "CanonicalM11HandoffService",
     "CanonicalM11HandoffStatus",
+    "CanonicalM11HandoffV2",
+    "build_handoff_v2",
     "build_handoff_request",
+    "verify_m11_handoff_request_v2_linkage",
 ]

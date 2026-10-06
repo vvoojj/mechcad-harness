@@ -163,7 +163,9 @@ class CandidatePromotionPolicy(PromotionModel):
     schema_version: Literal["candidate-promotion-policy@1"] = "candidate-promotion-policy@1"
     allowed_target_family: StrictStr = "canonical_physical_mechanism"
     mapping_schema_version: Literal[
-        "candidate-canonical-mapping@1", "candidate-canonical-mapping@2"
+        "candidate-canonical-mapping@1",
+        "candidate-canonical-mapping@2",
+        "candidate-canonical-mapping@3",
     ] = "candidate-canonical-mapping@1"
     compiler_version: StrictStr = "candidate-promotion@1"
     allowed_classifications: tuple[PromotionValueClassification, ...] = Field(
@@ -359,6 +361,58 @@ class CandidateCanonicalInstanceMapping(PromotionModel):
             object.__setattr__(self, "mapping_hash", expected)
         elif self.mapping_hash != expected:
             raise ValueError("candidate canonical mapping hash mismatch")
+        return self
+
+
+class CandidateCanonicalInstanceMappingV3(PromotionModel):
+    """Scalar-only, explicitly versioned candidate-to-canonical mapping."""
+
+    schema_version: Literal["candidate-canonical-mapping@3"] = (
+        "candidate-canonical-mapping@3"
+    )
+    candidate_instance_id: StrictStr = Field(min_length=1)
+    canonical_instance_id: StrictStr = Field(min_length=1)
+    canonical_path: StrictStr = Field(min_length=2)
+    classification: PromotionValueClassification
+    source_identity: StrictStr = Field(min_length=1)
+    source_provenance: InputProvenanceKind = InputProvenanceKind.SOURCE_AUTHORITY
+    source_value: PromotionSourceValue | None = None
+    mapping_hash: StrictStr = "pending"
+
+    _validate_text = field_validator(
+        "candidate_instance_id", "canonical_instance_id", "canonical_path", "source_identity"
+    )(_nonblank)
+    _validate_hash = field_validator("mapping_hash")(_hash_or_pending)
+    @field_validator("source_value")
+    @classmethod
+    def validate_source_value(cls, value: Any) -> Any:
+        del cls
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("mapped source values must be finite")
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("mapped source values must not be empty")
+        if isinstance(value, tuple):
+            if (
+                len(value) != 2
+                or any(not math.isfinite(number) for number in value)
+                or value[0] > value[1]
+            ):
+                raise ValueError("mapped source ranges must be finite and ordered")
+        return value
+
+    @model_validator(mode="after")
+    def validate_mapping_v3(self) -> "CandidateCanonicalInstanceMappingV3":
+        if (
+            not self.canonical_path.startswith("/")
+            or "//" in self.canonical_path
+            or "~" in self.canonical_path
+        ):
+            raise ValueError("canonical mapping path must be a literal path")
+        expected = _hash(self, "mapping_hash")
+        if self.mapping_hash == "pending":
+            object.__setattr__(self, "mapping_hash", expected)
+        elif self.mapping_hash != expected:
+            raise ValueError("candidate canonical mapping@3 hash mismatch")
         return self
 
 
@@ -1111,8 +1165,18 @@ class PromotedMechanismVerificationResult(PromotionModel):
                 raise ValueError("post-promotion result is incomplete")
             if not self.canonical_m10_request_hashes or not self.canonical_m10_result_hashes:
                 raise ValueError("post-promotion result requires canonical M10 identities")
-        if len(self.canonical_m10_request_hashes) != len(self.canonical_m10_result_hashes):
-            raise ValueError("canonical M10 request/result identity counts must match")
+        if bool(self.canonical_m10_request_hashes) != bool(self.canonical_m10_result_hashes):
+            raise ValueError("canonical M10 request/result identities must be jointly present")
+        if len(set(self.canonical_m10_request_hashes)) != len(self.canonical_m10_request_hashes):
+            raise ValueError("canonical M10 request identities must be unique")
+        if len(set(self.canonical_m10_result_hashes)) != len(self.canonical_m10_result_hashes):
+            raise ValueError("canonical M10 result identities must be unique")
+        if self.status in (
+            PromotedMechanismVerificationStatus.VERIFIED,
+            PromotedMechanismVerificationStatus.ENGINEERING_VIOLATION,
+            PromotedMechanismVerificationStatus.UNRESOLVED,
+        ) and len(self.canonical_m10_request_hashes) != 1:
+            raise ValueError("post-promotion result requires one canonical M10 aggregate request")
         expected = _hash(self, "verification_hash")
         if self.verification_hash == "pending":
             object.__setattr__(self, "verification_hash", expected)
@@ -1140,6 +1204,701 @@ def promotion_proposal_hash(
     return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# P7 deterministic STEP content-identity @2 family (Spec §17).
+# Legacy @1 records above are frozen. New @2 records are hash-only (no embedded
+# full objects) with exact declared counts. Production default remains LEGACY;
+# @2 paths activate only through explicit typed parents verified by the P7
+# compiler/verifier in promotion.py.
+# ---------------------------------------------------------------------------
+
+
+def _require_sorted_unique_hashes(values: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = tuple(_require_hash(value) for value in values)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("hash identities must be unique")
+    if normalized != tuple(sorted(normalized)):
+        raise ValueError("hash identities must be lexically sorted")
+    return normalized
+
+
+def _require_mapping_v3_tuple(
+    values: tuple[CandidateCanonicalInstanceMappingV3, ...],
+) -> tuple[CandidateCanonicalInstanceMappingV3, ...]:
+    normalized = tuple(
+        CandidateCanonicalInstanceMappingV3.model_validate(value.model_dump(mode="json"))
+        for value in values
+    )
+    keys = tuple((item.candidate_instance_id, item.canonical_instance_id) for item in normalized)
+    if len(set(keys)) != len(keys):
+        raise ValueError("@3 mapping identities must be unique")
+    if keys != tuple(sorted(keys)):
+        raise ValueError("@3 mapping must be sorted by (candidate_instance_id, canonical_instance_id)")
+    return normalized
+
+
+class CandidatePromotionPolicyV2(PromotionModel):
+    """Promotion policy @2: wire-reads @1/@2/@3 but new production admits @3 only."""
+
+    schema_version: Literal["candidate-promotion-policy@2"] = "candidate-promotion-policy@2"
+    allowed_target_family: StrictStr = "canonical_physical_mechanism"
+    mapping_schema_version: Literal[
+        "candidate-canonical-mapping@1",
+        "candidate-canonical-mapping@2",
+        "candidate-canonical-mapping@3",
+    ] = "candidate-canonical-mapping@3"
+    compiler_version: StrictStr = "candidate-promotion@1"
+    allowed_classifications: tuple[PromotionValueClassification, ...] = Field(
+        default=tuple(PromotionValueClassification),
+    )
+    required_property_authorities: tuple[CanonicalComponentPropertyAuthority, ...] = Field(
+        default=(),
+    )
+    publication_mode: Literal["decision_and_result_manifests"] = "decision_and_result_manifests"
+    policy_hash: StrictStr = "pending"
+
+    _validate_text = field_validator(
+        "allowed_target_family", "mapping_schema_version", "compiler_version"
+    )(_nonblank)
+    _validate_hash = field_validator("policy_hash")(_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_policy_v2(self) -> "CandidatePromotionPolicyV2":
+        if self.allowed_target_family != "canonical_physical_mechanism":
+            raise ValueError("promotion@2 target family must be canonical_physical_mechanism")
+        if self.compiler_version != "candidate-promotion@1":
+            raise ValueError("promotion@2 compiler_version is pinned to candidate-promotion@1")
+        if not self.allowed_classifications:
+            raise ValueError("promotion policy requires at least one classification")
+        if len(set(self.allowed_classifications)) != len(self.allowed_classifications):
+            raise ValueError("promotion policy classifications must be unique")
+        if len(set(self.required_property_authorities)) != len(self.required_property_authorities):
+            raise ValueError("promotion policy property authorities must be unique")
+        expected = _hash(self, "policy_hash")
+        if self.policy_hash == "pending":
+            object.__setattr__(self, "policy_hash", expected)
+        elif self.policy_hash != expected:
+            raise ValueError("candidate promotion policy@2 hash mismatch")
+        return self
+
+    def admit_new_production(self) -> None:
+        """New-production admission: mapping must be @3 (wire-read allows @1/@2)."""
+        if self.mapping_schema_version != "candidate-canonical-mapping@3":
+            raise ValueError("new-family production requires candidate-canonical-mapping@3")
+
+
+class CandidatePromotionRequestV2(PromotionModel):
+    """Single-joint promotion request @2: 19 declared, hash-only, typed parent required."""
+
+    schema_version: Literal["candidate-promotion-request@2"] = "candidate-promotion-request@2"
+    project_id: StrictStr = Field(min_length=1)
+    source_revision: StrictInt = Field(gt=0)
+    source_state_hash: StrictStr
+    candidate_hash: StrictStr
+    synthesis_request_hash: StrictStr
+    synthesis_policy_hash: StrictStr
+    m12_3_result_hash: StrictStr
+    evaluation_hash: StrictStr
+    selection_hash: StrictStr
+    comparison_used: StrictBool = False
+    comparison_request_hash: StrictStr | None = None
+    comparison_result_hash: StrictStr | None = None
+    comparison_entry_hashes: tuple[tuple[StrictStr, StrictStr], ...] = ()
+    promotion_policy_hash: StrictStr
+    canonical_target_mechanism_id: StrictStr = Field(min_length=1)
+    classifications: tuple[PromotionClassification, ...] = ()
+    m11_target_intent: PostPromotionM11TargetIntent | None = None
+    request_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "source_state_hash",
+        "candidate_hash",
+        "synthesis_request_hash",
+        "synthesis_policy_hash",
+        "m12_3_result_hash",
+        "evaluation_hash",
+        "selection_hash",
+        "promotion_policy_hash",
+    )(_require_hash)
+    _validate_optional = field_validator("comparison_request_hash", "comparison_result_hash")(
+        lambda value: None if value is None else _require_hash(value)
+    )
+    _validate_request_hash = field_validator("request_hash")(_hash_or_pending)
+    _validate_text = field_validator("project_id", "canonical_target_mechanism_id")(_nonblank)
+
+    @field_validator("comparison_entry_hashes", mode="before")
+    @classmethod
+    def _validate_entry_hashes(cls, value):
+        items = tuple(((_require_hash(a), _require_hash(b))) for a, b in tuple(value or ()))
+        if len(set(items)) != len(items):
+            raise ValueError("comparison entry hashes must be unique")
+        if items != tuple(sorted(items)):
+            raise ValueError("comparison entry hashes must be sorted")
+        return items
+
+    @field_validator("classifications")
+    @classmethod
+    def _validate_classifications(cls, values):
+        identities = tuple(item.source_identity for item in values)
+        if len(set(identities)) != len(identities):
+            raise ValueError("promotion classifications must be unique")
+        if identities != tuple(sorted(identities)):
+            raise ValueError("promotion classifications must be lexically sorted")
+        return values
+
+    @model_validator(mode="after")
+    def validate_request_v2(self) -> "CandidatePromotionRequestV2":
+        if self.comparison_used != (self.comparison_result_hash is not None):
+            raise ValueError("comparison result identity must match comparison usage")
+        if self.comparison_used != (self.comparison_request_hash is not None):
+            raise ValueError("comparison request identity must match comparison usage")
+        if self.comparison_used != bool(self.comparison_entry_hashes):
+            raise ValueError("comparison entries must match comparison usage")
+        expected = _hash(self, "request_hash")
+        if self.request_hash == "pending":
+            object.__setattr__(self, "request_hash", expected)
+        elif self.request_hash != expected:
+            raise ValueError("candidate promotion request@2 hash mismatch")
+        return self
+
+
+class CandidateMultiJointPromotionRequestV2(PromotionModel):
+    """Multi-joint promotion request @2: 18 declared, hash-only, typed parent required."""
+
+    schema_version: Literal["candidate-multi-joint-promotion-request@2"] = (
+        "candidate-multi-joint-promotion-request@2"
+    )
+    project_id: StrictStr = Field(min_length=1)
+    source_revision: StrictInt = Field(gt=0)
+    source_state_hash: StrictStr
+    candidate_hash: StrictStr
+    synthesis_request_hash: StrictStr
+    synthesis_policy_hash: StrictStr
+    m12_3_result_hash: StrictStr
+    multi_joint_request_hash: StrictStr
+    multi_joint_evaluation_hash: StrictStr
+    multi_joint_selection_hash: StrictStr
+    generated_placement_derivations: tuple[GeneratedPlacementDerivation, ...] = ()
+    semantic_placement_derivations_hash: StrictStr | None = None
+    promotion_policy_hash: StrictStr
+    canonical_target_mechanism_id: StrictStr = Field(min_length=1)
+    classifications: tuple[PromotionClassification, ...] = ()
+    m11_target_intent: PostPromotionM11TargetIntent | None = None
+    request_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "source_state_hash",
+        "candidate_hash",
+        "synthesis_request_hash",
+        "synthesis_policy_hash",
+        "m12_3_result_hash",
+        "multi_joint_request_hash",
+        "multi_joint_evaluation_hash",
+        "multi_joint_selection_hash",
+        "promotion_policy_hash",
+    )(_require_hash)
+    _validate_semantic = field_validator("semantic_placement_derivations_hash")(
+        lambda value: None if value is None else _require_hash(value)
+    )
+    _validate_request_hash = field_validator("request_hash")(_hash_or_pending)
+    _validate_text = field_validator("project_id", "canonical_target_mechanism_id")(_nonblank)
+
+    @model_validator(mode="after")
+    def validate_mj_request_v2(self) -> "CandidateMultiJointPromotionRequestV2":
+        derivations = tuple(
+            sorted(self.generated_placement_derivations, key=lambda item: item.derivation_id)
+        )
+        if derivations != self.generated_placement_derivations:
+            object.__setattr__(self, "generated_placement_derivations", derivations)
+        expected = _hash(self, "request_hash")
+        if self.request_hash == "pending":
+            object.__setattr__(self, "request_hash", expected)
+        elif self.request_hash != expected:
+            raise ValueError("multi-joint promotion request@2 hash mismatch")
+        return self
+
+
+class CandidatePromotionCompilationV2(PromotionModel):
+    """Promotion compilation @2: 7 declared; mechanism must be @4."""
+
+    schema_version: Literal["candidate-promotion-compilation@2"] = (
+        "candidate-promotion-compilation@2"
+    )
+    canonical_mechanism: CanonicalPhysicalMechanism
+    proposal: ChangeProposal
+    promotion_proposal_hash: StrictStr
+    mapping: tuple[CandidateCanonicalInstanceMappingV3, ...] = Field(min_length=1)
+    projection: Any = Field()
+    compilation_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator("promotion_proposal_hash")(_require_hash)
+    _validate_compilation_hash = field_validator("compilation_hash")(_hash_or_pending)
+
+    @field_validator("projection", mode="before")
+    @classmethod
+    def _validate_projection_v2(cls, value):
+        if isinstance(value, dict):
+            parsed = PromotableMechanismProjectionV2.model_validate(value)
+            if parsed.schema_version != "promotable-mechanism-projection@2":
+                raise ValueError("promotion compilation@2 requires projection@2")
+            return parsed
+        if type(value) is not PromotableMechanismProjectionV2:
+            raise ValueError("promotion compilation@2 requires exact projection@2")
+        return PromotableMechanismProjectionV2.model_validate(
+            value.model_dump(mode="json")
+        )
+
+    @model_validator(mode="after")
+    def validate_compilation_v2(self) -> "CandidatePromotionCompilationV2":
+        mechanism = CanonicalPhysicalMechanism.model_validate(
+            self.canonical_mechanism.model_dump(mode="json")
+        )
+        if mechanism.schema_version != "canonical-physical-mechanism@4":
+            raise ValueError("promotion compilation@2 requires canonical mechanism@4")
+        object.__setattr__(self, "canonical_mechanism", mechanism)
+        object.__setattr__(self, "mapping", _require_mapping_v3_tuple(self.mapping))
+        expected = promotion_proposal_hash(
+            self.proposal.base_revision,
+            self.proposal.base_state_hash,
+            tuple(self.proposal.operations),
+        )
+        if self.promotion_proposal_hash != expected:
+            raise ValueError("promotion proposal semantic hash mismatch")
+        # Projection must be @2: validated by schema_version literal where available.
+        projection_schema = getattr(self.projection, "schema_version", None)
+        if projection_schema != "promotable-mechanism-projection@2":
+            raise ValueError("promotion compilation@2 requires projection@2")
+        if mechanism.id != getattr(self.projection, "canonical_target_mechanism_id", None):
+            raise ValueError("promotion compilation mechanism/projection mismatch")
+        canonical_hash = getattr(self.projection, "canonical_mechanism_hash", None)
+        if canonical_hash != mechanism.mechanism_hash:
+            raise ValueError("promotion compilation projection mechanism hash mismatch")
+        expected_hash = _hash(self, "compilation_hash")
+        if self.compilation_hash == "pending":
+            object.__setattr__(self, "compilation_hash", expected_hash)
+        elif self.compilation_hash != expected_hash:
+            raise ValueError("candidate promotion compilation@2 hash mismatch")
+        return self
+
+
+class PromotableMechanismProjectionV2(PromotionModel):
+    """Projection @2: 20 declared with canonical_mechanism_hash."""
+
+    schema_version: Literal["promotable-mechanism-projection@2"] = (
+        "promotable-mechanism-projection@2"
+    )
+    canonical_target_mechanism_id: StrictStr = Field(min_length=1)
+    canonical_mechanism_hash: StrictStr
+    canonical_instance_ids: tuple[StrictStr, ...] = Field(min_length=1)
+    component_specifications: tuple[CanonicalComponentSpecification, ...] = ()
+    components: tuple[CanonicalPhysicalComponent, ...] = ()
+    accepted_design_choices: tuple[CanonicalAcceptedDesignChoice, ...] = ()
+    placements: tuple[CanonicalPlacement, ...] = ()
+    connections: tuple[CanonicalMechanicalConnection, ...] = ()
+    joint_bindings: tuple[CanonicalJointPhysicalBinding, ...] = ()
+    m10_obligations: tuple[CanonicalM10VerificationObligation, ...] = ()
+    generated_placement_derivations: tuple[CanonicalGeneratedPlacementDerivation, ...] = ()
+    physical_rigid_body_bindings: tuple[CanonicalPhysicalRigidBodyBinding, ...] = ()
+    physical_revolute_joint_bindings: tuple[CanonicalPhysicalRevoluteJointBinding, ...] = ()
+    kinematic_root_physical_body_id: StrictStr | None = None
+    kinematic_root_binding_hash: StrictStr | None = None
+    physical_pair_classification_bindings: tuple[CanonicalPhysicalPairClassificationBinding, ...] = ()
+    multi_joint_verification_obligations: tuple[CanonicalMultiJointVerificationObligation, ...] = ()
+    mapping_identities: tuple[StrictStr, ...] = ()
+    projection_hash: StrictStr = "pending"
+
+    _validate_hash = field_validator("canonical_mechanism_hash")(_require_hash)
+    _validate_projection_hash = field_validator("projection_hash")(_hash_or_pending)
+    _validate_root = field_validator("kinematic_root_binding_hash")(
+        lambda value: None if value is None else _require_hash(value)
+    )
+    _validate_ids = field_validator("canonical_instance_ids")(_nonblank_tuple)
+
+    @field_validator("mapping_identities", mode="before")
+    @classmethod
+    def _validate_mapping_ids(cls, value):
+        items = tuple(_require_hash(item) for item in tuple(value or ()))
+        if len(set(items)) != len(items):
+            raise ValueError("projection mapping identities must be unique")
+        if items != tuple(sorted(items)):
+            raise ValueError("projection mapping identities must be sorted")
+        return items
+
+    @model_validator(mode="after")
+    def validate_projection_v2(self) -> "PromotableMechanismProjectionV2":
+        if len(set(self.canonical_instance_ids)) != len(self.canonical_instance_ids):
+            raise ValueError("canonical projection instance IDs must be unique")
+        expected = _hash(self, "projection_hash")
+        if self.projection_hash == "pending":
+            object.__setattr__(self, "projection_hash", expected)
+        elif self.projection_hash != expected:
+            raise ValueError("promotable mechanism projection@2 hash mismatch")
+        return self
+
+
+class PrePromotionM10ScopeProjectionV2(PromotionModel):
+    """Scope projection @2: 10 declared; @2 chain references only."""
+
+    schema_version: Literal["pre-promotion-m10-scope-projection@2"] = (
+        "pre-promotion-m10-scope-projection@2"
+    )
+    joint_semantic_key: StrictStr = Field(min_length=1)
+    angle_interval_deg: tuple[StrictFloat, StrictFloat]
+    path_semantics: StrictStr = "single_axis_interval"
+    required_clearance_mm: StrictFloat = Field(ge=0)
+    physical_pair_requirements: tuple[PromotionPhysicalPairRequirement, ...] = Field(min_length=1)
+    fidelity_requirements: tuple[tuple[StrictStr, CandidateGeometryFidelity], ...] = ()
+    required_home_check_semantics: tuple[StrictStr, ...] = ()
+    bounded_limitations: tuple[StrictStr, ...] = ()
+    projection_hash: StrictStr = "pending"
+
+    _validate_text = field_validator("joint_semantic_key", "path_semantics")(_nonblank)
+    _validate_hash = field_validator("projection_hash")(_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_scope_v2(self) -> "PrePromotionM10ScopeProjectionV2":
+        start, end = self.angle_interval_deg
+        if not all(math.isfinite(value) for value in (start, end)) or start > end:
+            raise ValueError("pre-promotion M10 interval must be finite and ordered")
+        expected = _hash(self, "projection_hash")
+        if self.projection_hash == "pending":
+            object.__setattr__(self, "projection_hash", expected)
+        elif self.projection_hash != expected:
+            raise ValueError("pre-promotion M10 scope projection@2 hash mismatch")
+        return self
+
+
+class PromotionDecisionInputReferenceV2(PromotionModel):
+    """Decision input reference @2: 20 declared."""
+
+    schema_version: Literal["promotion-decision-input-reference@2"] = (
+        "promotion-decision-input-reference@2"
+    )
+    promotion_request_hash: StrictStr
+    project_id: StrictStr = Field(min_length=1)
+    base_revision: StrictInt = Field(gt=0)
+    base_state_hash: StrictStr
+    candidate_hash: StrictStr
+    synthesis_request_hash: StrictStr
+    synthesis_policy_hash: StrictStr
+    m12_3_result_hash: StrictStr
+    evaluation_hash: StrictStr
+    selection_hash: StrictStr
+    comparison_used: StrictBool = False
+    comparison_result_hash: StrictStr | None = None
+    comparison_request_hash: StrictStr | None = None
+    promotion_policy_hash: StrictStr
+    canonical_target_mechanism_id: StrictStr = Field(min_length=1)
+    m11_target_intent: PostPromotionM11TargetIntent | None = None
+    mapping_identities: tuple[StrictStr, ...] = ()
+    classification_identities: tuple[StrictStr, ...] = ()
+    reference_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "promotion_request_hash",
+        "base_state_hash",
+        "candidate_hash",
+        "synthesis_request_hash",
+        "synthesis_policy_hash",
+        "m12_3_result_hash",
+        "evaluation_hash",
+        "selection_hash",
+        "promotion_policy_hash",
+    )(_require_hash)
+    _validate_optional = field_validator("comparison_result_hash", "comparison_request_hash")(
+        lambda value: None if value is None else _require_hash(value)
+    )
+    _validate_reference = field_validator("reference_hash")(_hash_or_pending)
+    _validate_project = field_validator("project_id", "canonical_target_mechanism_id")(_nonblank)
+
+    @field_validator("mapping_identities", "classification_identities", mode="before")
+    @classmethod
+    def _validate_identities(cls, value):
+        items = tuple(_require_hash(item) for item in tuple(value or ()))
+        if len(set(items)) != len(items):
+            raise ValueError("decision reference identities must be unique")
+        if items != tuple(sorted(items)):
+            raise ValueError("decision reference identities must be sorted")
+        return items
+
+    @model_validator(mode="after")
+    def validate_reference_v2(self) -> "PromotionDecisionInputReferenceV2":
+        if self.comparison_used != (self.comparison_result_hash is not None):
+            raise ValueError("comparison result identity must match comparison usage")
+        if self.comparison_used != (self.comparison_request_hash is not None):
+            raise ValueError("comparison request identity must match comparison usage")
+        expected = _hash(self, "reference_hash")
+        if self.reference_hash == "pending":
+            object.__setattr__(self, "reference_hash", expected)
+        elif self.reference_hash != expected:
+            raise ValueError("promotion decision input reference@2 hash mismatch")
+        return self
+
+
+class MultiJointPromotionDecisionInputReferenceV2(PromotionModel):
+    """MJ decision input reference @2: 25 declared with semantic placement hash."""
+
+    schema_version: Literal["multi-joint-promotion-decision-input-reference@2"] = (
+        "multi-joint-promotion-decision-input-reference@2"
+    )
+    promotion_request_hash: StrictStr
+    readiness_hash: StrictStr
+    project_id: StrictStr = Field(min_length=1)
+    source_revision: StrictInt = Field(gt=0)
+    source_state_hash: StrictStr
+    semantic_source_binding_hash: StrictStr
+    candidate_hash: StrictStr
+    synthesis_request_hash: StrictStr
+    synthesis_policy_hash: StrictStr
+    m12_3_result_hash: StrictStr
+    multi_joint_evaluation_request_hash: StrictStr
+    multi_joint_evaluation_hash: StrictStr
+    multi_joint_selection_hash: StrictStr
+    scope_hash: StrictStr
+    configuration_set_hash: StrictStr
+    semantic_placement_derivations_hash: StrictStr | None = None
+    physical_pair_classification_set_hash: StrictStr
+    m10_v2_request_hash: StrictStr
+    m10_v2_result_hash: StrictStr
+    promotion_policy_hash: StrictStr
+    canonical_target_mechanism_id: StrictStr = Field(min_length=1)
+    mapping_identities: tuple[StrictStr, ...] = Field(min_length=1)
+    classification_identities: tuple[StrictStr, ...] = Field(min_length=1)
+    reference_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "promotion_request_hash",
+        "readiness_hash",
+        "source_state_hash",
+        "semantic_source_binding_hash",
+        "candidate_hash",
+        "synthesis_request_hash",
+        "synthesis_policy_hash",
+        "m12_3_result_hash",
+        "multi_joint_evaluation_request_hash",
+        "multi_joint_evaluation_hash",
+        "multi_joint_selection_hash",
+        "scope_hash",
+        "configuration_set_hash",
+        "physical_pair_classification_set_hash",
+        "m10_v2_request_hash",
+        "m10_v2_result_hash",
+        "promotion_policy_hash",
+    )(_require_hash)
+    _validate_semantic = field_validator("semantic_placement_derivations_hash")(
+        lambda value: None if value is None else _require_hash(value)
+    )
+    _validate_reference = field_validator("reference_hash")(_hash_or_pending)
+    _validate_text = field_validator("project_id", "canonical_target_mechanism_id")(_nonblank)
+
+    @field_validator("mapping_identities", "classification_identities", mode="before")
+    @classmethod
+    def _validate_sorted(cls, value):
+        items = tuple(_require_hash(item) for item in tuple(value))
+        if len(set(items)) != len(items):
+            raise ValueError("MJ decision identities must be unique")
+        if items != tuple(sorted(items)):
+            raise ValueError("MJ decision identities must be sorted")
+        return items
+
+    @model_validator(mode="after")
+    def validate_mj_reference_v2(self) -> "MultiJointPromotionDecisionInputReferenceV2":
+        expected = _hash(self, "reference_hash")
+        if self.reference_hash == "pending":
+            object.__setattr__(self, "reference_hash", expected)
+        elif self.reference_hash != expected:
+            raise ValueError("MJ decision input reference@2 hash mismatch")
+        return self
+
+
+class PromotedMechanismVerificationResultV2(PromotionModel):
+    """Verification @2: 20 declared; typed @2 payloads only."""
+
+    schema_version: Literal["promoted-mechanism-verification-result@2"] = (
+        "promoted-mechanism-verification-result@2"
+    )
+    promotion_result_artifact_id: StrictStr = Field(min_length=1)
+    promotion_result_hash: StrictStr
+    promoted_revision: StrictInt = Field(gt=0)
+    promoted_state_hash: StrictStr
+    canonical_target_mechanism_id: StrictStr = Field(min_length=1)
+    canonical_mechanism_hash: StrictStr
+    projection_hash: StrictStr
+    projection_equivalence_hash: StrictStr
+    canonical_cad_request_hash: StrictStr
+    canonical_cad_realization_hash: StrictStr
+    canonical_m10_inventory_hash: StrictStr
+    canonical_m10_outcome_hash: StrictStr
+    canonical_m10_request_hashes: tuple[StrictStr, ...] = Field(min_length=1)
+    canonical_m10_result_hashes: tuple[StrictStr, ...] = Field(min_length=1)
+    scope_equivalence_hash: StrictStr
+    m11_handoff_hash: StrictStr | None = None
+    status: PromotedMechanismVerificationStatus
+    error: StrictStr | None = None
+    verification_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "promotion_result_hash",
+        "promoted_state_hash",
+        "canonical_mechanism_hash",
+        "projection_hash",
+        "projection_equivalence_hash",
+        "canonical_cad_request_hash",
+        "canonical_cad_realization_hash",
+        "canonical_m10_inventory_hash",
+        "canonical_m10_outcome_hash",
+        "scope_equivalence_hash",
+    )(_require_hash)
+    _validate_handoff = field_validator("m11_handoff_hash")(
+        lambda value: None if value is None else _require_hash(value)
+    )
+    _validate_seq = field_validator("canonical_m10_request_hashes", "canonical_m10_result_hashes")(
+        lambda values: tuple(_require_hash(value) for value in values)
+    )
+    _validate_text = field_validator("promotion_result_artifact_id", "canonical_target_mechanism_id")(
+        _nonblank
+    )
+    _validate_error = field_validator("error")(_optional_nonblank)
+    _validate_verification = field_validator("verification_hash")(_hash_or_pending)
+
+    @model_validator(mode="after")
+    def validate_verification_v2(self) -> "PromotedMechanismVerificationResultV2":
+        if len(set(self.canonical_m10_request_hashes)) != len(self.canonical_m10_request_hashes):
+            raise ValueError("canonical M10 request identities must be unique")
+        if len(set(self.canonical_m10_result_hashes)) != len(self.canonical_m10_result_hashes):
+            raise ValueError("canonical M10 result identities must be unique")
+        expected = _hash(self, "verification_hash")
+        if self.verification_hash == "pending":
+            object.__setattr__(self, "verification_hash", expected)
+        elif self.verification_hash != expected:
+            raise ValueError("promoted verification@2 hash mismatch")
+        return self
+
+
+class CandidatePromotionApplicationResultV2(PromotionModel):
+    """Single receipt @2: 9 declared, no self-hash, exact @2 types."""
+
+    schema_version: Literal["candidate-promotion-application-result@2"] = (
+        "candidate-promotion-application-result@2"
+    )
+    request: CandidatePromotionRequestV2 | None = None
+    compilation: CandidatePromotionCompilationV2 | None = None
+    decision_artifact_id: StrictStr | None = None
+    result_artifact_id: StrictStr | None = None
+    applied_revision: StrictInt | None = Field(default=None, gt=0)
+    applied_state_hash: StrictStr | None = None
+    status: PromotionApplicationStatus
+    error: StrictStr | None = None
+
+    @field_validator("request", "compilation", mode="before")
+    @classmethod
+    def _validate_exact(cls, value, info):
+        if value is None:
+            return None
+        expected = {
+            "request": CandidatePromotionRequestV2,
+            "compilation": CandidatePromotionCompilationV2,
+        }[info.field_name]
+        if isinstance(value, dict):
+            try:
+                parsed = expected.model_validate(value)
+            except Exception as exc:
+                raise ValueError(
+                    f"receipt {info.field_name} must be the exact @2 record"
+                ) from exc
+            expected_literal = expected.model_fields["schema_version"].default
+            if parsed.schema_version != expected_literal:
+                raise ValueError(f"receipt {info.field_name} must be the exact @2 record")
+            return parsed
+        if type(value) is not expected:
+            raise ValueError(f"receipt {info.field_name} must be the exact @2 record")
+        return value
+
+    _validate_ids = field_validator("decision_artifact_id", "result_artifact_id")(_optional_nonblank)
+    _validate_hash = field_validator("applied_state_hash")(
+        lambda value: None if value is None else _require_hash(value)
+    )
+    _validate_error = field_validator("error")(_optional_nonblank)
+
+
+class CandidateMultiJointPromotionApplicationResultV2(PromotionModel):
+    """MJ receipt @2: 10 declared, no self-hash, exact @2 types."""
+
+    schema_version: Literal["candidate-multi-joint-promotion-application-result@2"] = (
+        "candidate-multi-joint-promotion-application-result@2"
+    )
+    request: CandidateMultiJointPromotionRequestV2 | None = None
+    readiness: Any | None = None
+    compilation: CandidatePromotionCompilationV2 | None = None
+    decision_artifact_id: StrictStr | None = None
+    result_artifact_id: StrictStr | None = None
+    applied_revision: StrictInt | None = Field(default=None, gt=0)
+    applied_state_hash: StrictStr | None = None
+    status: PromotionApplicationStatus
+    error: StrictStr | None = None
+
+    @field_validator("request", "compilation", mode="before")
+    @classmethod
+    def _validate_exact_typed(cls, value, info):
+        if value is None:
+            return None
+        expected = {
+            "request": CandidateMultiJointPromotionRequestV2,
+            "compilation": CandidatePromotionCompilationV2,
+        }[info.field_name]
+        if isinstance(value, dict):
+            try:
+                parsed = expected.model_validate(value)
+            except Exception as exc:
+                raise ValueError(
+                    f"MJ receipt {info.field_name} must be exact @2"
+                ) from exc
+            expected_literal = expected.model_fields["schema_version"].default
+            if parsed.schema_version != expected_literal:
+                raise ValueError(f"MJ receipt {info.field_name} must be exact @2")
+            return parsed
+        if type(value) is not expected:
+            raise ValueError(f"MJ receipt {info.field_name} must be the exact @2 record")
+        return value
+
+    @field_validator("readiness", mode="before")
+    @classmethod
+    def _validate_readiness(cls, value):
+        if value is None:
+            return None
+        from .promotion import MultiJointPromotionReadinessV2
+
+        if isinstance(value, dict):
+            try:
+                parsed = MultiJointPromotionReadinessV2.model_validate(value)
+            except Exception as exc:
+                raise ValueError("MJ receipt readiness must be exact @2 record") from exc
+            if parsed.schema_version != "candidate-multi-joint-promotion-readiness@2":
+                raise ValueError("MJ receipt readiness must be exact @2 record")
+            return parsed
+        if type(value) is not MultiJointPromotionReadinessV2:
+            raise ValueError("MJ receipt readiness must be the exact @2 record")
+        return value
+
+    _validate_ids = field_validator("decision_artifact_id", "result_artifact_id")(_optional_nonblank)
+    _validate_hash = field_validator("applied_state_hash")(
+        lambda value: None if value is None else _require_hash(value)
+    )
+    _validate_error = field_validator("error")(_optional_nonblank)
+
+
+def candidate_promotion_request_hash_v2(value: CandidatePromotionRequestV2) -> str:
+    return _hash(value, "request_hash")
+
+
+def candidate_multi_joint_promotion_request_hash_v2(value: CandidateMultiJointPromotionRequestV2) -> str:
+    return _hash(value, "request_hash")
+
+
+def candidate_promotion_policy_hash_v2(value: CandidatePromotionPolicyV2) -> str:
+    return _hash(value, "policy_hash")
+
+
 __all__ = [
     "CandidateCanonicalInstanceMapping",
     "CandidatePromotionApplicationResult",
@@ -1161,4 +1920,18 @@ __all__ = [
     "PromotedMechanismVerificationResult",
     "PromotedMechanismVerificationStatus",
     "promotion_proposal_hash",
+    "CandidatePromotionPolicyV2",
+    "CandidatePromotionRequestV2",
+    "CandidateMultiJointPromotionRequestV2",
+    "CandidatePromotionCompilationV2",
+    "PromotableMechanismProjectionV2",
+    "PrePromotionM10ScopeProjectionV2",
+    "PromotionDecisionInputReferenceV2",
+    "MultiJointPromotionDecisionInputReferenceV2",
+    "PromotedMechanismVerificationResultV2",
+    "CandidatePromotionApplicationResultV2",
+    "CandidateMultiJointPromotionApplicationResultV2",
+    "candidate_promotion_request_hash_v2",
+    "candidate_multi_joint_promotion_request_hash_v2",
+    "candidate_promotion_policy_hash_v2",
 ]

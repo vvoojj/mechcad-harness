@@ -4,7 +4,7 @@ import hashlib
 import inspect
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
 
@@ -39,6 +39,7 @@ from .models import (
     GeometrySourceReference,
     MechanicalDesignCandidate,
     candidate_hash,
+    candidate_hash_v2,
 )
 from .promotion_models import (
     CandidateCanonicalInstanceMapping,
@@ -925,6 +926,8 @@ class CandidatePromotionCompiler:
         self,
         request: CandidateMultiJointPromotionRequest,
         mapping: tuple[CandidateCanonicalInstanceMapping, ...],
+        *,
+        semantic: bool = False,
     ) -> CanonicalPhysicalMechanism:
         candidate = request.candidate
         canonical_by_candidate = {
@@ -933,10 +936,19 @@ class CandidatePromotionCompiler:
         classifications = {
             item.source_identity: item for item in request.classifications
         }
-        canonical_specs_by_candidate_hash = {
-            specification.specification_hash: self._canonical_specification(specification)
-            for specification in candidate.component_specifications
-        }
+        if semantic:
+            semantic_context = self._semantic_geometry_context(candidate)
+            canonical_specs_by_candidate_hash = {
+                specification.specification_hash: self._canonical_specification_v4(
+                    specification, semantic_context
+                )
+                for specification in candidate.component_specifications
+            }
+        else:
+            canonical_specs_by_candidate_hash = {
+                specification.specification_hash: self._canonical_specification(specification)
+                for specification in candidate.component_specifications
+            }
         specifications = tuple(canonical_specs_by_candidate_hash.values())
         choices = tuple(
             self._canonical_choice(variable, classifications, canonical_by_candidate)
@@ -1039,7 +1051,11 @@ class CandidatePromotionCompiler:
             configuration_set_hash=scope.configuration_set.configuration_set_hash,
         )
         return CanonicalPhysicalMechanism(
-            schema_version="canonical-physical-mechanism@3",
+            schema_version=(
+                "canonical-physical-mechanism@4"
+                if semantic
+                else "canonical-physical-mechanism@3"
+            ),
             id=request.canonical_target_mechanism_id,
             name=f"Promoted mechanism {request.canonical_target_mechanism_id}",
             component_specifications=specifications,
@@ -1107,6 +1123,8 @@ class CandidatePromotionCompiler:
         self,
         request: CandidatePromotionRequest,
         mapping: tuple[CandidateCanonicalInstanceMapping, ...],
+        *,
+        semantic: bool = False,
     ) -> CanonicalPhysicalMechanism:
         candidate = request.candidate
         canonical_by_candidate = {
@@ -1116,10 +1134,19 @@ class CandidatePromotionCompiler:
             item.source_identity: item for item in request.classifications
         }
 
-        canonical_specs_by_candidate_hash = {
-            specification.specification_hash: self._canonical_specification(specification)
-            for specification in candidate.component_specifications
-        }
+        if semantic:
+            context = self._semantic_geometry_context(candidate)
+            canonical_specs_by_candidate_hash = {
+                specification.specification_hash: self._canonical_specification_v4(
+                    specification, context
+                )
+                for specification in candidate.component_specifications
+            }
+        else:
+            canonical_specs_by_candidate_hash = {
+                specification.specification_hash: self._canonical_specification(specification)
+                for specification in candidate.component_specifications
+            }
         specifications = tuple(canonical_specs_by_candidate_hash.values())
         choices = tuple(
             self._canonical_choice(variable, classifications, canonical_by_candidate)
@@ -1163,9 +1190,81 @@ class CandidatePromotionCompiler:
         joint_bindings, obligations = self._canonical_motion_semantics(
             request, canonical_by_candidate
         )
+        canonical_m13_fields = {}
+        if semantic:
+            realization = candidate.realization
+            if realization.schema_version != "physical-mechanism-realization@2":
+                raise ValueError(
+                    "canonical mechanism@4 promotion requires realization@2 M13 authority"
+                )
+            canonical_m13_fields = {
+                "physical_rigid_body_bindings": tuple(
+                    CanonicalPhysicalRigidBodyBinding(
+                        physical_body_id=body.physical_body_id,
+                        member_physical_instance_ids=tuple(
+                            canonical_by_candidate[item]
+                            for item in body.member_physical_instance_ids
+                        ),
+                        reference_physical_instance_id=canonical_by_candidate[
+                            body.reference_physical_instance_id
+                        ],
+                    )
+                    for body in realization.physical_rigid_body_bindings
+                ),
+                "physical_revolute_joint_bindings": tuple(
+                    CanonicalPhysicalRevoluteJointBinding(
+                        physical_joint_id=joint.physical_joint_id,
+                        parent_physical_body_id=joint.parent_physical_body_id,
+                        child_physical_body_id=joint.child_physical_body_id,
+                        connection_id=joint.connection_id,
+                        parent_physical_instance_id=canonical_by_candidate[
+                            joint.parent_physical_instance_id
+                        ],
+                        parent_interface_id=joint.parent_interface_id,
+                        child_physical_instance_id=canonical_by_candidate[
+                            joint.child_physical_instance_id
+                        ],
+                        child_interface_id=joint.child_interface_id,
+                        axis_source=self._canonical_axis_source(
+                            joint.axis_source,
+                            canonical_by_candidate,
+                            canonical_specs_by_candidate_hash,
+                        ),
+                        axis_owner_endpoint=joint.axis_owner_endpoint.value,
+                        axis_sign=joint.axis_sign,
+                        motion_mode=joint.motion_mode.value,
+                        min_angle_deg=joint.min_angle_deg,
+                        max_angle_deg=joint.max_angle_deg,
+                        zero_reference_semantics=joint.zero_reference_semantics,
+                    )
+                    for joint in realization.physical_revolute_joint_bindings
+                ),
+                "kinematic_root_physical_body_id": realization.kinematic_root_physical_body_id,
+                "kinematic_root_binding_hash": physical_kinematic_root_hash(
+                    realization.kinematic_root_physical_body_id
+                ),
+                "physical_pair_classification_bindings": tuple(
+                    CanonicalPhysicalPairClassificationBinding(
+                        first_physical_instance_id=canonical_by_candidate[
+                            pair.first_physical_instance_id
+                        ],
+                        second_physical_instance_id=canonical_by_candidate[
+                            pair.second_physical_instance_id
+                        ],
+                        classification=pair.classification,
+                        exclusion_reason=pair.exclusion_reason,
+                    )
+                    for pair in realization.physical_pair_classification_bindings
+                ),
+                "multi_joint_verification_obligations": tuple(
+                    getattr(request, "canonical_multi_joint_verification_obligations", ())
+                ),
+            }
         return CanonicalPhysicalMechanism(
             schema_version=(
-                "canonical-physical-mechanism@2"
+                "canonical-physical-mechanism@4"
+                if semantic
+                else "canonical-physical-mechanism@2"
                 if generated_derivations
                 else "canonical-physical-mechanism@1"
             ),
@@ -1179,6 +1278,7 @@ class CandidatePromotionCompiler:
             joint_bindings=joint_bindings,
             m10_obligations=obligations,
             generated_placement_derivations=generated_derivations,
+            **canonical_m13_fields,
             promotion_provenance=(
                 f"candidate:{candidate.candidate_hash}",
                 f"request:{request.request_hash}",
@@ -1235,6 +1335,92 @@ class CandidatePromotionCompiler:
             supplied_interface_definitions=specification.supplied_interface_definitions,
             geometry_derivation_transforms=specification.geometry_derivation_transforms,
             specification_hash="pending",
+        )
+
+    @staticmethod
+    def _semantic_geometry_context(candidate) -> dict:
+        """Reconstruct the verifier-local §5 context from the bound candidate specs.
+
+        A candidate@2 specification already carries its verified
+        ``step-content-identity@1`` content identity, so the same trusted context
+        the binder used is recoverable without re-reading raw bytes.
+        """
+        context: dict = {}
+        for specification in candidate.component_specifications:
+            geometry = getattr(specification, "geometry_source", None)
+            if geometry is None:
+                continue
+            if (
+                geometry.content_identity is None
+                or geometry.content_identity_algorithm is None
+            ):
+                raise ValueError(
+                    "candidate@2 semantic geometry reference trio is incomplete"
+                )
+            key = (
+                geometry.artifact_id,
+                geometry.artifact_hash,
+                geometry.source_identity,
+                geometry.format,
+                geometry.coordinate_system_id,
+            )
+            context[key] = {
+                "algorithm": geometry.content_identity_algorithm,
+                "content_hash": geometry.content_identity,
+            }
+        return context
+
+    @staticmethod
+    def _canonical_specification_v4(specification, context):
+        from mechcad_harness.models.semantic_component import (
+            bind_component_specification_semantic_identity,
+        )
+
+        geometry = specification.geometry_source
+        candidate_specification = CanonicalComponentSpecification(
+            schema_version="canonical-component-specification@4",
+            component_type=specification.component_type,
+            manufacturer=specification.manufacturer,
+            part_number=specification.part_number,
+            source_identity=specification.source_identity,
+            properties=tuple(
+                CanonicalComponentProperty(
+                    key=prop.key,
+                    availability=CanonicalComponentPropertyAvailability(prop.availability.value),
+                    normalized_value=prop.normalized_value,
+                    normalized_range=prop.normalized_range,
+                    canonical_unit=prop.canonical_unit,
+                    source_identity=prop.source_identity,
+                    authority=prop.authority.value,
+                    applicability_context=prop.applicability_context,
+                    conversion_provenance=prop.conversion_provenance,
+                )
+                for prop in specification.properties
+            ),
+            geometry_source=(
+                None
+                if geometry is None
+                else CanonicalGeometrySourceReference(
+                    artifact_id=geometry.artifact_id,
+                    artifact_hash=geometry.artifact_hash,
+                    source_identity=geometry.source_identity,
+                    format=geometry.format,
+                    coordinate_system_id=geometry.coordinate_system_id,
+                    content_identity=geometry.content_identity,
+                    content_identity_algorithm=geometry.content_identity_algorithm,
+                    semantic_reference_hash=geometry.semantic_reference_hash,
+                )
+            ),
+            generated_part=specification.generated_part,
+            interfaces=specification.interfaces,
+            compatibility_declarations=specification.compatibility_declarations,
+            supplied_reference_frames=specification.supplied_reference_frames,
+            supplied_interface_definitions=specification.supplied_interface_definitions,
+            geometry_derivation_transforms=specification.geometry_derivation_transforms,
+            specification_hash="pending",
+        )
+        return bind_component_specification_semantic_identity(
+            candidate_specification, context
         )
 
     @staticmethod
@@ -1672,11 +1858,20 @@ class CandidatePromotionCompiler:
             currentness = self.candidate_currentness_service.evaluate(
                 candidate, request.synthesis_request, request.synthesis_policy
             )
+            if candidate.schema_version == "mechanical-design-candidate@2":
+                raise ValueError(
+                    "candidate@2 promotion requires the canonical @4 promotion family"
+                )
         except Exception as exc:
             raise ValueError(f"promotion candidate integrity/currentness failure: {exc}") from exc
         if currentness is not CandidateCurrentness.CURRENT:
             raise ValueError(f"promotion candidate is not current: {currentness.value}")
-        if candidate.candidate_hash != candidate_hash(candidate):
+        expected_candidate_hash = (
+            candidate_hash_v2(candidate)
+            if candidate.schema_version == "mechanical-design-candidate@2"
+            else candidate_hash(candidate)
+        )
+        if candidate.candidate_hash != expected_candidate_hash:
             raise ValueError("promotion candidate hash mismatch")
         if candidate.unresolved_items:
             raise ValueError("promotion candidate contains unresolved items")
@@ -1684,6 +1879,9 @@ class CandidatePromotionCompiler:
     def _verify_m12_result(self, request: CandidatePromotionRequest) -> None:
         result = request.m12_3_result
         candidate = request.candidate
+        if candidate.schema_version == "mechanical-design-candidate@2":
+            if result.schema_version != "revolute-drive-admissibility@2":
+                raise ValueError("candidate@2 promotion requires admissibility@2")
         source_binding_hash = _hash(candidate.source_binding)
         try:
             result = type(result).model_validate(result.model_dump(mode="json"))
@@ -1853,6 +2051,10 @@ class CandidatePromotionCompiler:
     def _verify_policy(self, policy: CandidatePromotionPolicy, candidate) -> None:
         if policy.allowed_target_family != "canonical_physical_mechanism":
             raise ValueError("promotion target family is not supported")
+        has_v4_specification = any(
+            specification.schema_version == "component-specification@4"
+            for specification in candidate.component_specifications
+        )
         has_v2_or_v3_specification = any(
             specification.schema_version in {
                 "component-specification@2",
@@ -1861,7 +2063,9 @@ class CandidatePromotionCompiler:
             for specification in candidate.component_specifications
         )
         expected_mapping_schema = (
-            "candidate-canonical-mapping@2"
+            "candidate-canonical-mapping@3"
+            if has_v4_specification
+            else "candidate-canonical-mapping@2"
             if has_v2_or_v3_specification
             else "candidate-canonical-mapping@1"
         )
@@ -2428,16 +2632,28 @@ class _MultiJointPromotionRouteContext:
 class CandidatePromotionApplicationService:
     """Apply one compiled promotion through the normal run lifecycle."""
 
-    def __init__(self, compiler: CandidatePromotionCompiler, run_controller, *, manifest_service=None):
+    def __init__(
+        self,
+        compiler: CandidatePromotionCompiler,
+        run_controller,
+        *,
+        manifest_service=None,
+        provenance_service=None,
+    ):
         if compiler is None or run_controller is None:
             raise ValueError("promotion application requires a compiler and RunController")
         self.compiler = compiler
         self.run_controller = run_controller
         self.manifest_service = manifest_service or PromotionManifestService()
+        self.provenance_service = provenance_service
 
     def promote_selected_candidate(
         self, request: CandidatePromotionRequest
     ) -> CandidatePromotionApplicationResult:
+        from .promotion_models import CandidatePromotionRequestV2
+
+        if type(request) is CandidatePromotionRequestV2:
+            return self._promote_selected_candidate_v2(request)
         readiness = None
         compilation = None
         try:
@@ -2445,6 +2661,14 @@ class CandidatePromotionApplicationService:
             readiness = self.compiler.validate_readiness(request)
             compilation = self.compiler.compile(state, request)
             proposal = compilation.validated_proposal()
+            if self.provenance_service is None:
+                raise ValueError("promotion provenance service is required")
+            validate_selection = getattr(
+                self.provenance_service, "validate_selection_for_promotion", None
+            )
+            if not callable(validate_selection):
+                raise ValueError("promotion provenance service lacks selection preflight")
+            validate_selection(request)
             scope = self._scope_projection(request)
         except Exception as exc:
             return self._result(
@@ -2615,12 +2839,634 @@ class CandidatePromotionApplicationService:
             status=PromotionApplicationStatus.PROMOTION_APPLIED,
         )
 
+    def _promote_selected_candidate_v2(self, request):
+        """Fail closed on @2 parent preflight before the shared mutation lifecycle."""
+        from .promotion_models import (
+            CandidatePromotionApplicationResultV2,
+            CandidatePromotionPolicyV2,
+            CandidatePromotionRequestV2,
+        )
+
+        readiness = None
+        compilation = None
+        try:
+            if type(request) is not CandidatePromotionRequestV2:
+                raise ValueError("promotion@2 requires the exact request@2 record")
+            request = CandidatePromotionRequestV2.model_validate(
+                request.model_dump(mode="json")
+            )
+            state = self.compiler.state_manager.load_current_state(request.project_id)
+            if (state.revision, state_hash(state)) != (
+                request.source_revision,
+                request.source_state_hash,
+            ):
+                raise ValueError("promotion@2 source is not the current canonical state")
+            if self.provenance_service is None:
+                raise ValueError("promotion@2 provenance service is required")
+            selection_publication = (
+                self.provenance_service.validate_selection_for_promotion_v2(request)
+            )
+            cad = self.provenance_service.resolve_candidate_cad(
+                selection_publication.payload.candidate_cad.artifact
+            )
+            evaluation_publication = self.provenance_service.resolve_candidate_evaluation(
+                selection_publication.payload.evaluation.artifact
+            )
+            candidate, synthesis_request, synthesis_policy = (
+                self.provenance_service._candidate_from_cad(cad)
+            )
+            evaluation = evaluation_publication.payload.evaluation
+            promotion_policy = CandidatePromotionPolicyV2()
+            if promotion_policy.policy_hash != request.promotion_policy_hash:
+                raise ValueError("promotion@2 policy binding mismatch")
+            compiler = CandidatePromotionCompilerV2(
+                project_id=request.project_id,
+                mechanism_compiler=self.compiler,
+            )
+            mapping = compiler.map_instances_v2(request, candidate)
+            readiness = compiler.validate_readiness_v2(
+                request,
+                synthesis_request=synthesis_request,
+                candidate=candidate,
+                m12_3_result_hash=evaluation.m12_3_result_hash,
+                evaluation_hash=evaluation.evaluation_hash,
+                selection_hash=selection_publication.payload.selection.selection_hash,
+                evaluation_scope_hash=evaluation.evaluation_scope_hash,
+                promotion_policy=promotion_policy,
+                mapping=mapping,
+            )
+            compile_v2 = getattr(compiler, "compile_v2", None)
+            if not callable(compile_v2):
+                raise ValueError("promotion@2 compilation is not available")
+            compilation = compile_v2(
+                state,
+                request,
+                readiness=readiness,
+                candidate=candidate,
+                evaluation=evaluation,
+                selection=selection_publication.payload.selection,
+                synthesis_request=synthesis_request,
+                synthesis_policy=synthesis_policy,
+                promotion_policy=promotion_policy,
+            )
+        except Exception as exc:
+            return CandidatePromotionApplicationResultV2(
+                request=request
+                if type(request) is CandidatePromotionRequestV2
+                else None,
+                compilation=compilation,
+                status=PromotionApplicationStatus.PRE_APPLY_FAILURE,
+                error=str(exc) or type(exc).__name__,
+            )
+
+        return self._promote_compiled_candidate_v2(
+            request=request,
+            readiness=readiness,
+            compilation=compilation,
+            state=state,
+            candidate=candidate,
+            synthesis_request=synthesis_request,
+            synthesis_policy=synthesis_policy,
+            evaluation=evaluation,
+            selection=selection_publication.payload.selection,
+            promotion_policy=promotion_policy,
+        )
+
+    def _promote_compiled_candidate_v2(
+        self,
+        *,
+        request,
+        readiness,
+        compilation,
+        state,
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        evaluation,
+        selection,
+        promotion_policy,
+    ):
+        """Apply one verified promotion@2 compilation through RunController."""
+        from .promotion_models import (
+            CandidatePromotionApplicationResultV2,
+            CandidatePromotionCompilationV2,
+            CandidatePromotionPolicyV2,
+            CandidatePromotionRequestV2,
+        )
+
+        try:
+            if type(request) is not CandidatePromotionRequestV2:
+                raise ValueError("promotion@2 apply requires exact request@2")
+            request = CandidatePromotionRequestV2.model_validate(
+                request.model_dump(mode="json")
+            )
+            compilation = CandidatePromotionCompilationV2.model_validate(
+                compilation.model_dump(mode="json")
+            )
+            proposal = ChangeProposal.model_validate(
+                compilation.proposal.model_dump(mode="json")
+            )
+            if type(promotion_policy) is not CandidatePromotionPolicyV2:
+                raise ValueError("promotion@2 apply requires exact policy@2")
+            promotion_policy = CandidatePromotionPolicyV2.model_validate(
+                promotion_policy.model_dump(mode="json")
+            )
+            if promotion_policy.policy_hash != request.promotion_policy_hash:
+                raise ValueError("promotion@2 policy binding mismatch")
+            current = self.compiler.state_manager.load_current_state(request.project_id)
+            if (current.revision, state_hash(current)) != (
+                state.revision,
+                state_hash(state),
+            ) or (request.source_revision, request.source_state_hash) != (
+                current.revision,
+                state_hash(current),
+            ):
+                raise ValueError("promotion@2 apply source is not current")
+            if (
+                compilation.canonical_mechanism.schema_version
+                != "canonical-physical-mechanism@4"
+                or compilation.canonical_mechanism.id
+                != request.canonical_target_mechanism_id
+                or proposal.base_revision != request.source_revision
+                or proposal.base_state_hash != request.source_state_hash
+            ):
+                raise ValueError("promotion@2 compilation binding mismatch")
+            if self.provenance_service is None:
+                raise ValueError("promotion@2 provenance service is required")
+            self.provenance_service.validate_selection_for_promotion_v2(request)
+            scope_projection = CandidatePromotionCompilerV2.scope_projection_v2(
+                request, candidate, evaluation
+            )
+        except Exception as exc:
+            return self._result_v2(
+                request=request,
+                compilation=compilation,
+                status=PromotionApplicationStatus.PRE_APPLY_FAILURE,
+                error=exc,
+            )
+
+        run = None
+        store = None
+        decision_artifact = None
+        try:
+            run = self.run_controller.create_run(
+                request.project_id,
+                expected_source=SourceBinding(
+                    project_id=request.project_id,
+                    revision=request.source_revision,
+                    state_hash=request.source_state_hash,
+                ),
+            )
+            if (
+                run.project_id != request.project_id
+                or run.initial_revision != request.source_revision
+                or run.initial_state_hash != request.source_state_hash
+                or run.active_revision != request.source_revision
+                or run.active_state_hash != request.source_state_hash
+            ):
+                raise ValueError("promotion@2 run source binding mismatch")
+            store = ArtifactStore(
+                self.run_controller.workspace,
+                project_id=request.project_id,
+                run_id=run.run_id,
+            )
+            decision_artifact = self.manifest_service.publish_decision_v2(
+                store,
+                run=run,
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                pre_promotion_scope_projection=scope_projection,
+                provenance_service=self.provenance_service,
+            )
+            self.manifest_service.resolve_decision_v2(
+                store,
+                decision_artifact.artifact_id,
+                provenance_service=self.provenance_service,
+                promotion_request=request,
+            )
+        except Exception as exc:
+            self._fail_created_run(run, exc)
+            return self._result_v2(
+                request=request,
+                compilation=compilation,
+                status=PromotionApplicationStatus.PRE_APPLY_FAILURE,
+                decision_artifact_id=(
+                    None if decision_artifact is None else decision_artifact.artifact_id
+                ),
+                error=exc,
+            )
+
+        try:
+            applied_run = self.run_controller.apply_approved_proposal(
+                run.run_id, proposal
+            )
+        except PostApplyInvalidationError as exc:
+            applied = exc.applied
+            return self._result_v2(
+                request=request,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                applied_revision=applied.snapshot.revision,
+                applied_state_hash=applied.snapshot.state_hash,
+                status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_INVALIDATION_PERSISTENCE_FAILED,
+                error=exc,
+            )
+        except PostApplyRunTransitionError as exc:
+            applied = exc.applied
+            return self._result_v2(
+                request=request,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                applied_revision=applied.snapshot.revision,
+                applied_state_hash=applied.snapshot.state_hash,
+                status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_RUN_TRANSITION_FAILED,
+                error=exc,
+            )
+        except ChangeError as exc:
+            self._fail_created_run(run, exc)
+            return self._result_v2(
+                request=request,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                status=PromotionApplicationStatus.CHANGEENGINE_REJECTED,
+                error=exc,
+            )
+        except Exception as exc:
+            current_run = None
+            try:
+                current_run = self.run_controller.get_run(run.run_id)
+            except Exception:
+                pass
+            if current_run is not None and current_run.active_revision > run.initial_revision:
+                return self._result_v2(
+                    request=request,
+                    compilation=compilation,
+                    decision_artifact_id=decision_artifact.artifact_id,
+                    applied_revision=current_run.active_revision,
+                    applied_state_hash=current_run.active_state_hash,
+                    status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_RUN_TRANSITION_FAILED,
+                    error=exc,
+                )
+            self._fail_created_run(run, exc)
+            return self._result_v2(
+                request=request,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                status=PromotionApplicationStatus.PRE_APPLY_FAILURE,
+                error=exc,
+            )
+
+        applied_revision = applied_run.active_revision
+        applied_state_hash = applied_run.active_state_hash
+        try:
+            invalidation = self.run_controller.evidence.load_invalidation(
+                request.project_id, applied_revision
+            )
+            self._verify_invalidation(invalidation, run, applied_run, proposal)
+        except Exception as exc:
+            return self._result_v2(
+                request=request,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                applied_revision=applied_revision,
+                applied_state_hash=applied_state_hash,
+                status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_INVALIDATION_VERIFICATION_FAILED,
+                error=exc,
+            )
+
+        try:
+            result_artifact = self.manifest_service.publish_result_v2(
+                store,
+                decision_artifact=decision_artifact,
+                compilation=compilation,
+                proposal=proposal,
+                changeset_id=invalidation.changeset_id,
+                changed_paths=tuple(invalidation.changed_paths),
+                resulting_revision=applied_revision,
+                resulting_state_hash=applied_state_hash,
+                invalidation=invalidation,
+                final_run=applied_run,
+                promotion_request=request,
+                provenance_service=self.provenance_service,
+            )
+            self.manifest_service.resolve_result_v2(
+                store,
+                result_artifact.artifact_id,
+                promotion_request=request,
+                provenance_service=self.provenance_service,
+            )
+        except Exception as exc:
+            published = getattr(exc, "published_artifact", None)
+            return self._result_v2(
+                request=request,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                result_artifact_id=(
+                    None if published is None else published.artifact_id
+                ),
+                applied_revision=applied_revision,
+                applied_state_hash=applied_state_hash,
+                status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_RESULT_PROVENANCE_FAILED,
+                error=exc,
+            )
+        return self._result_v2(
+            request=request,
+            compilation=compilation,
+            decision_artifact_id=decision_artifact.artifact_id,
+            result_artifact_id=result_artifact.artifact_id,
+            applied_revision=applied_revision,
+            applied_state_hash=applied_state_hash,
+            status=PromotionApplicationStatus.PROMOTION_APPLIED,
+        )
+
     def promote_selected_multi_joint_candidate(
         self, request: CandidateMultiJointPromotionRequest
     ) -> CandidateMultiJointPromotionApplicationResult:
+        from .promotion_models import CandidateMultiJointPromotionRequestV2
+
+        if type(request) is CandidateMultiJointPromotionRequestV2:
+            return self._promote_selected_multi_joint_candidate_v2(request)
         if type(request) is not CandidateMultiJointPromotionRequest:
             raise ValueError("multi-joint promotion request must be a typed request")
         return self._promote_multi_joint_route(request)
+
+    def _promote_selected_multi_joint_candidate_v2(self, request):
+        from .promotion_models import (
+            CandidateMultiJointPromotionApplicationResultV2,
+            CandidateMultiJointPromotionRequestV2,
+            CandidatePromotionPolicyV2,
+        )
+        from .provenance_artifacts import candidate_multi_joint_m10_provenance_artifact_id
+
+        readiness = None
+        compilation = None
+        try:
+            if type(request) is not CandidateMultiJointPromotionRequestV2:
+                raise ValueError("MJ promotion@2 requires exact request@2")
+            request = CandidateMultiJointPromotionRequestV2.model_validate(
+                request.model_dump(mode="json")
+            )
+            state = self.compiler.state_manager.load_current_state(request.project_id)
+            if (state.revision, state_hash(state)) != (
+                request.source_revision,
+                request.source_state_hash,
+            ):
+                raise ValueError("MJ promotion@2 source is not current")
+            if self.provenance_service is None:
+                raise ValueError("MJ promotion@2 provenance service is required")
+            mj_publication = self.provenance_service.resolve_candidate_multi_joint_m10(
+                candidate_multi_joint_m10_provenance_artifact_id(
+                    request.multi_joint_selection_hash
+                ),
+                expected_selection_hash=request.multi_joint_selection_hash,
+            )
+            envelope = mj_publication.payload
+            cad = self.provenance_service.resolve_candidate_cad(
+                envelope.candidate_cad.artifact
+            )
+            candidate, synthesis_request, synthesis_policy = (
+                self.provenance_service._candidate_from_cad(cad)
+            )
+            multi_request = envelope.request
+            multi_evaluation = envelope.evaluation
+            multi_selection = envelope.selection
+            promotion_policy = CandidatePromotionPolicyV2()
+            if promotion_policy.policy_hash != request.promotion_policy_hash:
+                raise ValueError("MJ promotion@2 policy binding mismatch")
+            compiler = CandidatePromotionCompilerV2(
+                project_id=request.project_id,
+                mechanism_compiler=self.compiler,
+            )
+            mapping = compiler.map_instances_v2(request, candidate)
+            readiness = compiler.validate_multi_joint_readiness_v2(
+                request,
+                synthesis_request=synthesis_request,
+                candidate=candidate,
+                scope_hash=multi_request.scope_hash,
+                configuration_set_hash=multi_request.configuration_set_hash,
+                promotion_policy=promotion_policy,
+                mapping=mapping,
+            )
+            if (
+                multi_request.request_hash != request.multi_joint_request_hash
+                or multi_evaluation.evaluation_hash
+                != request.multi_joint_evaluation_hash
+                or multi_selection.selection_hash
+                != request.multi_joint_selection_hash
+                or multi_evaluation.candidate_request_hash != multi_request.request_hash
+                or multi_selection.evaluation_hash != multi_evaluation.evaluation_hash
+            ):
+                raise ValueError("MJ promotion@2 typed parent equality mismatch")
+            compilation = compiler.compile_multi_joint_v2(
+                state,
+                request,
+                readiness=readiness,
+                candidate=candidate,
+                synthesis_request=synthesis_request,
+                multi_joint_request=multi_request,
+                multi_joint_evaluation=multi_evaluation,
+                multi_joint_selection=multi_selection,
+                promotion_policy=promotion_policy,
+            )
+        except Exception as exc:
+            return self._multi_joint_result_v2(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                status=PromotionApplicationStatus.PRE_APPLY_FAILURE,
+                error=exc,
+            )
+
+        return self._promote_compiled_multi_joint_candidate_v2(
+            request=request,
+            readiness=readiness,
+            compilation=compilation,
+            state=state,
+            candidate=candidate,
+            synthesis_request=synthesis_request,
+            synthesis_policy=synthesis_policy,
+            multi_joint_request=multi_request,
+            multi_joint_evaluation=multi_evaluation,
+            multi_joint_selection=multi_selection,
+            promotion_policy=promotion_policy,
+        )
+
+    def _promote_compiled_multi_joint_candidate_v2(
+        self,
+        *,
+        request,
+        readiness,
+        compilation,
+        state,
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        multi_joint_request,
+        multi_joint_evaluation,
+        multi_joint_selection,
+        promotion_policy,
+    ):
+        from .promotion_models import (
+            CandidateMultiJointPromotionApplicationResultV2,
+        )
+
+        run = None
+        store = None
+        decision_artifact = None
+        try:
+            run = self.run_controller.create_run(
+                request.project_id,
+                expected_source=SourceBinding(
+                    project_id=request.project_id,
+                    revision=request.source_revision,
+                    state_hash=request.source_state_hash,
+                ),
+            )
+            if (
+                run.project_id != request.project_id
+                or run.initial_revision != request.source_revision
+                or run.initial_state_hash != request.source_state_hash
+                or run.active_revision != request.source_revision
+                or run.active_state_hash != request.source_state_hash
+            ):
+                raise ValueError("MJ promotion@2 run source binding mismatch")
+            store = ArtifactStore(
+                self.run_controller.workspace,
+                project_id=request.project_id,
+                run_id=run.run_id,
+            )
+            decision_artifact = self.manifest_service.publish_multi_joint_decision_v2(
+                store,
+                run=run,
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                multi_joint_provenance_service=self.provenance_service,
+            )
+        except Exception as exc:
+            self._fail_created_run(run, exc)
+            return self._multi_joint_result_v2(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                decision_artifact_id=(
+                    None if decision_artifact is None else decision_artifact.artifact_id
+                ),
+                status=PromotionApplicationStatus.PRE_APPLY_FAILURE,
+                error=exc,
+            )
+        try:
+            applied_run = self.run_controller.apply_approved_proposal(
+                run.run_id, compilation.proposal
+            )
+        except PostApplyInvalidationError as exc:
+            applied = exc.applied
+            return self._multi_joint_result_v2(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                applied_revision=applied.snapshot.revision,
+                applied_state_hash=applied.snapshot.state_hash,
+                status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_INVALIDATION_PERSISTENCE_FAILED,
+                error=exc,
+            )
+        except PostApplyRunTransitionError as exc:
+            applied = exc.applied
+            return self._multi_joint_result_v2(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                applied_revision=applied.snapshot.revision,
+                applied_state_hash=applied.snapshot.state_hash,
+                status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_RUN_TRANSITION_FAILED,
+                error=exc,
+            )
+        except ChangeError as exc:
+            self._fail_created_run(run, exc)
+            return self._multi_joint_result_v2(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                status=PromotionApplicationStatus.CHANGEENGINE_REJECTED,
+                error=exc,
+            )
+        except Exception as exc:
+            self._fail_created_run(run, exc)
+            return self._multi_joint_result_v2(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                status=PromotionApplicationStatus.PRE_APPLY_FAILURE,
+                error=exc,
+            )
+
+        revision = applied_run.active_revision
+        applied_hash = applied_run.active_state_hash
+        try:
+            invalidation = self.run_controller.evidence.load_invalidation(
+                request.project_id, revision
+            )
+            self._verify_invalidation(
+                invalidation, run, applied_run, compilation.proposal
+            )
+        except Exception as exc:
+            return self._multi_joint_result_v2(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                applied_revision=revision,
+                applied_state_hash=applied_hash,
+                status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_INVALIDATION_VERIFICATION_FAILED,
+                error=exc,
+            )
+        try:
+            result_artifact = self.manifest_service.publish_multi_joint_result_v2(
+                store,
+                decision_artifact=decision_artifact,
+                compilation=compilation,
+                proposal=compilation.proposal,
+                changeset_id=invalidation.changeset_id,
+                changed_paths=tuple(invalidation.changed_paths),
+                base_revision=request.source_revision,
+                base_state_hash=request.source_state_hash,
+                resulting_revision=revision,
+                resulting_state_hash=applied_hash,
+                invalidation=invalidation,
+                final_run=applied_run,
+                promotion_request=request,
+                multi_joint_provenance_service=self.provenance_service,
+            )
+        except Exception as exc:
+            published = getattr(exc, "published_artifact", None)
+            return self._multi_joint_result_v2(
+                request=request,
+                readiness=readiness,
+                compilation=compilation,
+                decision_artifact_id=decision_artifact.artifact_id,
+                result_artifact_id=(
+                    None if published is None else published.artifact_id
+                ),
+                applied_revision=revision,
+                applied_state_hash=applied_hash,
+                status=PromotionApplicationStatus.PROMOTION_APPLIED_BUT_RESULT_PROVENANCE_FAILED,
+                error=exc,
+            )
+        return self._multi_joint_result_v2(
+            request=request,
+            readiness=readiness,
+            compilation=compilation,
+            decision_artifact_id=decision_artifact.artifact_id,
+            result_artifact_id=result_artifact.artifact_id,
+            applied_revision=revision,
+            applied_state_hash=applied_hash,
+            status=PromotionApplicationStatus.PROMOTION_APPLIED,
+        )
 
     def _promote_multi_joint_route(
         self, request: CandidateMultiJointPromotionRequest
@@ -2845,6 +3691,38 @@ class CandidatePromotionApplicationService:
         return applied_run
 
     @staticmethod
+    def _multi_joint_result_v2(
+        *,
+        request,
+        readiness,
+        compilation,
+        status,
+        error=None,
+        decision_artifact_id=None,
+        result_artifact_id=None,
+        applied_revision=None,
+        applied_state_hash=None,
+    ):
+        from .promotion_models import CandidateMultiJointPromotionApplicationResultV2
+
+        values = dict(
+            request=request,
+            readiness=readiness,
+            compilation=compilation,
+            decision_artifact_id=decision_artifact_id,
+            result_artifact_id=result_artifact_id,
+            applied_revision=applied_revision,
+            applied_state_hash=applied_state_hash,
+            status=status,
+            error=None if error is None else str(error) or type(error).__name__,
+        )
+        try:
+            return CandidateMultiJointPromotionApplicationResultV2(**values)
+        except Exception:
+            values["compilation"] = None
+            return CandidateMultiJointPromotionApplicationResultV2(**values)
+
+    @staticmethod
     def _multi_joint_receipt(
         *,
         request,
@@ -2917,6 +3795,36 @@ class CandidatePromotionApplicationService:
             # with the compiled proposal before the application boundary.
             values["compilation"] = None
             return CandidatePromotionApplicationResult(**values)
+
+    @staticmethod
+    def _result_v2(
+        *,
+        request,
+        compilation,
+        status,
+        error=None,
+        decision_artifact_id=None,
+        result_artifact_id=None,
+        applied_revision=None,
+        applied_state_hash=None,
+    ):
+        from .promotion_models import CandidatePromotionApplicationResultV2
+
+        values = dict(
+            request=request,
+            compilation=compilation,
+            decision_artifact_id=decision_artifact_id,
+            result_artifact_id=result_artifact_id,
+            applied_revision=applied_revision,
+            applied_state_hash=applied_state_hash,
+            status=status,
+            error=None if error is None else str(error) or type(error).__name__,
+        )
+        try:
+            return CandidatePromotionApplicationResultV2(**values)
+        except Exception:
+            values["compilation"] = None
+            return CandidatePromotionApplicationResultV2(**values)
 
     @staticmethod
     def _scope_projection(request: CandidatePromotionRequest) -> PrePromotionM10ScopeProjection:
@@ -2998,10 +3906,260 @@ class PromotedMechanismVerificationOperationalError(RuntimeError):
     """A post-application verifier dependency failed operationally."""
 
 
+def _verify_promoted_mechanism_v2(context):
+    from .canonical_cad import CanonicalCadRealizationV2
+    from .canonical_mechanism import (
+        CanonicalMechanismReconstruction,
+        TrustedSourceArtifact,
+        normalized_projection,
+    )
+    from .canonical_m10 import (
+        CanonicalM10ScopeEquivalenceService,
+        CanonicalM10VerificationOutcomeV2,
+        CanonicalM10VerificationStatus,
+    )
+    from .promotion_artifacts import (
+        CandidatePromotionResultManifestV2,
+        SelectedCandidateDecisionManifestV2,
+    )
+    from .promotion_models import (
+        CandidatePromotionApplicationResultV2,
+        CandidatePromotionCompilationV2,
+        CandidatePromotionRequestV2,
+        PrePromotionM10ScopeProjection,
+        PromotedMechanismVerificationResultV2,
+        PromotedMechanismVerificationStatus,
+    )
+
+    receipt = getattr(context, "application_result", None) or context
+    if type(receipt) is not CandidatePromotionApplicationResultV2:
+        raise PromotedMechanismVerificationIntegrityError(
+            "promoted verification requires exact application result@2"
+        )
+    receipt = CandidatePromotionApplicationResultV2.model_validate(
+        receipt.model_dump(mode="json")
+    )
+    if receipt.status is not PromotionApplicationStatus.PROMOTION_APPLIED:
+        raise PromotedMechanismVerificationIntegrityError(
+            "promoted verification requires a completed promotion@2 application"
+        )
+    if (
+        receipt.request is None
+        or receipt.compilation is None
+        or receipt.decision_artifact_id is None
+        or receipt.result_artifact_id is None
+        or receipt.applied_revision is None
+        or receipt.applied_state_hash is None
+    ):
+        raise PromotedMechanismVerificationIntegrityError(
+            "promotion@2 receipt is incomplete"
+        )
+    request = CandidatePromotionRequestV2.model_validate(
+        receipt.request.model_dump(mode="json")
+    )
+    compilation = CandidatePromotionCompilationV2.model_validate(
+        receipt.compilation.model_dump(mode="json")
+    )
+    application = getattr(context, "_application", None)
+    manifest_service = getattr(context, "manifest_service", None)
+    store = getattr(context, "manifest_store", None)
+    provenance = getattr(context, "candidate_provenance_artifact_service", None)
+    if application is None or manifest_service is None or store is None or provenance is None:
+        raise PromotedMechanismVerificationIntegrityError(
+            "promotion@2 verification composition is incomplete"
+        )
+    try:
+        decision = SelectedCandidateDecisionManifestV2.model_validate(
+            manifest_service.resolve_decision_v2(
+                store,
+                receipt.decision_artifact_id,
+                promotion_request=request,
+                provenance_service=provenance,
+            ).model_dump(mode="json")
+        )
+        result = CandidatePromotionResultManifestV2.model_validate(
+            manifest_service.resolve_result_v2(
+                store,
+                receipt.result_artifact_id,
+                promotion_request=request,
+                provenance_service=provenance,
+            ).model_dump(mode="json")
+        )
+        selection_publication = provenance.validate_selection_for_promotion_v2(request)
+        candidate_cad_publication = provenance.resolve_candidate_cad(
+            selection_publication.payload.candidate_cad.artifact
+        )
+        trusted_source_references = tuple(
+            TrustedSourceArtifact.from_artifact(item)
+            for item in candidate_cad_publication.payload.source_step_artifacts
+        )
+    except Exception as exc:
+        raise PromotedMechanismVerificationIntegrityError(
+            f"promotion@2 manifest/typed-parent verification failed: {exc}"
+        ) from exc
+    proposal = compilation.proposal
+    if (
+        result.decision_artifact_id != receipt.decision_artifact_id
+        or result.decision_hash != decision.decision_hash
+        or result.promotion_proposal_hash != compilation.promotion_proposal_hash
+        or result.resulting_revision != receipt.applied_revision
+        or result.resulting_state_hash != receipt.applied_state_hash
+        or result.proposal_id != proposal.id
+        or result.mechanism_path
+        != f"/physical_mechanisms/{request.canonical_target_mechanism_id}"
+        or (decision.base_revision, decision.base_state_hash)
+        != (request.source_revision, request.source_state_hash)
+        or decision.compilation_hash != compilation.compilation_hash
+        or decision.promotion_proposal_hash != compilation.promotion_proposal_hash
+        or decision.projection != compilation.projection
+        or decision.mapping != compilation.mapping
+        or (receipt.applied_revision, receipt.applied_state_hash)
+        != (request.source_revision + 1, result.resulting_state_hash)
+    ):
+        raise PromotedMechanismVerificationIntegrityError(
+            "promotion@2 decision/result receipt binding mismatch"
+        )
+
+    try:
+        state = application.state_manager.load_revision(
+            request.project_id, receipt.applied_revision
+        )
+        if state_hash(state) != receipt.applied_state_hash:
+            raise ValueError("promoted state hash mismatch")
+        reconstruction = application.canonical_mechanism_compiler.reconstruct(
+            request.project_id,
+            receipt.applied_revision,
+            receipt.applied_state_hash,
+            request.canonical_target_mechanism_id,
+            trusted_source_references=trusted_source_references,
+        )
+        reconstruction = CanonicalMechanismReconstruction.model_validate(
+            reconstruction.model_dump(mode="json")
+        )
+        mechanism = CanonicalPhysicalMechanism.model_validate(
+            reconstruction.mechanism.model_dump(mode="json")
+        )
+        if (
+            mechanism.schema_version != "canonical-physical-mechanism@4"
+            or mechanism != compilation.canonical_mechanism
+            or mechanism.mechanism_hash != compilation.projection.canonical_mechanism_hash
+        ):
+            raise ValueError("promoted canonical mechanism@4 differs from compilation")
+        canonical_cad = application.canonical_cad_compiler.realize(
+            reconstruction,
+            trusted_source_references=trusted_source_references,
+        )
+        canonical_cad = CanonicalCadRealizationV2.model_validate(
+            canonical_cad.model_dump(mode="json")
+        )
+        if (
+            canonical_cad.mechanism_hash != mechanism.mechanism_hash
+            or canonical_cad.revision != receipt.applied_revision
+            or canonical_cad.state_hash != receipt.applied_state_hash
+        ):
+            raise ValueError("fresh canonical CAD@2 binding mismatch")
+        canonical_m10 = application.canonical_m10_service.execute(
+            reconstruction, canonical_cad
+        )
+        canonical_m10 = CanonicalM10VerificationOutcomeV2.model_validate(
+            canonical_m10.model_dump(mode="json")
+        )
+        if (
+            canonical_m10.mechanism_hash != mechanism.mechanism_hash
+            or canonical_m10.cad_realization_hash != canonical_cad.realization_hash
+            or (canonical_m10.project_id, canonical_m10.revision, canonical_m10.state_hash)
+            != (request.project_id, receipt.applied_revision, receipt.applied_state_hash)
+        ):
+            raise ValueError("fresh canonical M10@2 binding mismatch")
+        rebuilt_projection = CandidatePromotionCompilerV2._projection_v2(
+            mechanism, compilation.mapping
+        )
+        if rebuilt_projection != decision.projection:
+            raise ValueError("reconstructed promotable projection@2 differs from decision")
+        projection_equivalence_hash = _hash_identity(
+            {
+                "decision": decision.projection_hash,
+                "reconstructed": rebuilt_projection.projection_hash,
+            }
+        )
+        frozen_v2 = decision.pre_promotion_scope_projection
+        frozen_legacy = PrePromotionM10ScopeProjection(
+            joint_semantic_key=frozen_v2.joint_semantic_key,
+            angle_interval_deg=frozen_v2.angle_interval_deg,
+            path_semantics=frozen_v2.path_semantics,
+            required_clearance_mm=frozen_v2.required_clearance_mm,
+            physical_pair_requirements=frozen_v2.physical_pair_requirements,
+            fidelity_requirements=frozen_v2.fidelity_requirements,
+            required_home_check_semantics=frozen_v2.required_home_check_semantics,
+            bounded_limitations=frozen_v2.bounded_limitations,
+        )
+        scope_equivalence = CanonicalM10ScopeEquivalenceService.compare(
+            frozen_legacy, canonical_m10.scope
+        )
+        if not scope_equivalence.equivalent:
+            raise ValueError(
+                f"pre-promotion/canonical scope mismatch: {scope_equivalence.differences}"
+            )
+        if canonical_m10.status is CanonicalM10VerificationStatus.VERIFIED_CLEAR:
+            status = PromotedMechanismVerificationStatus.VERIFIED
+        elif canonical_m10.status is CanonicalM10VerificationStatus.COLLISION_WITNESS:
+            status = PromotedMechanismVerificationStatus.ENGINEERING_VIOLATION
+        else:
+            status = PromotedMechanismVerificationStatus.UNRESOLVED
+    except PromotedMechanismVerificationIntegrityError:
+        raise
+    except Exception as exc:
+        raise PromotedMechanismVerificationOperationalError(
+            f"promotion@2 canonical verification failed: {exc}"
+        ) from exc
+
+    request_hashes = (canonical_m10.request.request_hash,)
+    result_hashes = tuple(
+        proof.proof_hash for proof in canonical_m10.pair_proofs
+    ) + tuple(check.check_hash for check in canonical_m10.home_exact_checks)
+    if not result_hashes:
+        raise PromotedMechanismVerificationIntegrityError(
+            "canonical M10@2 produced no request-bound proof identities"
+        )
+    if getattr(request.m11_target_intent, "assessment_requested", False):
+        raise PromotedMechanismVerificationIntegrityError(
+            "promotion@2 M11 handoff@2 verification is not available before T-P7.3"
+        )
+    return PromotedMechanismVerificationResultV2(
+        promotion_result_artifact_id=receipt.result_artifact_id,
+        promotion_result_hash=result.result_hash,
+        promoted_revision=receipt.applied_revision,
+        promoted_state_hash=receipt.applied_state_hash,
+        canonical_target_mechanism_id=request.canonical_target_mechanism_id,
+        canonical_mechanism_hash=mechanism.mechanism_hash,
+        projection_hash=decision.projection_hash,
+        projection_equivalence_hash=projection_equivalence_hash,
+        canonical_cad_request_hash=canonical_cad.request_hash,
+        canonical_cad_realization_hash=canonical_cad.realization_hash,
+        canonical_m10_inventory_hash=canonical_m10.inventory.inventory_hash,
+        canonical_m10_outcome_hash=canonical_m10.outcome_hash,
+        canonical_m10_request_hashes=request_hashes,
+        canonical_m10_result_hashes=tuple(sorted(result_hashes)),
+        scope_equivalence_hash=scope_equivalence.result_hash,
+        m11_handoff_hash=None,
+        status=status,
+    )
+
+
 def verify_promoted_mechanism(application_result) -> "PromotedMechanismVerificationResult":
     """Verify one applied promotion without mutating canonical state."""
+    from .promotion_models import CandidatePromotionApplicationResultV2
+
+    initial_context = getattr(application_result, "verification_context", application_result)
+    initial_receipt = getattr(initial_context, "application_result", None) or initial_context
+    if type(initial_receipt) is CandidatePromotionApplicationResultV2:
+        return _verify_promoted_mechanism_v2(initial_context)
     from .canonical_cad import CanonicalCadIntegrityError, CanonicalCadRealization
-    from .canonical_mechanism import CanonicalMechanismReconstruction, normalized_projection
+    from .canonical_mechanism import (
+        CanonicalMechanismReconstruction,
+        TrustedSourceArtifact,
+        normalized_projection,
+    )
     from .canonical_m10 import (
         CanonicalM10ScopeEquivalenceResult,
         CanonicalM10ScopeEquivalenceService,
@@ -3013,6 +4171,7 @@ def verify_promoted_mechanism(application_result) -> "PromotedMechanismVerificat
         PromotionManifestIntegrityError,
         SelectedCandidateDecisionManifest,
     )
+    from .provenance_artifacts import CandidateProvenanceIntegrityError
     from .promotion_models import (
         CandidatePromotionApplicationResult,
         CandidatePromotionCompilation,
@@ -3219,8 +4378,46 @@ def verify_promoted_mechanism(application_result) -> "PromotedMechanismVerificat
             raise PromotedMechanismVerificationIntegrityError(
                 "promotion decision comparison identity mismatch"
             )
+        provenance_service = getattr(context, "candidate_provenance_artifact_service", None)
+        if provenance_service is None:
+            raise PromotedMechanismVerificationIntegrityError(
+                "promoted verification candidate provenance service is missing"
+            )
         try:
-            request_scope = CandidatePromotionApplicationService._scope_projection(request)
+            selection_publication = provenance_service.resolve_promoted_candidate_chain(
+                decision=decision,
+                result_manifest=result_manifest,
+            )
+        except CandidateProvenanceIntegrityError as exc:
+            raise PromotedMechanismVerificationIntegrityError(
+                f"promotion selection provenance resolution failed: {exc}"
+            ) from exc
+        if (
+            selection_publication.payload.selection.selection_hash
+            != decision.input_reference.selection_hash
+        ):
+            raise PromotedMechanismVerificationIntegrityError(
+                "promotion selection artifact binding mismatch"
+            )
+        try:
+            candidate_cad_publication = provenance_service.resolve_candidate_cad(
+                selection_publication.payload.candidate_cad.artifact
+            )
+            trusted_source_references = tuple(
+                TrustedSourceArtifact.from_artifact(source)
+                for source in candidate_cad_publication.payload.source_step_artifacts
+            )
+        except Exception as exc:
+            raise PromotedMechanismVerificationIntegrityError(
+                f"promotion source provenance resolution failed: {exc}"
+            ) from exc
+        try:
+            scope_projection = getattr(
+                context,
+                "scope_projection",
+                CandidatePromotionApplicationService._scope_projection,
+            )
+            request_scope = scope_projection(request)
         except Exception as exc:
             raise PromotedMechanismVerificationIntegrityError(
                 f"pre-promotion request scope reconstruction failed: {exc}"
@@ -3240,7 +4437,11 @@ def verify_promoted_mechanism(application_result) -> "PromotedMechanismVerificat
             )
         try:
             raw_reconstruction = mechanism_compiler.reconstruct(
-                request.project_id, applied_revision, applied_state_hash, target_id
+                request.project_id,
+                applied_revision,
+                applied_state_hash,
+                target_id,
+                trusted_source_references=trusted_source_references,
             )
         except ValueError:
             raise
@@ -3281,7 +4482,10 @@ def verify_promoted_mechanism(application_result) -> "PromotedMechanismVerificat
         )
 
         try:
-            raw_cad = cad_compiler.realize(reconstruction)
+            raw_cad = cad_compiler.realize(
+                reconstruction,
+                trusted_source_references=trusted_source_references,
+            )
         except CanonicalCadIntegrityError as exc:
             if isinstance(exc.__cause__, (FreeCADBackendError, RuntimeError)):
                 raise PromotedMechanismVerificationOperationalError(
@@ -3546,6 +4750,34 @@ def verify_promoted_mechanism(application_result) -> "PromotedMechanismVerificat
                     "M11 assessment result hash mismatch"
                 )
             m11_handoff_hash = result_hash
+        try:
+            cad_publication = provenance_service.publish_canonical_cad(
+                reconstruction,
+                cad,
+                trusted_source_references=trusted_source_references,
+            )
+            m10_publication = provenance_service.publish_canonical_m10(
+                cad_publication, m10
+            )
+            provenance_service.resolve_canonical_m10(
+                m10_publication.artifact.artifact_id
+            )
+            verified_result = _result()
+            if verified_result.status is PromotedMechanismVerificationStatus.VERIFIED:
+                provenance_service.publish_promotion_chain_locator(
+                    manifest_store,
+                    decision_artifact_id=receipt.decision_artifact_id,
+                    result_artifact_id=receipt.result_artifact_id,
+                    selection=selection_publication,
+                    candidate_cad=candidate_cad_publication,
+                    canonical_cad=cad_publication,
+                    canonical_m10=m10_publication,
+                    verification_hash=verified_result.verification_hash,
+                )
+        except CandidateProvenanceIntegrityError as exc:
+            raise PromotedMechanismVerificationIntegrityError(
+                f"canonical provenance publication failed: {exc}"
+            ) from exc
     except _ScopeMismatch as exc:
         status = PromotedMechanismVerificationStatus.UNRESOLVED
         error = str(exc)
@@ -3577,10 +4809,741 @@ def _hash_identity(payload: object) -> str:
     return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# P7 promotion @2 readiness + compiler (Spec §17). Legacy @1 frozen.
+# New @2 readiness is hash-only with semantic binding and @3 mappings.
+# Compiler verifies exact typed request@2 parent, rejects @1, consumes the ONE
+# shared semantic_candidate_mechanism_hash helper, and fails closed on raw
+# realization_hash or cross-track substitution.
+# ---------------------------------------------------------------------------
+
+
+class PromotionReadinessV2(Model):
+    """Single-joint readiness @2: 19 declared, semantic binding, @3 mappings."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    schema_version: Literal["candidate-promotion-readiness@2"] = (
+        "candidate-promotion-readiness@2"
+    )
+    project_id: StrictStr = Field(min_length=1)
+    source_revision: StrictInt = Field(gt=0)
+    source_state_hash: StrictStr
+    semantic_source_binding_hash: StrictStr
+    request_hash: StrictStr
+    candidate_hash: StrictStr
+    m12_3_result_hash: StrictStr
+    evaluation_hash: StrictStr
+    selection_hash: StrictStr
+    evaluation_scope_hash: StrictStr
+    comparison_used: StrictBool = False
+    comparison_result_hash: StrictStr | None = None
+    promotion_policy_hash: StrictStr
+    canonical_target_mechanism_id: StrictStr = Field(min_length=1)
+    mapping: tuple[Any, ...] = Field(min_length=1)
+    classification_identities: tuple[StrictStr, ...] = Field(min_length=1)
+    trusted_geometry_artifact_ids: tuple[StrictStr, ...] = ()
+    readiness_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "source_state_hash",
+        "semantic_source_binding_hash",
+        "request_hash",
+        "candidate_hash",
+        "m12_3_result_hash",
+        "evaluation_hash",
+        "selection_hash",
+        "evaluation_scope_hash",
+        "promotion_policy_hash",
+    )(_strict_hash)
+    _validate_optional = field_validator("comparison_result_hash")(
+        lambda value: None if value is None else _require_hash(value)
+    )
+    _validate_readiness_hash = field_validator("readiness_hash")(
+        lambda value: value if value == "pending" else _require_hash(value)
+    )
+    _validate_text = field_validator("project_id", "canonical_target_mechanism_id")(_nonblank)
+
+    @field_validator("mapping", mode="before")
+    @classmethod
+    def _validate_mapping_v3(cls, value):
+        from .promotion_models import CandidateCanonicalInstanceMappingV3
+
+        items = tuple(
+            CandidateCanonicalInstanceMappingV3.model_validate(
+                item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+            )
+            for item in tuple(value)
+        )
+        keys = tuple((m.candidate_instance_id, m.canonical_instance_id) for m in items)
+        if len(set(keys)) != len(keys):
+            raise ValueError("readiness@2 mapping IDs must be unique")
+        if keys != tuple(sorted(keys)):
+            raise ValueError("readiness@2 mapping must be sorted")
+        return items
+
+    @field_validator("classification_identities", mode="before")
+    @classmethod
+    def _validate_class(cls, value):
+        items = tuple(_require_hash(v) for v in tuple(value))
+        if len(set(items)) != len(items):
+            raise ValueError("readiness@2 classifications must be unique")
+        if items != tuple(sorted(items)):
+            raise ValueError("readiness@2 classifications must be sorted")
+        return items
+
+    @model_validator(mode="after")
+    def validate_readiness_v2(self) -> "PromotionReadinessV2":
+        if self.comparison_used != (self.comparison_result_hash is not None):
+            raise ValueError("readiness@2 comparison identity must match usage")
+        expected = _hash(self, "readiness_hash")
+        if self.readiness_hash == "pending":
+            object.__setattr__(self, "readiness_hash", expected)
+        elif self.readiness_hash != expected:
+            raise ValueError("promotion readiness@2 hash mismatch")
+        return self
+
+
+class MultiJointPromotionReadinessV2(Model):
+    """MJ readiness @2: 20 declared, semantic binding, @3 mappings."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    schema_version: Literal["candidate-multi-joint-promotion-readiness@2"] = (
+        "candidate-multi-joint-promotion-readiness@2"
+    )
+    project_id: StrictStr = Field(min_length=1)
+    source_revision: StrictInt = Field(gt=0)
+    source_state_hash: StrictStr
+    semantic_source_binding_hash: StrictStr
+    request_hash: StrictStr
+    candidate_hash: StrictStr
+    synthesis_request_hash: StrictStr
+    synthesis_policy_hash: StrictStr
+    m12_3_result_hash: StrictStr
+    multi_joint_evaluation_hash: StrictStr
+    multi_joint_selection_hash: StrictStr
+    scope_hash: StrictStr
+    configuration_set_hash: StrictStr
+    promotion_policy_hash: StrictStr
+    canonical_target_mechanism_id: StrictStr = Field(min_length=1)
+    mapping: tuple[Any, ...] = Field(min_length=1)
+    classification_identities: tuple[StrictStr, ...] = Field(min_length=1)
+    trusted_geometry_artifact_ids: tuple[StrictStr, ...] = ()
+    readiness_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "source_state_hash",
+        "semantic_source_binding_hash",
+        "request_hash",
+        "candidate_hash",
+        "synthesis_request_hash",
+        "synthesis_policy_hash",
+        "m12_3_result_hash",
+        "multi_joint_evaluation_hash",
+        "multi_joint_selection_hash",
+        "scope_hash",
+        "configuration_set_hash",
+        "promotion_policy_hash",
+    )(_strict_hash)
+    _validate_readiness_hash = field_validator("readiness_hash")(
+        lambda value: value if value == "pending" else _require_hash(value)
+    )
+    _validate_text = field_validator("project_id", "canonical_target_mechanism_id")(_nonblank)
+
+    @field_validator("mapping", mode="before")
+    @classmethod
+    def _validate_mapping_v3(cls, value):
+        from .promotion_models import CandidateCanonicalInstanceMappingV3
+
+        items = tuple(
+            CandidateCanonicalInstanceMappingV3.model_validate(
+                item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+            )
+            for item in tuple(value)
+        )
+        keys = tuple((m.candidate_instance_id, m.canonical_instance_id) for m in items)
+        if len(set(keys)) != len(keys):
+            raise ValueError("MJ readiness@2 mapping IDs must be unique")
+        if keys != tuple(sorted(keys)):
+            raise ValueError("MJ readiness@2 mapping must be sorted")
+        return items
+
+    @field_validator("classification_identities", mode="before")
+    @classmethod
+    def _validate_class(cls, value):
+        items = tuple(_require_hash(v) for v in tuple(value))
+        if len(set(items)) != len(items):
+            raise ValueError("MJ readiness@2 classifications must be unique")
+        if items != tuple(sorted(items)):
+            raise ValueError("MJ readiness@2 classifications must be sorted")
+        return items
+
+    @model_validator(mode="after")
+    def validate_mj_readiness_v2(self) -> "MultiJointPromotionReadinessV2":
+        expected = _hash(self, "readiness_hash")
+        if self.readiness_hash == "pending":
+            object.__setattr__(self, "readiness_hash", expected)
+        elif self.readiness_hash != expected:
+            raise ValueError("MJ promotion readiness@2 hash mismatch")
+        return self
+
+
+def _verify_promotion_request_v2_parent(
+    request: Any,
+    *,
+    synthesis_request: Any,
+    candidate: Any,
+) -> None:
+    """Verify exact typed request@2 parent for promotion @2. Fail closed."""
+    from .models import CandidateSynthesisRequest
+
+    if type(synthesis_request) is CandidateSynthesisRequest:
+        # Legacy @1 object: reject (check schema literal to avoid version confusion).
+        schema = getattr(synthesis_request, "schema_version", "")
+        if schema == "candidate-synthesis-request@1":
+            raise ValueError("promotion@2 requires synthesis request@2, got @1")
+    if getattr(synthesis_request, "schema_version", None) != "candidate-synthesis-request@2":
+        raise ValueError("promotion@2 requires exact typed synthesis request@2")
+    # Recompute request hash to ensure typed parent integrity.
+    try:
+        typed = type(synthesis_request).model_validate(synthesis_request.model_dump(mode="json"))
+    except Exception as exc:
+        raise ValueError(f"promotion@2 typed request revalidation failed: {exc}") from exc
+    if typed.request_hash != synthesis_request.request_hash:
+        raise ValueError("promotion@2 typed request hash mismatch")
+    if request.synthesis_request_hash != synthesis_request.request_hash:
+        raise ValueError("promotion@2 synthesis request binding mismatch")
+    if getattr(candidate, "schema_version", None) != "mechanical-design-candidate@2":
+        raise ValueError("promotion@2 requires candidate@2")
+    if candidate.candidate_hash != request.candidate_hash:
+        raise ValueError("promotion@2 candidate binding mismatch")
+    if candidate.synthesis_request_hash != synthesis_request.request_hash:
+        raise ValueError("promotion@2 candidate/request binding mismatch")
+    # Bare hash never substitutes: caller must supply the typed object (enforced by
+    # requiring synthesis_request is not None and is the exact typed record).
+    if request.candidate_hash == request.synthesis_request_hash:
+        raise ValueError("promotion@2 bare-hash substitution rejected")
+
+
+def _verify_promotion_semantic_mechanism(
+    candidate: Any,
+    *,
+    expected_mechanism_hash: str | None = None,
+    allow_realization_v1: bool = False,
+) -> str | None:
+    """Use the shared candidate mechanism identity only where realization@2 owns it."""
+    from .models import (
+        semantic_candidate_mechanism_hash,
+        semantic_candidate_realization_payload,
+    )
+
+    if candidate.realization.schema_version == "physical-mechanism-realization@1":
+        if not allow_realization_v1:
+            raise ValueError("promotion@2 multi-joint path requires realization@2")
+        if expected_mechanism_hash is not None:
+            raise ValueError(
+                "promotion@2 realization@1 has no standalone mechanism identity"
+            )
+        # The realization@1 semantic projection is already committed through
+        # candidate_hash@2. Spec §6C defines the standalone mechanism wrapper
+        # only for realization@2, so do not invent one here.
+        semantic_candidate_realization_payload(candidate.realization)
+        return None
+    if candidate.realization.schema_version != "physical-mechanism-realization@2":
+        raise ValueError("promotion@2 requires candidate realization@1 or @2")
+    semantic = semantic_candidate_mechanism_hash(candidate.realization)
+    # Raw realization_hash substitution fails.
+    raw = getattr(candidate.realization, "realization_hash", None)
+    if expected_mechanism_hash is not None and expected_mechanism_hash == raw and raw != semantic:
+        raise ValueError("promotion@2 raw realization_hash substitution rejected")
+    if expected_mechanism_hash is not None and expected_mechanism_hash != semantic:
+        raise ValueError("promotion@2 semantic mechanism mismatch")
+    return semantic
+
+
+class CandidatePromotionCompilerV2:
+    """Minimal @2 compiler: typed-parent closure + semantic mechanism + hash-only readiness."""
+
+    def __init__(self, *, project_id: str, mechanism_compiler=None):
+        if not project_id.strip():
+            raise ValueError("promotion@2 compiler requires project binding")
+        self.project_id = project_id
+        self.mechanism_compiler = mechanism_compiler
+
+    @staticmethod
+    def map_instances_v2(request: Any, candidate: Any) -> tuple[Any, ...]:
+        """Build the existing scalar-only candidate-canonical-mapping@3 records."""
+        from .promotion_models import (
+            CandidateCanonicalInstanceMappingV3,
+            PromotionValueClassification,
+        )
+
+        classifications = {
+            item.source_identity: item for item in request.classifications
+        }
+        if any(
+            item.source_identity.startswith("candidate:geometry-source:")
+            for item in request.classifications
+        ):
+            raise ValueError("promotion@2 classifications cannot carry raw STEP geometry")
+        mappings = []
+        for component in candidate.realization.components:
+            identity = f"candidate:physical-instance:{component.instance_id}"
+            classification = classifications.get(identity)
+            if classification is None:
+                raise ValueError(
+                    f"promotion@2 physical-instance classification is missing: {identity}"
+                )
+            if classification.classification in (
+                PromotionValueClassification.DO_NOT_PROMOTE,
+                PromotionValueClassification.PROVENANCE_ONLY,
+            ):
+                raise ValueError("promotion@2 physical instance is not promotable")
+            canonical_id = (
+                f"{request.canonical_target_mechanism_id}:{component.instance_id}"
+            )
+            mappings.append(
+                CandidateCanonicalInstanceMappingV3(
+                    candidate_instance_id=component.instance_id,
+                    canonical_instance_id=canonical_id,
+                    canonical_path=(
+                        f"/physical_mechanisms/{request.canonical_target_mechanism_id}"
+                        f"/components/{canonical_id}"
+                    ),
+                    classification=classification.classification,
+                    source_identity=classification.source_identity,
+                    source_provenance=classification.source_provenance,
+                    source_value=classification.source_value,
+                )
+            )
+        return tuple(
+            sorted(
+                mappings,
+                key=lambda item: (
+                    item.candidate_instance_id,
+                    item.canonical_instance_id,
+                ),
+            )
+        )
+
+    def validate_readiness_v2(
+        self,
+        request: Any,
+        *,
+        synthesis_request: Any,
+        candidate: Any,
+        m12_3_result_hash: str,
+        evaluation_hash: str,
+        selection_hash: str,
+        evaluation_scope_hash: str,
+        promotion_policy: Any,
+        mapping: tuple[Any, ...],
+    ) -> PromotionReadinessV2:
+        from .promotion_models import CandidatePromotionRequestV2
+
+        if type(request) is not CandidatePromotionRequestV2:
+            raise ValueError("promotion@2 readiness requires exact request@2")
+        request = CandidatePromotionRequestV2.model_validate(request.model_dump(mode="json"))
+        if request.project_id != self.project_id:
+            raise ValueError("promotion@2 project binding mismatch")
+        _verify_promotion_request_v2_parent(request, synthesis_request=synthesis_request, candidate=candidate)
+        # Semantic mechanism consumption (candidate track).
+        _verify_promotion_semantic_mechanism(candidate, allow_realization_v1=True)
+        # Spec §6C / §23 Case 93: non-empty unresolved items block admission in
+        # both orderings; no promotion identity may be invented for ineligible input.
+        if candidate.unresolved_items:
+            raise ValueError("promotion@2 candidate contains unresolved items")
+        # Policy admission: @3 only for new production.
+        policy_schema = getattr(promotion_policy, "schema_version", None)
+        if policy_schema != "candidate-promotion-policy@2":
+            raise ValueError("promotion@2 requires policy@2")
+        admit = getattr(promotion_policy, "admit_new_production", None)
+        if callable(admit):
+            admit()
+        elif getattr(promotion_policy, "mapping_schema_version", None) != "candidate-canonical-mapping@3":
+            raise ValueError("new-family production requires candidate-canonical-mapping@3")
+        # Hash equalities against verified parents.
+        if request.m12_3_result_hash != m12_3_result_hash:
+            raise ValueError("promotion@2 M12-3 binding mismatch")
+        if request.evaluation_hash != evaluation_hash:
+            raise ValueError("promotion@2 evaluation binding mismatch")
+        if request.selection_hash != selection_hash:
+            raise ValueError("promotion@2 selection binding mismatch")
+        return PromotionReadinessV2(
+            project_id=request.project_id,
+            source_revision=request.source_revision,
+            source_state_hash=request.source_state_hash,
+            semantic_source_binding_hash=candidate.semantic_source_binding_hash,
+            request_hash=request.request_hash,
+            candidate_hash=request.candidate_hash,
+            m12_3_result_hash=request.m12_3_result_hash,
+            evaluation_hash=request.evaluation_hash,
+            selection_hash=request.selection_hash,
+            evaluation_scope_hash=evaluation_scope_hash,
+            comparison_used=request.comparison_used,
+            comparison_result_hash=request.comparison_result_hash,
+            promotion_policy_hash=request.promotion_policy_hash,
+            canonical_target_mechanism_id=request.canonical_target_mechanism_id,
+            mapping=mapping,
+            classification_identities=tuple(
+                sorted(_require_hash(c.classification_hash) for c in request.classifications)
+            ) or (m12_3_result_hash,),
+            trusted_geometry_artifact_ids=(),
+        )
+
+    def compile_v2(
+        self,
+        state,
+        request,
+        *,
+        readiness,
+        candidate,
+        evaluation,
+        selection,
+        synthesis_request,
+        synthesis_policy,
+        promotion_policy,
+    ) -> "CandidatePromotionCompilationV2":
+        """Compile a ready candidate@2 into one immutable canonical @4 add proposal."""
+        from types import SimpleNamespace
+
+        from .promotion_models import (
+            CandidatePromotionCompilationV2,
+            CandidatePromotionRequestV2,
+            PromotableMechanismProjectionV2,
+        )
+
+        if type(request) is not CandidatePromotionRequestV2:
+            raise ValueError("promotion@2 compilation requires exact request@2")
+        request = CandidatePromotionRequestV2.model_validate(
+            request.model_dump(mode="json")
+        )
+        if self.mechanism_compiler is None:
+            raise ValueError("promotion@2 compilation requires the mechanism compiler")
+        current = self.mechanism_compiler.state_manager.load_current_state(
+            request.project_id
+        )
+        current_hash = state_hash(current)
+        if (state.revision, state_hash(state)) != (current.revision, current_hash):
+            raise ValueError("promotion@2 compile state is not the current canonical state")
+        if (request.source_revision, request.source_state_hash) != (
+            state.revision,
+            current_hash,
+        ):
+            raise ValueError("promotion@2 compile request is not bound to the supplied state")
+
+        mapping = readiness.mapping
+        view = SimpleNamespace(
+            candidate=candidate,
+            classifications=request.classifications,
+            canonical_target_mechanism_id=request.canonical_target_mechanism_id,
+            request_hash=request.request_hash,
+            evaluation=evaluation,
+        )
+        mechanism = self.mechanism_compiler._compile_mechanism(
+            view, mapping, semantic=True
+        )
+        projection = self._projection_v2(mechanism, mapping)
+        operation = ChangeOperation(
+            operation="add",
+            path=f"/physical_mechanisms/{mechanism.id}",
+            value=mechanism.model_dump(mode="json"),
+        )
+        proposal = ChangeProposal(
+            id=f"promotion:{mechanism.id}",
+            title=f"Promote {mechanism.id}",
+            status=ProposalStatus.DRAFT,
+            base_revision=state.revision,
+            base_state_hash=current_hash,
+            actor="mechcad-physical-mechanism",
+            operations=[operation],
+        )
+        return CandidatePromotionCompilationV2(
+            canonical_mechanism=mechanism,
+            proposal=proposal,
+            promotion_proposal_hash=promotion_proposal_hash(
+                state.revision, current_hash, (operation,)
+            ),
+            mapping=mapping,
+            projection=projection,
+        )
+
+    def compile_multi_joint_v2(
+        self,
+        state,
+        request,
+        *,
+        readiness,
+        candidate,
+        synthesis_request,
+        multi_joint_request,
+        multi_joint_evaluation,
+        multi_joint_selection,
+        promotion_policy,
+    ) -> "CandidatePromotionCompilationV2":
+        """Compile a fully resolved MJ request@2 parent into canonical mechanism@4."""
+        from types import SimpleNamespace
+
+        from .multi_joint_m10_evaluation import (
+            CandidateMultiJointM10EvaluationRequestV2,
+            CandidateMultiJointM10EvaluationV2,
+        )
+        from .multi_joint_selection import CandidateMultiJointSelectionV2
+        from .promotion_models import (
+            CandidateMultiJointPromotionRequestV2,
+            CandidatePromotionCompilationV2,
+            CandidatePromotionPolicyV2,
+        )
+
+        if type(request) is not CandidateMultiJointPromotionRequestV2:
+            raise ValueError("MJ promotion@2 compilation requires exact request@2")
+        if type(multi_joint_request) is not CandidateMultiJointM10EvaluationRequestV2:
+            raise ValueError("MJ promotion@2 compilation requires typed M10 request@2")
+        if type(multi_joint_evaluation) is not CandidateMultiJointM10EvaluationV2:
+            raise ValueError("MJ promotion@2 compilation requires typed M10 evaluation@2")
+        if type(multi_joint_selection) is not CandidateMultiJointSelectionV2:
+            raise ValueError("MJ promotion@2 compilation requires typed selection@2")
+        if type(promotion_policy) is not CandidatePromotionPolicyV2:
+            raise ValueError("MJ promotion@2 compilation requires exact policy@2")
+        request = CandidateMultiJointPromotionRequestV2.model_validate(
+            request.model_dump(mode="json")
+        )
+        if self.mechanism_compiler is None:
+            raise ValueError("promotion@2 compilation requires the mechanism compiler")
+        current = self.mechanism_compiler.state_manager.load_current_state(
+            request.project_id
+        )
+        current_hash = state_hash(current)
+        if (state.revision, state_hash(state)) != (current.revision, current_hash):
+            raise ValueError("MJ promotion@2 compile state is not current")
+        if (request.source_revision, request.source_state_hash) != (
+            state.revision,
+            current_hash,
+        ):
+            raise ValueError("MJ promotion@2 request is not bound to supplied state")
+        _verify_promotion_request_v2_parent(
+            request, synthesis_request=synthesis_request, candidate=candidate
+        )
+        _verify_promotion_semantic_mechanism(candidate)
+        if candidate.unresolved_items:
+            raise ValueError("promotion@2 candidate contains unresolved items")
+        if promotion_policy.policy_hash != request.promotion_policy_hash:
+            raise ValueError("MJ promotion@2 policy binding mismatch")
+        if (
+            multi_joint_request.request_hash != request.multi_joint_request_hash
+            or multi_joint_evaluation.evaluation_hash
+            != request.multi_joint_evaluation_hash
+            or multi_joint_selection.selection_hash
+            != request.multi_joint_selection_hash
+            or multi_joint_evaluation.candidate_request_hash
+            != multi_joint_request.request_hash
+            or multi_joint_selection.evaluation_hash
+            != multi_joint_evaluation.evaluation_hash
+            or multi_joint_request.candidate_hash != candidate.candidate_hash
+            or multi_joint_evaluation.candidate_hash != candidate.candidate_hash
+            or multi_joint_selection.candidate_hash != candidate.candidate_hash
+            or multi_joint_request.semantic_source_binding_hash
+            != candidate.semantic_source_binding_hash
+            or multi_joint_request.placement_derivations
+            != request.generated_placement_derivations
+            or multi_joint_request.semantic_placement_derivations_hash
+            != request.semantic_placement_derivations_hash
+            or request.request_hash != readiness.request_hash
+        ):
+            raise ValueError("MJ promotion@2 typed M10 parent chain mismatch")
+        if (
+            readiness.candidate_hash != request.candidate_hash
+            or readiness.m12_3_result_hash != request.m12_3_result_hash
+            or readiness.multi_joint_evaluation_hash
+            != request.multi_joint_evaluation_hash
+            or readiness.multi_joint_selection_hash
+            != request.multi_joint_selection_hash
+            or readiness.promotion_policy_hash != request.promotion_policy_hash
+            or readiness.canonical_target_mechanism_id
+            != request.canonical_target_mechanism_id
+        ):
+            raise ValueError("MJ promotion@2 readiness binding mismatch")
+
+        view = SimpleNamespace(
+            candidate=candidate,
+            classifications=request.classifications,
+            canonical_target_mechanism_id=request.canonical_target_mechanism_id,
+            request_hash=request.request_hash,
+            generated_placement_derivations=request.generated_placement_derivations,
+            multi_joint_request=SimpleNamespace(scope=multi_joint_request.scope),
+        )
+        mapping = readiness.mapping
+        mechanism = self.mechanism_compiler._compile_multi_joint_mechanism(
+            view, mapping, semantic=True
+        )
+        projection = self._projection_v2(mechanism, mapping)
+        operation = ChangeOperation(
+            operation="add",
+            path=f"/physical_mechanisms/{mechanism.id}",
+            value=mechanism.model_dump(mode="json"),
+        )
+        proposal = ChangeProposal(
+            id=f"promotion:{mechanism.id}",
+            title=f"Promote {mechanism.id}",
+            status=ProposalStatus.DRAFT,
+            base_revision=state.revision,
+            base_state_hash=current_hash,
+            actor="mechcad-physical-mechanism",
+            operations=[operation],
+        )
+        return CandidatePromotionCompilationV2(
+            canonical_mechanism=mechanism,
+            proposal=proposal,
+            promotion_proposal_hash=promotion_proposal_hash(
+                state.revision, current_hash, (operation,)
+            ),
+            mapping=mapping,
+            projection=projection,
+        )
+
+    @staticmethod
+    def _projection_v2(mechanism, mapping) -> "PromotableMechanismProjectionV2":
+        from .promotion_models import PromotableMechanismProjectionV2
+
+        return PromotableMechanismProjectionV2(
+            canonical_target_mechanism_id=mechanism.id,
+            canonical_mechanism_hash=mechanism.mechanism_hash,
+            canonical_instance_ids=tuple(
+                component.instance_id for component in mechanism.components
+            ),
+            component_specifications=mechanism.component_specifications,
+            components=mechanism.components,
+            accepted_design_choices=mechanism.accepted_design_choices,
+            placements=mechanism.placements,
+            connections=mechanism.connections,
+            joint_bindings=mechanism.joint_bindings,
+            m10_obligations=mechanism.m10_obligations,
+            generated_placement_derivations=mechanism.generated_placement_derivations,
+            physical_rigid_body_bindings=mechanism.physical_rigid_body_bindings,
+            physical_revolute_joint_bindings=mechanism.physical_revolute_joint_bindings,
+            kinematic_root_physical_body_id=mechanism.kinematic_root_physical_body_id,
+            kinematic_root_binding_hash=mechanism.kinematic_root_binding_hash,
+            physical_pair_classification_bindings=mechanism.physical_pair_classification_bindings,
+            multi_joint_verification_obligations=mechanism.multi_joint_verification_obligations,
+            mapping_identities=tuple(sorted(item.mapping_hash for item in mapping)),
+        )
+
+    @staticmethod
+    def scope_projection_v2(request, candidate, evaluation):
+        """Project the verified single-axis M10 scope into the @2 decision record."""
+        from types import SimpleNamespace
+
+        from .promotion_models import PrePromotionM10ScopeProjectionV2
+
+        scope = getattr(evaluation, "m10_scope", None)
+        binding = getattr(evaluation, "m10_binding", None)
+        if scope is None or binding is None:
+            raise ValueError("promotion@2 requires an exact pre-promotion M10 scope and binding")
+        dispositions = {
+            entry.constituent_key: entry.physical_instance_id
+            for entry in binding.constituent_dispositions
+        }
+        limitations = list(scope.policy_assumptions)
+        requirements = []
+        view = SimpleNamespace(candidate=candidate)
+        for requirement in scope.pair_scope_requirements:
+            if requirement.required_classification.value != "check_clearance":
+                limitations.append(
+                    f"{requirement.requirement_key}:{requirement.required_classification.value}"
+                )
+                continue
+            first = dispositions.get(requirement.first_constituent_key)
+            second = dispositions.get(requirement.second_constituent_key)
+            if first is None or second is None:
+                raise ValueError("promotion@2 scope references an unknown constituent")
+            requirements.append(
+                PromotionPhysicalPairRequirement(
+                    requirement_key=requirement.requirement_key,
+                    first_instance_id=first,
+                    first_interface_id=CandidatePromotionCompiler._interface_for(
+                        view, first, second, requirement.first_constituent_key
+                    ),
+                    second_instance_id=second,
+                    second_interface_id=CandidatePromotionCompiler._interface_for(
+                        view, second, first, requirement.second_constituent_key
+                    ),
+                    requires_home_exact_check=requirement.requires_home_exact_check,
+                )
+            )
+        return PrePromotionM10ScopeProjectionV2(
+            joint_semantic_key=scope.output_joint_semantic_key,
+            angle_interval_deg=scope.angle_interval_deg,
+            required_clearance_mm=scope.required_clearance_mm,
+            physical_pair_requirements=tuple(requirements),
+            fidelity_requirements=tuple(
+                (dispositions.get(key, key), fidelity)
+                for key, fidelity in scope.fidelity_requirements
+            ),
+            required_home_check_semantics=scope.required_home_check_semantics,
+            bounded_limitations=tuple(limitations),
+        )
+
+    def validate_multi_joint_readiness_v2(
+        self,
+        request: Any,
+        *,
+        synthesis_request: Any,
+        candidate: Any,
+        scope_hash: str,
+        configuration_set_hash: str,
+        promotion_policy: Any,
+        mapping: tuple[Any, ...],
+    ) -> MultiJointPromotionReadinessV2:
+        from .promotion_models import CandidateMultiJointPromotionRequestV2
+
+        if type(request) is not CandidateMultiJointPromotionRequestV2:
+            raise ValueError("MJ promotion@2 readiness requires exact MJ request@2")
+        request = CandidateMultiJointPromotionRequestV2.model_validate(request.model_dump(mode="json"))
+        if request.project_id != self.project_id:
+            raise ValueError("MJ promotion@2 project binding mismatch")
+        _verify_promotion_request_v2_parent(request, synthesis_request=synthesis_request, candidate=candidate)
+        _verify_promotion_semantic_mechanism(candidate)
+        # Spec §6C / §23 Case 93: non-empty unresolved items block MJ admission in
+        # both orderings; no promotion identity may be invented for ineligible input.
+        if candidate.unresolved_items:
+            raise ValueError("promotion@2 candidate contains unresolved items")
+        if getattr(promotion_policy, "schema_version", None) != "candidate-promotion-policy@2":
+            raise ValueError("MJ promotion@2 requires policy@2")
+        admit = getattr(promotion_policy, "admit_new_production", None)
+        if callable(admit):
+            admit()
+        return MultiJointPromotionReadinessV2(
+            project_id=request.project_id,
+            source_revision=request.source_revision,
+            source_state_hash=request.source_state_hash,
+            semantic_source_binding_hash=candidate.semantic_source_binding_hash,
+            request_hash=request.request_hash,
+            candidate_hash=request.candidate_hash,
+            synthesis_request_hash=request.synthesis_request_hash,
+            synthesis_policy_hash=request.synthesis_policy_hash,
+            m12_3_result_hash=request.m12_3_result_hash,
+            multi_joint_evaluation_hash=request.multi_joint_evaluation_hash,
+            multi_joint_selection_hash=request.multi_joint_selection_hash,
+            scope_hash=scope_hash,
+            configuration_set_hash=configuration_set_hash,
+            promotion_policy_hash=request.promotion_policy_hash,
+            canonical_target_mechanism_id=request.canonical_target_mechanism_id,
+            mapping=mapping,
+            classification_identities=tuple(
+                sorted(_require_hash(c.classification_hash) for c in request.classifications)
+            ) or (request.m12_3_result_hash,),
+            trusted_geometry_artifact_ids=(),
+        )
+
+
 __all__ = [
     "CandidatePromotionApplicationService",
     "CandidatePromotionCompiler",
+    "CandidatePromotionCompilerV2",
     "PromotionReadiness",
+    "PromotionReadinessV2",
+    "MultiJointPromotionReadinessV2",
     "PromotedMechanismVerificationIntegrityError",
     "PromotedMechanismVerificationOperationalError",
     "verify_promoted_mechanism",

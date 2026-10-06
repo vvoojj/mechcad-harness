@@ -13,6 +13,21 @@ from mechcad_harness.imported_component import ImportedCadComponent, imported_co
 from mechcad_harness.models.common import Model
 
 
+M10_EXECUTION_SEMANTICS_VERSION = "m10-execution-semantics@1"
+
+
+def _require_semantic_fields(record, expected_type, expected_fields, label: str) -> None:
+    if not isinstance(record, expected_type):
+        raise TypeError(f"{label} has an unsupported semantic record type")
+    actual = set(type(record).model_fields)
+    expected = set(expected_fields)
+    if actual != expected:
+        raise ValueError(
+            f"{label} declared fields are not allowlisted: "
+            f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}"
+        )
+
+
 class CadRigidTransform(Model):
     x_mm: float = 0.0
     y_mm: float = 0.0
@@ -130,3 +145,95 @@ def assembly_hash(program: CadAssemblyProgram) -> str:
     }
     canonical = canonical_json_bytes(payload)
     return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
+def verified_semantic_assembly_hash(
+    program: CadAssemblyProgram,
+    mappings,
+    replay_source_assembly_hash: str,
+) -> str:
+    """Bind the §10 identity to the exact legacy assembly used for replay."""
+    _require_semantic_fields(
+        program,
+        CadAssemblyProgram,
+        {"assembly_id", "parts", "imported_components", "instances"},
+        "CadAssemblyProgram",
+    )
+    try:
+        reconstructed = CadAssemblyProgram.model_validate(
+            program.model_dump(mode="json")
+        )
+    except Exception as exc:
+        raise ValueError(f"CAD assembly reconstruction failed: {exc}") from exc
+    actual_legacy_hash = assembly_hash(reconstructed)
+    if replay_source_assembly_hash != actual_legacy_hash:
+        raise ValueError("source assembly hash does not match reconstructed assembly")
+
+    # Import locally: candidate CAD models depend on this module for their
+    # legacy serialization boundary, while the projection is a pure reuse of
+    # the accepted §10 candidate-CAD semantic assembly payload.
+    from mechcad_harness.candidates.cad_realization import (
+        CandidateCadInstanceMappingV2,
+        SemanticSourceGeometryIdentity,
+        semantic_assembly_hash,
+    )
+    from mechcad_harness.candidates.canonical_cad import (
+        CanonicalPhysicalCadMappingV2,
+    )
+
+    mappings = tuple(mappings)
+    candidate_mapping_fields = {
+        "schema_version", "candidate_hash", "physical_instance_id", "cad_instance_id",
+        "fidelity", "representation_identity", "source_geometry_identity",
+        "geometry_definition_identities", "placement", "placement_origin", "mapping_hash",
+    }
+    canonical_mapping_fields = {
+        "schema_version", "mechanism_hash", "physical_instance_id", "cad_instance_id",
+        "component_hash", "specification_hash", "fidelity", "representation_identity",
+        "source_geometry_identity", "geometry_definition_identities", "placement",
+        "placement_id", "placement_input_identities", "placement_relation", "mapping_hash",
+    }
+    mapping_layers = set()
+    for mapping in mappings:
+        if isinstance(mapping, CandidateCadInstanceMappingV2):
+            _require_semantic_fields(
+                mapping, CandidateCadInstanceMappingV2, candidate_mapping_fields,
+                "CandidateCadInstanceMappingV2",
+            )
+            mapping_layers.add("candidate")
+        elif isinstance(mapping, CanonicalPhysicalCadMappingV2):
+            _require_semantic_fields(
+                mapping, CanonicalPhysicalCadMappingV2, canonical_mapping_fields,
+                "CanonicalPhysicalCadMappingV2",
+            )
+            mapping_layers.add("canonical")
+        else:
+            raise TypeError("semantic assembly requires a new-family CAD mapping")
+    if len(mapping_layers) > 1:
+        raise ValueError("semantic assembly CAD mappings must not mix candidate and canonical")
+    if len({mapping.cad_instance_id for mapping in mappings}) != len(mappings):
+        raise ValueError("semantic assembly CAD mapping IDs must be unique")
+    if mappings and {mapping.cad_instance_id for mapping in mappings} != {
+        instance.instance_id for instance in reconstructed.instances
+    }:
+        raise ValueError("semantic assembly mappings do not cover the reconstructed assembly")
+    if reconstructed.imported_components and not mappings:
+        raise ValueError("trusted imported assembly requires semantic CAD mappings")
+    for mapping in mappings:
+        source = mapping.source_geometry_identity
+        if source is not None:
+            _require_semantic_fields(
+                source,
+                SemanticSourceGeometryIdentity,
+                {"content_identity", "content_identity_algorithm"},
+                "SemanticSourceGeometryIdentity",
+            )
+            if (
+                source.content_identity is None
+                or source.content_identity == "pending"
+                or not source.content_identity.startswith("sha256:")
+                or len(source.content_identity) != 71
+                or source.content_identity_algorithm != "step-content-identity@1"
+            ):
+                raise ValueError("semantic assembly source identity is not finalized")
+    return semantic_assembly_hash(reconstructed, mappings)

@@ -16,6 +16,7 @@ from mechcad_harness.agents.constraint_resolution import (
     OutputAngularSpeedAnswer,
 )
 from mechcad_harness.application import ProductionApplication
+from mechcad_harness.artifacts import ArtifactStore, ArtifactType
 from mechcad_harness.changes.constraint_resolution_admission import (
     ConstraintResolutionAdmissionPolicy,
     ConstraintResolutionAdmissionRule,
@@ -48,6 +49,11 @@ from mechcad_harness.revolute_drive.lowering import lower_projected_output_speed
 from mechcad_harness.runs import TaskDefinition
 from mechcad_harness.state import StateManager, state_hash
 from tests.integration.test_m12_revolute_drive_production import (
+    _GEOMETRY_INDEX_BASE,
+    _GEOMETRY_SLOTS,
+    _STEP_BYTES,
+    _geometry_identities,
+    production_state,
     template,
 )
 
@@ -142,6 +148,15 @@ def _create_application(tmp_path):
             )
         ],
     )
+    fixture_authority = production_state()
+    initial_state = initial_state.model_copy(
+        update={
+            "yagi_payload_carrier_requirements": list(
+                fixture_authority.yagi_payload_carrier_requirements
+            )
+            + _geometry_identities(fixture_authority)
+        }
+    )
     manager = StateManager(workspace)
     manager.create_project(PROJECT_ID, initial_state)
     admission_policy = ConstraintResolutionAdmissionPolicy(
@@ -230,10 +245,38 @@ def _admit_output_speed(app):
         for parameter in state.authoritative_parameters
         if parameter.key is SupportedConstraintKey.OUTPUT_ANGULAR_SPEED
     )
+    _publish_candidate_source_geometry_artifacts(app, state)
     return admission, state, parameter
 
 
+def _publish_candidate_source_geometry_artifacts(app, state):
+    store = ArtifactStore(
+        app.state_manager.workspace,
+        project_id=app.project_id,
+        run_id="SOURCE",
+    )
+    for slot in _GEOMETRY_SLOTS:
+        store.publish(
+            f"ART-{slot}",
+            ArtifactType.STEP,
+            f"{slot}.step",
+            _STEP_BYTES,
+            "fixture-exporter",
+            "1",
+            state.revision,
+            state_hash(state),
+        )
+
+
 def _request(state):
+    geometry_references = tuple(
+        CandidateSourceReference(
+            path=f"/yagi_payload_carrier_requirements/{_GEOMETRY_INDEX_BASE + index}",
+            value_hash="pending",
+            authority=CandidateSourceAuthority.CANONICAL_REQUIREMENT,
+        )
+        for index in range(len(_GEOMETRY_SLOTS))
+    )
     binding = CandidateSourceBinding(
         project_id=PROJECT_ID,
         source_revision=state.revision,
@@ -244,10 +287,12 @@ def _request(state):
                 value_hash="pending",
                 authority=CandidateSourceAuthority.CANONICAL_PARAMETER,
             ),
+            *geometry_references,
         ),
     ).bound_to(state)
     binding.validate_against(PROJECT_ID, state)
     return CandidateSynthesisRequest(
+        schema_version="candidate-synthesis-request@2",
         source_binding=binding,
         required_joint_ids=("J-1",),
         requested_joint_ids=("J-1",),

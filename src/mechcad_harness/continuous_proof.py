@@ -6,11 +6,18 @@ from enum import StrEnum
 
 from pydantic import Field, model_validator
 
-from mechcad_harness.cad_assembly import CadAssemblyProgram, assembly_hash
+from mechcad_harness.cad_assembly import (
+    M10_EXECUTION_SEMANTICS_VERSION,
+    CadAssemblyProgram,
+    _require_semantic_fields,
+    assembly_hash,
+    verified_semantic_assembly_hash,
+)
 from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.kinematic_sweep import (
     CadKinematicSweepService,
     CollisionClassification,
+    RIGID_BODY_COLLISION_SWEEP_VERSION,
     RevoluteAxis,
     transformed_assembly_program,
 )
@@ -138,6 +145,188 @@ class ContinuousSingleAxisProofResult(Model):
     exact_evaluations_count: int = Field(ge=0)
     maximum_depth_reached: int = Field(ge=0)
     result_hash: str = "pending"
+
+
+def _semantic_digest(payload: dict[str, object]) -> str:
+    return f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
+
+
+def _semantic_axis(axis: RevoluteAxis) -> dict[str, object]:
+    _require_semantic_fields(
+        axis,
+        RevoluteAxis,
+        {
+            "origin_x_mm", "origin_y_mm", "origin_z_mm", "direction_x",
+            "direction_y", "direction_z", "frame_id",
+        },
+        "RevoluteAxis",
+    )
+    return axis.model_dump(mode="json")
+
+
+def _semantic_proof_request_hash_from_assembly_identity(
+    request: ContinuousSingleAxisProofRequest,
+    semantic_assembly_hash: str,
+) -> str:
+    _require_semantic_fields(
+        request,
+        ContinuousSingleAxisProofRequest,
+        {
+            "source_assembly_id", "source_assembly_hash", "axis",
+            "start_angle_deg", "end_angle_deg", "moving_instance_ids",
+            "stationary_instance_ids", "required_clearance_mm",
+            "volume_tolerance_mm3", "distance_tolerance_mm", "proof_guard_mm",
+            "max_depth", "minimum_interval_deg", "max_exact_evaluations",
+            "sweep_version", "request_hash",
+        },
+        "ContinuousSingleAxisProofRequest",
+    )
+    if request.sweep_version != RIGID_BODY_COLLISION_SWEEP_VERSION:
+        raise ValueError("proof request sweep contract is not trusted")
+    payload = {
+        "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+        "axis": _semantic_axis(request.axis),
+        "start_angle_deg": request.start_angle_deg,
+        "end_angle_deg": request.end_angle_deg,
+        "moving_instance_ids": list(request.moving_instance_ids),
+        "stationary_instance_ids": list(request.stationary_instance_ids),
+        "required_clearance_mm": request.required_clearance_mm,
+        "volume_tolerance_mm3": request.volume_tolerance_mm3,
+        "distance_tolerance_mm": request.distance_tolerance_mm,
+        "proof_guard_mm": request.proof_guard_mm,
+        "max_depth": request.max_depth,
+        "minimum_interval_deg": request.minimum_interval_deg,
+        "max_exact_evaluations": request.max_exact_evaluations,
+        "sweep_version": RIGID_BODY_COLLISION_SWEEP_VERSION,
+        "semantic_assembly_hash": semantic_assembly_hash,
+    }
+    return _semantic_digest(payload)
+
+
+def semantic_proof_request_hash(
+    request: ContinuousSingleAxisProofRequest,
+    assembly: CadAssemblyProgram,
+    mappings,
+) -> str:
+    """Project P1 onto semantic inputs while retaining raw replay siblings."""
+    if request.source_assembly_id != assembly.assembly_id:
+        raise ValueError("proof request source assembly ID mismatch")
+    semantic_assembly = verified_semantic_assembly_hash(
+        assembly, mappings, request.source_assembly_hash
+    )
+    return _semantic_proof_request_hash_from_assembly_identity(
+        request, semantic_assembly
+    )
+
+
+def _semantic_proof_result_hash_from_assembly_identity(
+    result: ContinuousSingleAxisProofResult,
+    request: ContinuousSingleAxisProofRequest,
+    semantic_assembly_hash: str,
+) -> str:
+    _require_semantic_fields(
+        result,
+        ContinuousSingleAxisProofResult,
+        {
+            "request_hash", "source_assembly_hash", "proof_algorithm_version",
+            "axis", "start_angle_deg", "end_angle_deg", "moving_instance_ids",
+            "stationary_instance_ids", "required_clearance_mm", "proof_guard_mm",
+            "status", "certified_leaf_certificates", "unresolved_intervals",
+            "collision_witness", "exact_evaluations_count",
+            "maximum_depth_reached", "result_hash",
+        },
+        "ContinuousSingleAxisProofResult",
+    )
+    semantic_request = _semantic_proof_request_hash_from_assembly_identity(
+        request, semantic_assembly_hash
+    )
+    if result.request_hash != request.request_hash:
+        raise ValueError("proof result request hash mismatch")
+    if result.source_assembly_hash != request.source_assembly_hash:
+        raise ValueError("proof result source assembly hash mismatch")
+    for field_name in (
+        "axis", "start_angle_deg", "end_angle_deg", "moving_instance_ids",
+        "stationary_instance_ids", "required_clearance_mm", "proof_guard_mm",
+    ):
+        if getattr(result, field_name) != getattr(request, field_name):
+            raise ValueError(f"proof result {field_name} does not match request")
+    if result.proof_algorithm_version != CONTINUOUS_PROOF_ALGORITHM_VERSION:
+        raise ValueError("proof result algorithm contract is not trusted")
+
+    pair_fields = {
+        "moving_instance_id", "stationary_instance_id", "exact_distance_mm",
+        "radial_bound_mm", "angular_motion_bound_mm",
+        "certified_lower_clearance_mm",
+    }
+    interval_fields = {
+        "interval_start_deg", "interval_end_deg", "reference_angle_deg",
+        "pair_certificates", "minimum_certified_lower_clearance_mm",
+    }
+    witness_fields = {
+        "witness_angle_deg", "moving_instance_id", "stationary_instance_id",
+        "interference_volume_mm3", "exact_distance_mm", "classification",
+    }
+    intervals = []
+    for interval in result.certified_leaf_certificates:
+        _require_semantic_fields(
+            interval, ContinuousIntervalCertificate, interval_fields,
+            "ContinuousIntervalCertificate",
+        )
+        pair_certificates = []
+        for pair in interval.pair_certificates:
+            _require_semantic_fields(
+                pair, ContinuousPairCertificate, pair_fields,
+                "ContinuousPairCertificate",
+            )
+            pair_certificates.append(pair.model_dump(mode="json"))
+        interval_payload = interval.model_dump(mode="json")
+        interval_payload["pair_certificates"] = pair_certificates
+        intervals.append(interval_payload)
+    witness = result.collision_witness
+    if witness is not None:
+        _require_semantic_fields(
+            witness, ContinuousCollisionWitness, witness_fields,
+            "ContinuousCollisionWitness",
+        )
+        witness_payload = witness.model_dump(mode="json")
+    else:
+        witness_payload = None
+    payload = {
+        "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+        "proof_algorithm_version": CONTINUOUS_PROOF_ALGORITHM_VERSION,
+        "semantic_proof_request_hash": semantic_request,
+        "axis": _semantic_axis(result.axis),
+        "start_angle_deg": result.start_angle_deg,
+        "end_angle_deg": result.end_angle_deg,
+        "moving_instance_ids": list(result.moving_instance_ids),
+        "stationary_instance_ids": list(result.stationary_instance_ids),
+        "required_clearance_mm": result.required_clearance_mm,
+        "proof_guard_mm": result.proof_guard_mm,
+        "status": result.status.value,
+        "certified_leaf_certificates": intervals,
+        "unresolved_intervals": [list(interval) for interval in result.unresolved_intervals],
+        "collision_witness": witness_payload,
+        "exact_evaluations_count": result.exact_evaluations_count,
+        "maximum_depth_reached": result.maximum_depth_reached,
+        "semantic_assembly_hash": semantic_assembly_hash,
+    }
+    return _semantic_digest(payload)
+
+
+def semantic_proof_result_hash(
+    result: ContinuousSingleAxisProofResult,
+    request: ContinuousSingleAxisProofRequest,
+    assembly: CadAssemblyProgram,
+    mappings,
+) -> str:
+    """Project P2 values and bind them to the semantic P1 request."""
+    semantic_proof_request_hash(request, assembly, mappings)
+    semantic_assembly = verified_semantic_assembly_hash(
+        assembly, mappings, result.source_assembly_hash
+    )
+    return _semantic_proof_result_hash_from_assembly_identity(
+        result, request, semantic_assembly
+    )
 
 
 # --- Mathematical Bound ---

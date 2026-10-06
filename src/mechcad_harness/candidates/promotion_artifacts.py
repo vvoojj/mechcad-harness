@@ -500,6 +500,29 @@ def _load_json(store: ArtifactStore, artifact_id: str) -> tuple[EngineeringArtif
 
 
 def _verify_selected_sources(store: ArtifactStore, manifest: SelectedCandidateDecisionManifest) -> None:
+    def verified_matches(source):
+        root = store.workspace / "projects" / store.project_id / "runs"
+        matches = []
+        for run_dir in sorted(root.glob("*")) if root.is_dir() else ():
+            if not run_dir.is_dir():
+                continue
+            try:
+                run_store = ArtifactStore(
+                    store.workspace,
+                    project_id=store.project_id,
+                    run_id=run_dir.name,
+                )
+                verified = run_store.read_verified(
+                    source.artifact_id,
+                    expected_type=ArtifactType.STEP,
+                    expected_hash=source.artifact_hash,
+                )
+            except Exception:
+                continue
+            if verified is not None:
+                matches.append(verified[0])
+        return tuple(matches)
+
     source_references: dict[str, Any] = {}
     for specification in manifest.projection.component_specifications:
         source = specification.geometry_source
@@ -513,27 +536,67 @@ def _verify_selected_sources(store: ArtifactStore, manifest: SelectedCandidateDe
                 )
             continue
         source_references[source.artifact_id] = source
-        try:
-            verified = store.read_verified_in_project(
-                source.artifact_id,
-                expected_type=ArtifactType.STEP,
-                expected_hash=source.artifact_hash,
-            )
-        except Exception as exc:
-            raise PromotionManifestIntegrityError(
-                f"selected geometry source verification failed: {exc}"
-            ) from exc
-        if verified is None:
+        matches = verified_matches(source)
+        if not matches:
             raise PromotionManifestIntegrityError("selected geometry source is missing or tampered")
-        artifact, _ = verified
-        if (
+        if any(
             artifact.project_id != manifest.project_id
             or artifact.artifact_type is not ArtifactType.STEP
             or artifact.sha256 != source.artifact_hash
             or artifact.bound_revision != manifest.base_revision
             or artifact.bound_state_hash != manifest.base_state_hash
+            for artifact in matches
         ):
             raise PromotionManifestIntegrityError("selected geometry source binding mismatch")
+
+
+def _verify_selected_sources_v2(store: ArtifactStore, manifest: Any) -> None:
+    """Byte-verify each raw geometry parent named by a decision@2 projection."""
+    source_references: dict[str, Any] = {}
+    for specification in manifest.projection.component_specifications:
+        source = specification.geometry_source
+        if source is None:
+            continue
+        previous = source_references.get(source.artifact_id)
+        if previous is not None:
+            if source != previous:
+                raise PromotionManifestIntegrityError(
+                    "selected geometry source reference conflict"
+                )
+            continue
+        source_references[source.artifact_id] = source
+        matches = []
+        root = store.workspace / "projects" / store.project_id / "runs"
+        for run_dir in sorted(root.glob("*")) if root.is_dir() else ():
+            if not run_dir.is_dir():
+                continue
+            try:
+                verified = ArtifactStore(
+                    store.workspace, project_id=store.project_id, run_id=run_dir.name
+                ).read_verified(
+                    source.artifact_id,
+                    expected_type=ArtifactType.STEP,
+                    expected_hash=source.artifact_hash,
+                )
+            except Exception:
+                continue
+            if verified is not None:
+                matches.append(verified[0])
+        if not matches:
+            raise PromotionManifestIntegrityError(
+                "selected geometry source is missing or tampered"
+            )
+        if any(
+            artifact.project_id != manifest.input_reference.project_id
+            or artifact.artifact_type is not ArtifactType.STEP
+            or artifact.sha256 != source.artifact_hash
+            or artifact.bound_revision != manifest.base_revision
+            or artifact.bound_state_hash != manifest.base_state_hash
+            for artifact in matches
+        ):
+            raise PromotionManifestIntegrityError(
+                "selected geometry source binding mismatch"
+            )
 
 
 def _verify_multi_joint_selected_sources(
@@ -768,6 +831,242 @@ class PromotionManifestService:
         _verify_selected_sources(store, manifest)
         return manifest
 
+    def publish_decision_v2(
+        self,
+        store: ArtifactStore,
+        *,
+        run: Run,
+        request: Any,
+        readiness: Any,
+        compilation: Any,
+        pre_promotion_scope_projection: Any,
+        provenance_service=None,
+    ) -> EngineeringArtifact:
+        """Publish a typed, hash-only single-joint promotion decision@2."""
+        from .promotion import PromotionReadinessV2
+        from .promotion_models import (
+            CandidatePromotionCompilationV2,
+            CandidatePromotionRequestV2,
+            PrePromotionM10ScopeProjectionV2,
+            PromotionDecisionInputReferenceV2,
+        )
+
+        if type(run) is not Run:
+            raise PromotionManifestIntegrityError("decision@2 requires a typed Run")
+        if type(request) is not CandidatePromotionRequestV2:
+            raise PromotionManifestIntegrityError("decision@2 requires exact promotion request@2")
+        if type(readiness) is not PromotionReadinessV2:
+            raise PromotionManifestIntegrityError("decision@2 requires exact readiness@2")
+        if type(compilation) is not CandidatePromotionCompilationV2:
+            raise PromotionManifestIntegrityError("decision@2 requires exact compilation@2")
+        if type(pre_promotion_scope_projection) is not PrePromotionM10ScopeProjectionV2:
+            raise PromotionManifestIntegrityError("decision@2 requires exact scope projection@2")
+        if provenance_service is None:
+            raise PromotionManifestIntegrityError("decision@2 requires typed-parent provenance service")
+        try:
+            request = CandidatePromotionRequestV2.model_validate(request.model_dump(mode="json"))
+            readiness = PromotionReadinessV2.model_validate(readiness.model_dump(mode="json"))
+            compilation = CandidatePromotionCompilationV2.model_validate(
+                compilation.model_dump(mode="json")
+            )
+            provenance = provenance_service.validate_selection_for_promotion_v2(request)
+        except Exception as exc:
+            raise PromotionManifestIntegrityError(
+                f"decision@2 typed parent verification failed: {exc}"
+            ) from exc
+        if run.status is not RunStatus.CREATED or not run.run_id.strip():
+            raise PromotionManifestIntegrityError("decision@2 run must be CREATED")
+        if (
+            store.project_id != request.project_id
+            or store.run_id != run.run_id
+            or run.project_id != request.project_id
+            or readiness.project_id != request.project_id
+            or provenance.artifact.project_id != request.project_id
+        ):
+            raise PromotionManifestIntegrityError("decision@2 project or run scope mismatch")
+        if (
+            run.initial_revision != request.source_revision
+            or run.active_revision != request.source_revision
+            or run.initial_state_hash != request.source_state_hash
+            or run.active_state_hash != request.source_state_hash
+            or readiness.source_revision != request.source_revision
+            or readiness.source_state_hash != request.source_state_hash
+            or compilation.proposal.base_revision != request.source_revision
+            or compilation.proposal.base_state_hash != request.source_state_hash
+            or readiness.request_hash != request.request_hash
+            or readiness.candidate_hash != request.candidate_hash
+            or readiness.m12_3_result_hash != request.m12_3_result_hash
+            or readiness.evaluation_hash != request.evaluation_hash
+            or readiness.selection_hash != request.selection_hash
+            or readiness.promotion_policy_hash != request.promotion_policy_hash
+            or readiness.canonical_target_mechanism_id
+            != request.canonical_target_mechanism_id
+            or compilation.mapping != readiness.mapping
+            or compilation.projection.canonical_mechanism_hash
+            != compilation.canonical_mechanism.mechanism_hash
+        ):
+            raise PromotionManifestIntegrityError("decision@2 parent or base binding mismatch")
+
+        try:
+            reference = PromotionDecisionInputReferenceV2(
+                promotion_request_hash=request.request_hash,
+                project_id=request.project_id,
+                base_revision=request.source_revision,
+                base_state_hash=request.source_state_hash,
+                candidate_hash=request.candidate_hash,
+                synthesis_request_hash=request.synthesis_request_hash,
+                synthesis_policy_hash=request.synthesis_policy_hash,
+                m12_3_result_hash=request.m12_3_result_hash,
+                evaluation_hash=request.evaluation_hash,
+                selection_hash=request.selection_hash,
+                comparison_used=request.comparison_used,
+                comparison_result_hash=request.comparison_result_hash,
+                comparison_request_hash=request.comparison_request_hash,
+                promotion_policy_hash=request.promotion_policy_hash,
+                canonical_target_mechanism_id=request.canonical_target_mechanism_id,
+                m11_target_intent=request.m11_target_intent,
+                mapping_identities=tuple(
+                    sorted(item.mapping_hash for item in compilation.mapping)
+                ),
+                classification_identities=readiness.classification_identities,
+            )
+            manifest = SelectedCandidateDecisionManifestV2(
+                input_reference=reference,
+                pre_promotion_scope_projection=pre_promotion_scope_projection,
+                promotion_policy_hash=request.promotion_policy_hash,
+                base_revision=request.source_revision,
+                base_state_hash=request.source_state_hash,
+                compilation_hash=compilation.compilation_hash,
+                promotion_proposal_hash=compilation.promotion_proposal_hash,
+                projection_hash=compilation.projection.projection_hash,
+                projection=compilation.projection,
+                mapping=compilation.mapping,
+            )
+        except Exception as exc:
+            raise PromotionManifestIntegrityError(
+                f"decision manifest@2 is invalid: {exc}"
+            ) from exc
+
+        self._check_store_project(store, request.project_id)
+        _verify_selected_sources_v2(store, manifest)
+        artifact = store.publish(
+            _artifact_id("PROMOTION-DECISION-V2", manifest.decision_hash),
+            ArtifactType.JSON,
+            "decision_v2.json",
+            _content(manifest),
+            "mechcad-promotion-manifest",
+            "1",
+            manifest.base_revision,
+            manifest.base_state_hash,
+            input_hash=manifest.decision_hash,
+        )
+        self.resolve_decision_v2(
+            store,
+            artifact.artifact_id,
+            provenance_service=provenance_service,
+            promotion_request=request,
+        )
+        return artifact
+
+    def resolve_decision_v2(
+        self,
+        store: ArtifactStore,
+        artifact_id: str,
+        *,
+        provenance_service=None,
+        promotion_request=None,
+    ):
+        from .promotion_models import CandidatePromotionRequestV2
+
+        artifact, content, payload = _load_json(store, artifact_id)
+        try:
+            manifest = SelectedCandidateDecisionManifestV2.model_validate(payload)
+        except Exception as exc:
+            raise PromotionManifestIntegrityError(
+                f"decision manifest@2 schema is invalid: {exc}"
+            ) from exc
+        reference = manifest.input_reference
+        if (
+            store.project_id != reference.project_id
+            or artifact.run_id != store.run_id
+            or artifact.artifact_id
+            != _artifact_id("PROMOTION-DECISION-V2", manifest.decision_hash)
+            or artifact.artifact_type is not ArtifactType.JSON
+            or artifact.producer_tool_name != "mechcad-promotion-manifest"
+            or artifact.producer_tool_version != "1"
+            or artifact.relative_path.rsplit("/", 1)[-1] != "decision_v2.json"
+            or artifact.input_hash != manifest.decision_hash
+            or artifact.bound_revision != manifest.base_revision
+            or artifact.bound_state_hash != manifest.base_state_hash
+            or content != _content(manifest)
+        ):
+            raise PromotionManifestIntegrityError("decision manifest@2 artifact binding mismatch")
+        _verify_selected_sources_v2(store, manifest)
+        if promotion_request is not None:
+            if type(promotion_request) is not CandidatePromotionRequestV2:
+                raise PromotionManifestIntegrityError(
+                    "decision@2 parent must be exact promotion request@2"
+                )
+            promotion_request = CandidatePromotionRequestV2.model_validate(
+                promotion_request.model_dump(mode="json")
+            )
+            self._validate_v2_input_reference(manifest, promotion_request)
+            if provenance_service is None:
+                raise PromotionManifestIntegrityError(
+                    "decision@2 typed parent verification requires provenance service"
+                )
+            try:
+                provenance_service.validate_selection_for_promotion_v2(promotion_request)
+            except Exception as exc:
+                raise PromotionManifestIntegrityError(
+                    f"decision@2 typed parent revalidation failed: {exc}"
+                ) from exc
+        return manifest
+
+    @staticmethod
+    def _validate_v2_input_reference(manifest, request) -> None:
+        reference = manifest.input_reference
+        expected = (
+            request.request_hash,
+            request.project_id,
+            request.source_revision,
+            request.source_state_hash,
+            request.candidate_hash,
+            request.synthesis_request_hash,
+            request.synthesis_policy_hash,
+            request.m12_3_result_hash,
+            request.evaluation_hash,
+            request.selection_hash,
+            request.comparison_used,
+            request.comparison_result_hash,
+            request.comparison_request_hash,
+            request.promotion_policy_hash,
+            request.canonical_target_mechanism_id,
+            request.m11_target_intent,
+        )
+        actual = (
+            reference.promotion_request_hash,
+            reference.project_id,
+            reference.base_revision,
+            reference.base_state_hash,
+            reference.candidate_hash,
+            reference.synthesis_request_hash,
+            reference.synthesis_policy_hash,
+            reference.m12_3_result_hash,
+            reference.evaluation_hash,
+            reference.selection_hash,
+            reference.comparison_used,
+            reference.comparison_result_hash,
+            reference.comparison_request_hash,
+            reference.promotion_policy_hash,
+            reference.canonical_target_mechanism_id,
+            reference.m11_target_intent,
+        )
+        if actual != expected:
+            raise PromotionManifestIntegrityError(
+                "decision@2 input reference differs from typed promotion request"
+            )
+
     def resolve_multi_joint_decision(
         self, store: ArtifactStore, artifact_id: str
     ) -> SelectedMultiJointCandidateDecisionManifest:
@@ -797,6 +1096,235 @@ class PromotionManifestService:
                 "multi-joint decision manifest artifact binding mismatch"
             )
         _verify_multi_joint_selected_sources(store, manifest)
+        return manifest
+
+    def publish_multi_joint_decision_v2(
+        self,
+        store: ArtifactStore,
+        *,
+        run: Run,
+        request: Any,
+        readiness: Any,
+        compilation: Any,
+        multi_joint_provenance_service,
+    ) -> EngineeringArtifact:
+        from .promotion import MultiJointPromotionReadinessV2
+        from .promotion_models import (
+            CandidateMultiJointPromotionRequestV2,
+            CandidatePromotionCompilationV2,
+            MultiJointPromotionDecisionInputReferenceV2,
+        )
+        from .provenance_artifacts import candidate_multi_joint_m10_provenance_artifact_id
+
+        if type(run) is not Run:
+            raise PromotionManifestIntegrityError("MJ decision@2 requires typed Run")
+        if type(request) is not CandidateMultiJointPromotionRequestV2:
+            raise PromotionManifestIntegrityError("MJ decision@2 requires exact request@2")
+        if type(readiness) is not MultiJointPromotionReadinessV2:
+            raise PromotionManifestIntegrityError("MJ decision@2 requires exact readiness@2")
+        if type(compilation) is not CandidatePromotionCompilationV2:
+            raise PromotionManifestIntegrityError("MJ decision@2 requires exact compilation@2")
+        if multi_joint_provenance_service is None:
+            raise PromotionManifestIntegrityError("MJ decision@2 requires §18B provenance service")
+        try:
+            request = CandidateMultiJointPromotionRequestV2.model_validate(
+                request.model_dump(mode="json")
+            )
+            readiness = MultiJointPromotionReadinessV2.model_validate(
+                readiness.model_dump(mode="json")
+            )
+            compilation = CandidatePromotionCompilationV2.model_validate(
+                compilation.model_dump(mode="json")
+            )
+            mj_artifact_id = candidate_multi_joint_m10_provenance_artifact_id(
+                request.multi_joint_selection_hash
+            )
+            mj_provenance = multi_joint_provenance_service.resolve_candidate_multi_joint_m10(
+                mj_artifact_id,
+                expected_selection_hash=request.multi_joint_selection_hash,
+            )
+        except Exception as exc:
+            raise PromotionManifestIntegrityError(
+                f"MJ decision@2 typed parent verification failed: {exc}"
+            ) from exc
+        mj_envelope = mj_provenance.payload
+        if run.status is not RunStatus.CREATED or not run.run_id.strip():
+            raise PromotionManifestIntegrityError("MJ decision@2 run must be CREATED")
+        if (
+            store.project_id != request.project_id
+            or store.run_id != run.run_id
+            or run.project_id != request.project_id
+            or readiness.project_id != request.project_id
+            or mj_provenance.artifact.project_id != request.project_id
+        ):
+            raise PromotionManifestIntegrityError("MJ decision@2 project/run scope mismatch")
+        if (
+            run.initial_revision != request.source_revision
+            or run.active_revision != request.source_revision
+            or run.initial_state_hash != request.source_state_hash
+            or run.active_state_hash != request.source_state_hash
+            or readiness.source_revision != request.source_revision
+            or readiness.source_state_hash != request.source_state_hash
+            or readiness.request_hash != request.request_hash
+            or readiness.candidate_hash != request.candidate_hash
+            or readiness.m12_3_result_hash != request.m12_3_result_hash
+            or readiness.multi_joint_evaluation_hash
+            != request.multi_joint_evaluation_hash
+            or readiness.multi_joint_selection_hash
+            != request.multi_joint_selection_hash
+            or readiness.promotion_policy_hash != request.promotion_policy_hash
+            or readiness.canonical_target_mechanism_id
+            != request.canonical_target_mechanism_id
+            or compilation.proposal.base_revision != request.source_revision
+            or compilation.proposal.base_state_hash != request.source_state_hash
+            or compilation.mapping != readiness.mapping
+            or mj_envelope.request.request_hash != request.multi_joint_request_hash
+            or mj_envelope.evaluation.evaluation_hash
+            != request.multi_joint_evaluation_hash
+            or mj_envelope.selection.selection_hash
+            != request.multi_joint_selection_hash
+            or mj_envelope.candidate_publication.artifact.input_hash
+            != request.candidate_hash
+        ):
+            raise PromotionManifestIntegrityError("MJ decision@2 base or parent binding mismatch")
+        try:
+            reference = MultiJointPromotionDecisionInputReferenceV2(
+                promotion_request_hash=request.request_hash,
+                readiness_hash=readiness.readiness_hash,
+                project_id=request.project_id,
+                source_revision=request.source_revision,
+                source_state_hash=request.source_state_hash,
+                semantic_source_binding_hash=readiness.semantic_source_binding_hash,
+                candidate_hash=request.candidate_hash,
+                synthesis_request_hash=request.synthesis_request_hash,
+                synthesis_policy_hash=request.synthesis_policy_hash,
+                m12_3_result_hash=request.m12_3_result_hash,
+                multi_joint_evaluation_request_hash=request.multi_joint_request_hash,
+                multi_joint_evaluation_hash=request.multi_joint_evaluation_hash,
+                multi_joint_selection_hash=request.multi_joint_selection_hash,
+                scope_hash=readiness.scope_hash,
+                configuration_set_hash=readiness.configuration_set_hash,
+                semantic_placement_derivations_hash=(
+                    request.semantic_placement_derivations_hash
+                ),
+                physical_pair_classification_set_hash=(
+                    mj_envelope.request.physical_pair_classification_set_hash
+                ),
+                m10_v2_request_hash=(
+                    mj_envelope.request.semantic_m10_v2_request_hash
+                ),
+                m10_v2_result_hash=(
+                    mj_envelope.evaluation.semantic_m10_v2_result_hash
+                ),
+                promotion_policy_hash=request.promotion_policy_hash,
+                canonical_target_mechanism_id=request.canonical_target_mechanism_id,
+                mapping_identities=tuple(
+                    sorted(item.mapping_hash for item in compilation.mapping)
+                ),
+                classification_identities=readiness.classification_identities,
+            )
+            manifest = SelectedMultiJointCandidateDecisionManifestV2(
+                input_reference=reference,
+                promotion_policy_hash=request.promotion_policy_hash,
+                base_revision=request.source_revision,
+                base_state_hash=request.source_state_hash,
+                compilation_hash=compilation.compilation_hash,
+                promotion_proposal_hash=compilation.promotion_proposal_hash,
+                projection_hash=compilation.projection.projection_hash,
+                projection=compilation.projection,
+                mapping=compilation.mapping,
+            )
+        except Exception as exc:
+            raise PromotionManifestIntegrityError(
+                f"MJ decision manifest@2 is invalid: {exc}"
+            ) from exc
+        _verify_selected_sources_v2(store, manifest)
+        artifact = store.publish(
+            _artifact_id("MULTI-JOINT-PROMOTION-DECISION-V2", manifest.decision_hash),
+            ArtifactType.JSON,
+            "multi_joint_decision_v2.json",
+            _content(manifest),
+            "mechcad-promotion-manifest",
+            "1",
+            manifest.base_revision,
+            manifest.base_state_hash,
+            input_hash=manifest.decision_hash,
+        )
+        self.resolve_multi_joint_decision_v2(
+            store,
+            artifact.artifact_id,
+            promotion_request=request,
+            multi_joint_provenance_service=multi_joint_provenance_service,
+        )
+        return artifact
+
+    def resolve_multi_joint_decision_v2(
+        self,
+        store: ArtifactStore,
+        artifact_id: str,
+        *,
+        promotion_request: Any,
+        multi_joint_provenance_service,
+    ):
+        from .promotion_models import CandidateMultiJointPromotionRequestV2
+        from .provenance_artifacts import candidate_multi_joint_m10_provenance_artifact_id
+
+        artifact, content, payload = _load_json(store, artifact_id)
+        try:
+            manifest = SelectedMultiJointCandidateDecisionManifestV2.model_validate(payload)
+            request = CandidateMultiJointPromotionRequestV2.model_validate(
+                promotion_request.model_dump(mode="json")
+            )
+            mj_artifact_id = candidate_multi_joint_m10_provenance_artifact_id(
+                request.multi_joint_selection_hash
+            )
+            provenance = multi_joint_provenance_service.resolve_candidate_multi_joint_m10(
+                mj_artifact_id,
+                expected_selection_hash=request.multi_joint_selection_hash,
+            )
+        except Exception as exc:
+            raise PromotionManifestIntegrityError(
+                f"MJ decision manifest@2 verification failed: {exc}"
+            ) from exc
+        reference = manifest.input_reference
+        if (
+            store.project_id != request.project_id
+            or artifact.run_id != store.run_id
+            or artifact.artifact_id
+            != _artifact_id("MULTI-JOINT-PROMOTION-DECISION-V2", manifest.decision_hash)
+            or artifact.artifact_type is not ArtifactType.JSON
+            or artifact.producer_tool_name != "mechcad-promotion-manifest"
+            or artifact.producer_tool_version != "1"
+            or artifact.relative_path.rsplit("/", 1)[-1]
+            != "multi_joint_decision_v2.json"
+            or artifact.input_hash != manifest.decision_hash
+            or artifact.bound_revision != manifest.base_revision
+            or artifact.bound_state_hash != manifest.base_state_hash
+            or content != _content(manifest)
+            or reference.promotion_request_hash != request.request_hash
+            or reference.candidate_hash != request.candidate_hash
+            or reference.synthesis_request_hash != request.synthesis_request_hash
+            or reference.synthesis_policy_hash != request.synthesis_policy_hash
+            or reference.m12_3_result_hash != request.m12_3_result_hash
+            or reference.multi_joint_evaluation_request_hash
+            != request.multi_joint_request_hash
+            or reference.multi_joint_evaluation_hash
+            != request.multi_joint_evaluation_hash
+            or reference.multi_joint_selection_hash
+            != request.multi_joint_selection_hash
+            or reference.semantic_placement_derivations_hash
+            != request.semantic_placement_derivations_hash
+            or reference.canonical_target_mechanism_id
+            != request.canonical_target_mechanism_id
+            or reference.promotion_policy_hash != request.promotion_policy_hash
+            or provenance.payload.request.request_hash != request.multi_joint_request_hash
+            or provenance.payload.selection.selection_hash
+            != request.multi_joint_selection_hash
+        ):
+            raise PromotionManifestIntegrityError(
+                "MJ decision manifest@2 typed parent or artifact binding mismatch"
+            )
+        _verify_selected_sources_v2(store, manifest)
         return manifest
 
     def publish_multi_joint_result(
@@ -1139,6 +1667,375 @@ class PromotionManifestService:
             != f"/physical_mechanisms/{decision.projection.canonical_target_mechanism_id}"
         ):
             raise PromotionManifestIntegrityError("result manifest artifact binding mismatch")
+        return manifest
+
+    def publish_result_v2(
+        self,
+        store: ArtifactStore,
+        *,
+        decision_artifact: EngineeringArtifact,
+        compilation: Any,
+        proposal: ChangeProposal,
+        changeset_id: str,
+        changed_paths: tuple[str, ...],
+        resulting_revision: int,
+        resulting_state_hash: str,
+        invalidation: InvalidationRecord,
+        final_run: Run,
+        promotion_request: Any,
+        provenance_service,
+    ) -> EngineeringArtifact:
+        from .promotion_models import (
+            CandidatePromotionCompilationV2,
+            CandidatePromotionRequestV2,
+        )
+
+        if type(decision_artifact) is not EngineeringArtifact:
+            raise PromotionManifestIntegrityError("result@2 requires a typed decision artifact")
+        if type(compilation) is not CandidatePromotionCompilationV2:
+            raise PromotionManifestIntegrityError("result@2 requires exact compilation@2")
+        if type(proposal) is not ChangeProposal:
+            raise PromotionManifestIntegrityError("result@2 requires a typed proposal")
+        if type(invalidation) is not InvalidationRecord or type(final_run) is not Run:
+            raise PromotionManifestIntegrityError("result@2 requires typed lifecycle records")
+        if type(promotion_request) is not CandidatePromotionRequestV2:
+            raise PromotionManifestIntegrityError("result@2 requires exact promotion request@2")
+        try:
+            compilation = CandidatePromotionCompilationV2.model_validate(
+                compilation.model_dump(mode="json")
+            )
+            promotion_request = CandidatePromotionRequestV2.model_validate(
+                promotion_request.model_dump(mode="json")
+            )
+            invalidation = InvalidationRecord.model_validate(
+                invalidation.model_dump(mode="json")
+            )
+            final_run = Run.model_validate(final_run.model_dump(mode="json"))
+            decision = self.resolve_decision_v2(
+                store,
+                decision_artifact.artifact_id,
+                provenance_service=provenance_service,
+                promotion_request=promotion_request,
+            )
+            verified_decision = store.read_verified_strict(
+                decision_artifact.artifact_id, expected_type=ArtifactType.JSON
+            )
+            if verified_decision is None or verified_decision[0] != decision_artifact:
+                raise PromotionManifestIntegrityError(
+                    "result@2 decision artifact is not the trusted stored artifact"
+                )
+        except PromotionManifestIntegrityError:
+            raise
+        except Exception as exc:
+            raise PromotionManifestIntegrityError(
+                f"result@2 typed parent verification failed: {exc}"
+            ) from exc
+
+        expected_paths = tuple(dict.fromkeys(op.path for op in proposal.operations))
+        if (
+            proposal != compilation.proposal
+            or compilation.promotion_proposal_hash != decision.promotion_proposal_hash
+            or compilation.projection != decision.projection
+            or compilation.mapping != decision.mapping
+            or proposal.base_revision != decision.base_revision
+            or proposal.base_state_hash != decision.base_state_hash
+            or tuple(changed_paths) != expected_paths
+            or tuple(invalidation.changed_paths) != expected_paths
+            or invalidation.project_id != decision.input_reference.project_id
+            or invalidation.changeset_id != changeset_id
+            or invalidation.parent_revision != decision.base_revision
+            or invalidation.revision != resulting_revision
+            or resulting_revision != decision.base_revision + 1
+            or invalidation.changed_paths != expected_paths
+            or final_run.project_id != decision.input_reference.project_id
+            or final_run.run_id != store.run_id
+            or final_run.status is not RunStatus.CREATED
+            or final_run.initial_revision != decision.base_revision
+            or final_run.initial_state_hash != decision.base_state_hash
+            or final_run.active_revision != resulting_revision
+            or final_run.active_state_hash != resulting_state_hash
+            or decision_artifact.run_id != final_run.run_id
+        ):
+            raise PromotionManifestIntegrityError("result@2 lifecycle binding mismatch")
+
+        target_id = decision.projection.canonical_target_mechanism_id
+        try:
+            manifest = CandidatePromotionResultManifestV2(
+                decision_artifact_id=decision_artifact.artifact_id,
+                decision_artifact_hash=decision_artifact.sha256,
+                decision_hash=decision.decision_hash,
+                promotion_proposal_hash=compilation.promotion_proposal_hash,
+                proposal_id=proposal.id,
+                changeset_id=changeset_id,
+                application_id=None,
+                changed_paths=expected_paths,
+                mechanism_path=f"/physical_mechanisms/{target_id}",
+                resulting_revision=resulting_revision,
+                resulting_state_hash=resulting_state_hash,
+            )
+        except Exception as exc:
+            raise PromotionManifestIntegrityError(
+                f"result manifest@2 is invalid: {exc}"
+            ) from exc
+        artifact = store.publish(
+            _artifact_id("PROMOTION-RESULT-V2", manifest.result_hash),
+            ArtifactType.JSON,
+            "result_v2.json",
+            _content(manifest),
+            "mechcad-promotion-manifest",
+            "1",
+            manifest.resulting_revision,
+            manifest.resulting_state_hash,
+            input_hash=decision_artifact.sha256,
+        )
+        try:
+            self.resolve_result_v2(
+                store,
+                artifact.artifact_id,
+                promotion_request=promotion_request,
+                provenance_service=provenance_service,
+            )
+        except Exception as exc:
+            raise PromotionManifestPostPublicationVerificationError(
+                str(exc), published_artifact=artifact
+            ) from exc
+        return artifact
+
+    def resolve_result_v2(
+        self,
+        store: ArtifactStore,
+        artifact_id: str,
+        *,
+        promotion_request: Any,
+        provenance_service,
+    ):
+        from .promotion_models import CandidatePromotionRequestV2
+
+        artifact, content, payload = _load_json(store, artifact_id)
+        try:
+            manifest = CandidatePromotionResultManifestV2.model_validate(payload)
+            promotion_request = CandidatePromotionRequestV2.model_validate(
+                promotion_request.model_dump(mode="json")
+            )
+            decision = self.resolve_decision_v2(
+                store,
+                manifest.decision_artifact_id,
+                provenance_service=provenance_service,
+                promotion_request=promotion_request,
+            )
+        except PromotionManifestIntegrityError:
+            raise
+        except Exception as exc:
+            raise PromotionManifestIntegrityError(
+                f"result manifest@2 verification failed: {exc}"
+            ) from exc
+        decision_hash = self._artifact_hash(store, manifest.decision_artifact_id)
+        if (
+            store.project_id != decision.input_reference.project_id
+            or artifact.run_id != store.run_id
+            or artifact.artifact_id
+            != _artifact_id("PROMOTION-RESULT-V2", manifest.result_hash)
+            or artifact.artifact_type is not ArtifactType.JSON
+            or artifact.producer_tool_name != "mechcad-promotion-manifest"
+            or artifact.producer_tool_version != "1"
+            or artifact.relative_path.rsplit("/", 1)[-1] != "result_v2.json"
+            or artifact.input_hash != manifest.decision_artifact_hash
+            or artifact.bound_revision != manifest.resulting_revision
+            or artifact.bound_state_hash != manifest.resulting_state_hash
+            or content != _content(manifest)
+            or manifest.decision_artifact_hash != decision_hash
+            or manifest.decision_hash != decision.decision_hash
+            or manifest.promotion_proposal_hash != decision.promotion_proposal_hash
+            or manifest.resulting_revision != decision.base_revision + 1
+            or manifest.mechanism_path
+            != f"/physical_mechanisms/{decision.projection.canonical_target_mechanism_id}"
+        ):
+            raise PromotionManifestIntegrityError("result manifest@2 artifact binding mismatch")
+        return manifest
+
+    def publish_multi_joint_result_v2(
+        self,
+        store: ArtifactStore,
+        *,
+        decision_artifact: EngineeringArtifact,
+        compilation: Any,
+        proposal: ChangeProposal,
+        changeset_id: str,
+        changed_paths: tuple[str, ...],
+        base_revision: int,
+        base_state_hash: str,
+        resulting_revision: int,
+        resulting_state_hash: str,
+        invalidation: InvalidationRecord,
+        final_run: Run,
+        promotion_request: Any,
+        multi_joint_provenance_service,
+    ) -> EngineeringArtifact:
+        from .promotion_models import (
+            CandidateMultiJointPromotionRequestV2,
+            CandidatePromotionCompilationV2,
+        )
+
+        if type(decision_artifact) is not EngineeringArtifact:
+            raise PromotionManifestIntegrityError("MJ result@2 requires typed decision artifact")
+        if type(compilation) is not CandidatePromotionCompilationV2:
+            raise PromotionManifestIntegrityError("MJ result@2 requires exact compilation@2")
+        if type(proposal) is not ChangeProposal:
+            raise PromotionManifestIntegrityError("MJ result@2 requires typed proposal")
+        if type(invalidation) is not InvalidationRecord or type(final_run) is not Run:
+            raise PromotionManifestIntegrityError("MJ result@2 requires typed lifecycle records")
+        if type(promotion_request) is not CandidateMultiJointPromotionRequestV2:
+            raise PromotionManifestIntegrityError("MJ result@2 requires exact promotion request@2")
+        try:
+            promotion_request = CandidateMultiJointPromotionRequestV2.model_validate(
+                promotion_request.model_dump(mode="json")
+            )
+            compilation = CandidatePromotionCompilationV2.model_validate(
+                compilation.model_dump(mode="json")
+            )
+            invalidation = InvalidationRecord.model_validate(
+                invalidation.model_dump(mode="json")
+            )
+            final_run = Run.model_validate(final_run.model_dump(mode="json"))
+            decision = self.resolve_multi_joint_decision_v2(
+                store,
+                decision_artifact.artifact_id,
+                promotion_request=promotion_request,
+                multi_joint_provenance_service=multi_joint_provenance_service,
+            )
+            verified = store.read_verified_strict(
+                decision_artifact.artifact_id, expected_type=ArtifactType.JSON
+            )
+            if verified is None or verified[0] != decision_artifact:
+                raise PromotionManifestIntegrityError(
+                    "MJ result@2 decision bytes are not the trusted stored artifact"
+                )
+        except PromotionManifestIntegrityError:
+            raise
+        except Exception as exc:
+            raise PromotionManifestIntegrityError(
+                f"MJ result@2 typed parent verification failed: {exc}"
+            ) from exc
+        expected_paths = tuple(dict.fromkeys(operation.path for operation in proposal.operations))
+        target_id = decision.projection.canonical_target_mechanism_id
+        if (
+            proposal != compilation.proposal
+            or compilation.promotion_proposal_hash != decision.promotion_proposal_hash
+            or compilation.projection != decision.projection
+            or compilation.mapping != decision.mapping
+            or proposal.base_revision != base_revision
+            or proposal.base_state_hash != base_state_hash
+            or (base_revision, base_state_hash)
+            != (promotion_request.source_revision, promotion_request.source_state_hash)
+            or tuple(changed_paths) != expected_paths
+            or tuple(invalidation.changed_paths) != expected_paths
+            or invalidation.project_id != promotion_request.project_id
+            or invalidation.changeset_id != changeset_id
+            or invalidation.parent_revision != base_revision
+            or invalidation.revision != resulting_revision
+            or resulting_revision != base_revision + 1
+            or final_run.project_id != store.project_id
+            or final_run.run_id != store.run_id
+            or final_run.status is not RunStatus.CREATED
+            or final_run.initial_revision != base_revision
+            or final_run.initial_state_hash != base_state_hash
+            or final_run.active_revision != resulting_revision
+            or final_run.active_state_hash != resulting_state_hash
+            or decision_artifact.run_id != final_run.run_id
+        ):
+            raise PromotionManifestIntegrityError("MJ result@2 lifecycle binding mismatch")
+        try:
+            manifest = MultiJointPromotionResultManifestV2(
+                decision_artifact_id=decision_artifact.artifact_id,
+                decision_artifact_hash=decision_artifact.sha256,
+                decision_hash=decision.decision_hash,
+                promotion_proposal_hash=compilation.promotion_proposal_hash,
+                proposal_id=proposal.id,
+                changeset_id=changeset_id,
+                changed_paths=expected_paths,
+                canonical_target_mechanism_id=target_id,
+                mechanism_path=f"/physical_mechanisms/{target_id}",
+                base_revision=base_revision,
+                base_state_hash=base_state_hash,
+                resulting_revision=resulting_revision,
+                resulting_state_hash=resulting_state_hash,
+            )
+        except Exception as exc:
+            raise PromotionManifestIntegrityError(
+                f"MJ result manifest@2 is invalid: {exc}"
+            ) from exc
+        artifact = store.publish(
+            _artifact_id("MULTI-JOINT-PROMOTION-RESULT-V2", manifest.result_hash),
+            ArtifactType.JSON,
+            "multi_joint_result_v2.json",
+            _content(manifest),
+            "mechcad-promotion-manifest",
+            "1",
+            resulting_revision,
+            resulting_state_hash,
+            input_hash=decision_artifact.sha256,
+        )
+        self.resolve_multi_joint_result_v2(
+            store,
+            artifact.artifact_id,
+            promotion_request=promotion_request,
+            multi_joint_provenance_service=multi_joint_provenance_service,
+        )
+        return artifact
+
+    def resolve_multi_joint_result_v2(
+        self,
+        store: ArtifactStore,
+        artifact_id: str,
+        *,
+        promotion_request: Any,
+        multi_joint_provenance_service,
+    ):
+        from .promotion_models import CandidateMultiJointPromotionRequestV2
+
+        artifact, content, payload = _load_json(store, artifact_id)
+        try:
+            manifest = MultiJointPromotionResultManifestV2.model_validate(payload)
+            promotion_request = CandidateMultiJointPromotionRequestV2.model_validate(
+                promotion_request.model_dump(mode="json")
+            )
+            decision = self.resolve_multi_joint_decision_v2(
+                store,
+                manifest.decision_artifact_id,
+                promotion_request=promotion_request,
+                multi_joint_provenance_service=multi_joint_provenance_service,
+            )
+        except PromotionManifestIntegrityError:
+            raise
+        except Exception as exc:
+            raise PromotionManifestIntegrityError(
+                f"MJ result manifest@2 verification failed: {exc}"
+            ) from exc
+        if (
+            store.project_id != decision.input_reference.project_id
+            or artifact.run_id != store.run_id
+            or artifact.artifact_id
+            != _artifact_id("MULTI-JOINT-PROMOTION-RESULT-V2", manifest.result_hash)
+            or artifact.artifact_type is not ArtifactType.JSON
+            or artifact.producer_tool_name != "mechcad-promotion-manifest"
+            or artifact.producer_tool_version != "1"
+            or artifact.relative_path.rsplit("/", 1)[-1]
+            != "multi_joint_result_v2.json"
+            or artifact.input_hash != manifest.decision_artifact_hash
+            or artifact.bound_revision != manifest.resulting_revision
+            or artifact.bound_state_hash != manifest.resulting_state_hash
+            or content != _content(manifest)
+            or manifest.decision_artifact_hash
+            != self._artifact_hash(store, manifest.decision_artifact_id)
+            or manifest.decision_hash != decision.decision_hash
+            or manifest.promotion_proposal_hash != decision.promotion_proposal_hash
+            or manifest.canonical_target_mechanism_id
+            != decision.projection.canonical_target_mechanism_id
+            or manifest.resulting_revision != decision.base_revision + 1
+        ):
+            raise PromotionManifestIntegrityError(
+                "MJ result manifest@2 artifact binding mismatch"
+            )
         return manifest
 
     def resolve_multi_joint_result(
@@ -1501,10 +2398,338 @@ def resolve_result(store: ArtifactStore, artifact_id: str) -> CandidatePromotion
     return PromotionManifestService().resolve_result(store, artifact_id)
 
 
+# ---------------------------------------------------------------------------
+# P7 @2 manifests (Spec §17). Legacy @1 frozen.
+# Decision manifests @2: 12/11 declared, @2 references, @3 mappings.
+# Result manifests @2: single 13 (adds decision_hash), MJ 15 (retains).
+# Raw artifact id/hash are declared but EXCLUDED from semantic result hash
+# (byte-validated separately); decision_hash is INCLUDED semantic linkage.
+# ---------------------------------------------------------------------------
+
+_DECISION_SCHEMA_V2 = "selected-candidate-decision-manifest@2"
+_MULTI_JOINT_DECISION_SCHEMA_V2 = "selected-multi-joint-candidate-decision-manifest@2"
+_RESULT_SCHEMA_V2 = "candidate-promotion-result-manifest@2"
+_MULTI_JOINT_RESULT_SCHEMA_V2 = "multi-joint-promotion-result-manifest@2"
+
+
+def _manifest_hash_v2(value: PromotionModel, identity_field: str) -> str:
+    payload = value.model_dump(mode="json")
+    payload.pop(identity_field, None)
+    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+def _result_hash_v2_semantic(payload: dict) -> str:
+    # Semantic result hash excludes raw/provenance pointers and paths.
+    excluded = {
+        "decision_artifact_id",
+        "decision_artifact_hash",
+        "proposal_id",
+        "changeset_id",
+        "application_id",
+        "changed_paths",
+        "mechanism_path",
+        "base_revision",
+        "base_state_hash",
+        "result_hash",
+    }
+    semantic = {k: v for k, v in payload.items() if k not in excluded}
+    return "sha256:" + hashlib.sha256(canonical_json(semantic)).hexdigest()
+
+
+class SelectedCandidateDecisionManifestV2(PromotionModel):
+    """Single decision @2: 12 declared, @2 refs, @3 mappings."""
+
+    schema_version: Literal["selected-candidate-decision-manifest@2"] = (
+        "selected-candidate-decision-manifest@2"
+    )
+    input_reference: Any = Field()
+    pre_promotion_scope_projection: Any = Field()
+    promotion_policy_hash: StrictStr
+    base_revision: StrictInt = Field(gt=0)
+    base_state_hash: StrictStr
+    compilation_hash: StrictStr
+    promotion_proposal_hash: StrictStr
+    projection_hash: StrictStr
+    projection: Any = Field()
+    mapping: tuple[Any, ...] = Field(min_length=1)
+    decision_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "promotion_policy_hash",
+        "base_state_hash",
+        "compilation_hash",
+        "promotion_proposal_hash",
+        "projection_hash",
+    )(_require_hash)
+    _validate_decision = field_validator("decision_hash")(_hash_or_pending)
+
+    @field_validator("input_reference", mode="before")
+    @classmethod
+    def _validate_ref(cls, value):
+        from .promotion_models import PromotionDecisionInputReferenceV2
+
+        if isinstance(value, dict):
+            parsed = PromotionDecisionInputReferenceV2.model_validate(value)
+            if parsed.schema_version != "promotion-decision-input-reference@2":
+                raise ValueError("decision@2 requires exact input reference@2")
+            return parsed
+        if type(value) is not PromotionDecisionInputReferenceV2:
+            raise ValueError("decision@2 requires exact input reference@2")
+        return PromotionDecisionInputReferenceV2.model_validate(value.model_dump(mode="json"))
+
+    @field_validator("pre_promotion_scope_projection", "projection", mode="before")
+    @classmethod
+    def _validate_proj(cls, value, info):
+        from .promotion_models import (
+            PrePromotionM10ScopeProjectionV2,
+            PromotableMechanismProjectionV2,
+        )
+
+        expected = {
+            "pre_promotion_scope_projection": PrePromotionM10ScopeProjectionV2,
+            "projection": PromotableMechanismProjectionV2,
+        }[info.field_name]
+        if isinstance(value, dict):
+            parsed = expected.model_validate(value)
+            return parsed
+        if type(value) is not expected:
+            raise ValueError(f"decision@2 {info.field_name} must be exact @2")
+        return expected.model_validate(value.model_dump(mode="json"))
+
+    @field_validator("mapping", mode="before")
+    @classmethod
+    def _validate_mapping(cls, value):
+        from .promotion_models import CandidateCanonicalInstanceMappingV3
+
+        items = tuple(
+            CandidateCanonicalInstanceMappingV3.model_validate(
+                v.model_dump(mode="json") if hasattr(v, "model_dump") else v
+            )
+            for v in tuple(value)
+        )
+        keys = tuple((m.candidate_instance_id, m.canonical_instance_id) for m in items)
+        if len(set(keys)) != len(keys):
+            raise ValueError("decision@2 mapping must be unique")
+        if keys != tuple(sorted(keys)):
+            raise ValueError("decision@2 mapping must be sorted")
+        return items
+
+    @model_validator(mode="after")
+    def validate_manifest_v2(self) -> "SelectedCandidateDecisionManifestV2":
+        if (self.input_reference.base_revision, self.input_reference.base_state_hash) != (
+            self.base_revision,
+            self.base_state_hash,
+        ):
+            raise ValueError("decision@2 base binding mismatch")
+        if self.input_reference.promotion_policy_hash != self.promotion_policy_hash:
+            raise ValueError("decision@2 policy binding mismatch")
+        if self.projection_hash != self.projection.projection_hash:
+            raise ValueError("decision@2 projection hash mismatch")
+        if tuple(sorted(m.mapping_hash for m in self.mapping)) != self.input_reference.mapping_identities:
+            raise ValueError("decision@2 mapping identity mismatch")
+        expected = _manifest_hash_v2(self, "decision_hash")
+        if self.decision_hash == "pending":
+            object.__setattr__(self, "decision_hash", expected)
+        elif self.decision_hash != expected:
+            raise ValueError("decision manifest@2 hash mismatch")
+        return self
+
+
+class SelectedMultiJointCandidateDecisionManifestV2(PromotionModel):
+    """MJ decision @2: 11 declared, @2 refs, @3 mappings."""
+
+    schema_version: Literal["selected-multi-joint-candidate-decision-manifest@2"] = (
+        "selected-multi-joint-candidate-decision-manifest@2"
+    )
+    input_reference: Any = Field()
+    promotion_policy_hash: StrictStr
+    base_revision: StrictInt = Field(gt=0)
+    base_state_hash: StrictStr
+    compilation_hash: StrictStr
+    promotion_proposal_hash: StrictStr
+    projection_hash: StrictStr
+    projection: Any = Field()
+    mapping: tuple[Any, ...] = Field(min_length=1)
+    decision_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "promotion_policy_hash",
+        "base_state_hash",
+        "compilation_hash",
+        "promotion_proposal_hash",
+        "projection_hash",
+    )(_require_hash)
+    _validate_decision = field_validator("decision_hash")(_hash_or_pending)
+
+    @field_validator("input_reference", mode="before")
+    @classmethod
+    def _validate_ref(cls, value):
+        from .promotion_models import MultiJointPromotionDecisionInputReferenceV2
+
+        if isinstance(value, dict):
+            parsed = MultiJointPromotionDecisionInputReferenceV2.model_validate(value)
+            if parsed.schema_version != "multi-joint-promotion-decision-input-reference@2":
+                raise ValueError("MJ decision@2 requires exact MJ input reference@2")
+            return parsed
+        if type(value) is not MultiJointPromotionDecisionInputReferenceV2:
+            raise ValueError("MJ decision@2 requires exact MJ input reference@2")
+        return MultiJointPromotionDecisionInputReferenceV2.model_validate(
+            value.model_dump(mode="json")
+        )
+
+    @field_validator("projection", mode="before")
+    @classmethod
+    def _validate_proj(cls, value):
+        from .promotion_models import PromotableMechanismProjectionV2
+
+        if isinstance(value, dict):
+            return PromotableMechanismProjectionV2.model_validate(value)
+        if type(value) is not PromotableMechanismProjectionV2:
+            raise ValueError("MJ decision@2 projection must be exact @2")
+        return PromotableMechanismProjectionV2.model_validate(value.model_dump(mode="json"))
+
+    @field_validator("mapping", mode="before")
+    @classmethod
+    def _validate_mapping(cls, value):
+        from .promotion_models import CandidateCanonicalInstanceMappingV3
+
+        items = tuple(
+            CandidateCanonicalInstanceMappingV3.model_validate(
+                v.model_dump(mode="json") if hasattr(v, "model_dump") else v
+            )
+            for v in tuple(value)
+        )
+        keys = tuple((m.candidate_instance_id, m.canonical_instance_id) for m in items)
+        if len(set(keys)) != len(keys):
+            raise ValueError("MJ decision@2 mapping must be unique")
+        if keys != tuple(sorted(keys)):
+            raise ValueError("MJ decision@2 mapping must be sorted")
+        return items
+
+    @model_validator(mode="after")
+    def validate_mj_manifest_v2(self) -> "SelectedMultiJointCandidateDecisionManifestV2":
+        if (self.input_reference.source_revision, self.input_reference.source_state_hash) != (
+            self.base_revision,
+            self.base_state_hash,
+        ):
+            raise ValueError("MJ decision@2 base binding mismatch")
+        if self.projection_hash != self.projection.projection_hash:
+            raise ValueError("MJ decision@2 projection hash mismatch")
+        if tuple(sorted(m.mapping_hash for m in self.mapping)) != self.input_reference.mapping_identities:
+            raise ValueError("MJ decision@2 mapping identity mismatch")
+        expected = _manifest_hash_v2(self, "decision_hash")
+        if self.decision_hash == "pending":
+            object.__setattr__(self, "decision_hash", expected)
+        elif self.decision_hash != expected:
+            raise ValueError("MJ decision manifest@2 hash mismatch")
+        return self
+
+
+class CandidatePromotionResultManifestV2(PromotionModel):
+    """Single result @2: 13 declared (12 + decision_hash), semantic linkage."""
+
+    schema_version: Literal["candidate-promotion-result-manifest@2"] = (
+        "candidate-promotion-result-manifest@2"
+    )
+    decision_artifact_id: StrictStr = Field(min_length=1)
+    decision_artifact_hash: StrictStr
+    decision_hash: StrictStr
+    promotion_proposal_hash: StrictStr
+    proposal_id: StrictStr | None = None
+    changeset_id: StrictStr | None = None
+    application_id: StrictStr | None = None
+    changed_paths: tuple[StrictStr, ...] = Field(min_length=1)
+    mechanism_path: StrictStr
+    resulting_revision: StrictInt = Field(gt=0)
+    resulting_state_hash: StrictStr
+    result_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "decision_artifact_hash", "decision_hash", "promotion_proposal_hash", "resulting_state_hash"
+    )(_require_hash)
+    _validate_result = field_validator("result_hash")(_hash_or_pending)
+    _validate_ids = field_validator("decision_artifact_id", "proposal_id", "changeset_id", "application_id")(
+        lambda value: None if value is None else _nonblank(value)
+    )
+
+    @model_validator(mode="after")
+    def validate_result_v2(self) -> "CandidatePromotionResultManifestV2":
+        if self.mechanism_path not in self.changed_paths:
+            raise ValueError("result@2 mechanism path must be changed")
+        expected = _result_hash_v2_semantic(self.model_dump(mode="json"))
+        if self.result_hash == "pending":
+            object.__setattr__(self, "result_hash", expected)
+        elif self.result_hash != expected:
+            raise ValueError("result manifest@2 hash mismatch")
+        return self
+
+
+class MultiJointPromotionResultManifestV2(PromotionModel):
+    """MJ result @2: 15 declared, retains decision_hash."""
+
+    schema_version: Literal["multi-joint-promotion-result-manifest@2"] = (
+        "multi-joint-promotion-result-manifest@2"
+    )
+    decision_artifact_id: StrictStr = Field(min_length=1)
+    decision_artifact_hash: StrictStr
+    decision_hash: StrictStr
+    promotion_proposal_hash: StrictStr
+    proposal_id: StrictStr = Field(min_length=1)
+    changeset_id: StrictStr = Field(min_length=1)
+    changed_paths: tuple[StrictStr, ...] = Field(min_length=1)
+    canonical_target_mechanism_id: StrictStr = Field(min_length=1)
+    mechanism_path: StrictStr
+    base_revision: StrictInt = Field(gt=0)
+    base_state_hash: StrictStr
+    resulting_revision: StrictInt = Field(gt=0)
+    resulting_state_hash: StrictStr
+    result_hash: StrictStr = "pending"
+
+    _validate_hashes = field_validator(
+        "decision_artifact_hash",
+        "decision_hash",
+        "promotion_proposal_hash",
+        "base_state_hash",
+        "resulting_state_hash",
+    )(_require_hash)
+    _validate_result = field_validator("result_hash")(_hash_or_pending)
+    _validate_ids = field_validator(
+        "decision_artifact_id", "proposal_id", "changeset_id", "canonical_target_mechanism_id"
+    )(_nonblank)
+
+    @model_validator(mode="after")
+    def validate_mj_result_v2(self) -> "MultiJointPromotionResultManifestV2":
+        expected_path = f"/physical_mechanisms/{self.canonical_target_mechanism_id}"
+        if self.mechanism_path != expected_path:
+            raise ValueError("MJ result@2 mechanism path mismatch")
+        if self.resulting_revision != self.base_revision + 1:
+            raise ValueError("MJ result@2 revision must be base+1")
+        expected = _result_hash_v2_semantic(self.model_dump(mode="json"))
+        if self.result_hash == "pending":
+            object.__setattr__(self, "result_hash", expected)
+        elif self.result_hash != expected:
+            raise ValueError("MJ result manifest@2 hash mismatch")
+        return self
+
+
+def decision_manifest_hash_v2(manifest: SelectedCandidateDecisionManifestV2) -> str:
+    return _manifest_hash_v2(manifest, "decision_hash")
+
+
+def multi_joint_decision_manifest_hash_v2(manifest: SelectedMultiJointCandidateDecisionManifestV2) -> str:
+    return _manifest_hash_v2(manifest, "decision_hash")
+
+
 __all__ = [
     "CandidatePromotionResultManifest",
+    "CandidatePromotionResultManifestV2",
+    "MultiJointPromotionResultManifestV2",
+    "SelectedCandidateDecisionManifestV2",
+    "SelectedMultiJointCandidateDecisionManifestV2",
     "decision_manifest_hash",
+    "decision_manifest_hash_v2",
     "multi_joint_decision_manifest_hash",
+    "multi_joint_decision_manifest_hash_v2",
     "multi_joint_result_manifest_hash",
     "MultiJointPromotionResultManifest",
     "PromotionManifestIntegrityError",

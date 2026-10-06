@@ -126,6 +126,46 @@ def production_state() -> DesignState:
     )
 
 
+_GEOMETRY_SLOTS = ("motor", "shaft", "bearing", "hub", "mount", "body", "gear", "support-mount")
+_GEOMETRY_INDEX_BASE = 13
+
+
+_STEP_BYTES = b"""ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''),'2;1');
+FILE_NAME('fixture.step','2026-08-27T00:00:00',(''),(''),'','','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));
+ENDSEC;
+DATA;
+ENDSEC;
+END-ISO-10303-21;
+"""
+_STEP_ARTIFACT_HASH = "sha256:" + hashlib.sha256(_STEP_BYTES).hexdigest()
+_STEP_CONTENT_HASH = "sha256:23d95334b5b1990f1627f9a1f53f3449703cf149d9456299f1f2569f672e18ca"
+_ARTIFACT_CONTEXT = {
+    (f"ART-{slot}", _STEP_ARTIFACT_HASH, f"supplier:m12:{slot}@1", "step", None): {
+        "algorithm": "step-content-identity@1",
+        "content_hash": _STEP_CONTENT_HASH,
+    }
+    for slot in _GEOMETRY_SLOTS
+}
+
+
+def _geometry_identities(state):
+    from mechcad_harness.candidates.models import GeometrySourceReference
+
+    return [
+        GeometrySourceReference(
+            artifact_id=f"ART-{slot}",
+            artifact_hash=_STEP_ARTIFACT_HASH,
+            source_identity=f"supplier:m12:{slot}@1",
+            content_identity=_STEP_CONTENT_HASH,
+            content_identity_algorithm="step-content-identity@1",
+        )
+        for slot in _GEOMETRY_SLOTS
+    ]
+
+
 def build_application(tmp_path: Path) -> ProductionApplication:
     workspace = tmp_path / "workspace"
     ownership = tmp_path / "ownership.yaml"
@@ -135,14 +175,41 @@ def build_application(tmp_path: Path) -> ProductionApplication:
         encoding="utf-8",
     )
     dependencies.write_text("rules: []\nedges: []\n", encoding="utf-8")
-    StateManager(workspace).create_project(PROJECT_ID, production_state())
-    return ProductionApplication.create(
+    state = production_state()
+    identities = _geometry_identities(state)
+    state = state.model_copy(
+        update={
+            "yagi_payload_carrier_requirements": list(state.yagi_payload_carrier_requirements)
+            + identities
+        }
+    )
+    StateManager(workspace).create_project(PROJECT_ID, state)
+    application = ProductionApplication.create(
         workspace,
         PROJECT_ID,
         UninvokedAgentAdapter(),
         ownership_path=ownership,
         dependency_path=dependencies,
     )
+    _publish_source_artifacts(application, state)
+    return application
+
+
+def _publish_source_artifacts(application: ProductionApplication, state) -> None:
+    from mechcad_harness.artifacts import ArtifactStore, ArtifactType
+
+    store = ArtifactStore(application.state_manager.workspace, project_id=PROJECT_ID, run_id="SOURCE")
+    for slot in _GEOMETRY_SLOTS:
+        store.publish(
+            f"ART-{slot}",
+            ArtifactType.STEP,
+            f"{slot}.step",
+            _STEP_BYTES,
+            "fixture-exporter",
+            "1",
+            state.revision,
+            state_hash(state),
+        )
 
 
 def make_request(
@@ -168,6 +235,10 @@ def make_request(
     if architecture is DriveArchitecture.DIRECT_DRIVE:
         source_values[_P_SPEED] = (100.0, "rpm")
     source_values.update(source_value_overrides or {})
+    geometry_paths = tuple(
+        (f"/yagi_payload_carrier_requirements/{_GEOMETRY_INDEX_BASE + index}", CandidateSourceAuthority.CANONICAL_REQUIREMENT)
+        for index in range(len(_GEOMETRY_SLOTS))
+    )
     binding = CandidateSourceBinding(
         project_id=application.project_id,
         source_revision=state.revision,
@@ -178,10 +249,11 @@ def make_request(
                     value_hash="pending",
                     authority=authority,
                 )
-            for path, authority in _ALL_CONSUMED_PATHS
+            for path, authority in _ALL_CONSUMED_PATHS + geometry_paths
         ),
     ).bound_to(state)
     return CandidateSynthesisRequest(
+        schema_version="candidate-synthesis-request@2",
         source_binding=binding,
         required_joint_ids=("J-1",),
         requested_joint_ids=("J-1",),
@@ -300,36 +372,60 @@ def gear_specification(teeth: int, *, module: float = 2.0, pressure_angle: float
     )
 
 
+def _bind_at4_specification(base_spec, slot: str, context):
+    from mechcad_harness.candidates.models import GeometrySourceReference
+    from mechcad_harness.models.semantic_component import bind_component_specification_semantic_identity
+
+    pending = base_spec.model_copy(
+        update={
+            "schema_version": "component-specification@4",
+            "geometry_source": GeometrySourceReference(
+                artifact_id=f"ART-{slot}",
+                artifact_hash=_STEP_ARTIFACT_HASH,
+                source_identity=f"supplier:m12:{slot}@1",
+                content_identity="pending",
+                content_identity_algorithm="step-content-identity@1",
+            ),
+            "specification_hash": "pending",
+        }
+    )
+    return bind_component_specification_semantic_identity(pending, context)
+
+
 def template(architecture: DriveArchitecture, **overrides) -> RevoluteDriveTemplateInput:
+    context = _ARTIFACT_CONTEXT
     values: dict = {
         "architecture": architecture,
         "joint_id": "J-1",
         "axis_frame_reference": "joint:J-1=shaft-axis",
         "motor_instance_id": "drive-motor",
-        "motor_specification": motor_specification(),
+        "motor_specification": _bind_at4_specification(motor_specification(), "motor", context),
         "shaft_instance_id": "output-shaft",
-        "shaft_specification": shaft_specification(),
+        "shaft_specification": _bind_at4_specification(shaft_specification(), "shaft", context),
         "bearing_a_instance_id": "bearing-a",
-        "bearing_a_specification": bearing_specification(),
+        "bearing_a_specification": _bind_at4_specification(bearing_specification(), "bearing", context),
         "bearing_b_instance_id": "bearing-b",
-        "bearing_b_specification": bearing_specification(),
+        "bearing_b_specification": _bind_at4_specification(bearing_specification(), "bearing", context),
         "hub_instance_id": "output-hub",
-        "hub_specification": hub_specification(),
+        "hub_specification": _bind_at4_specification(hub_specification(), "hub", context),
         "mount_instance_id": "motor-mount",
-        "mount_specification": mount_specification(),
+        "mount_specification": _bind_at4_specification(mount_specification(), "mount", context),
         "driven_body_instance_id": "payload-body",
-        "driven_body_specification": body_specification(),
+        "driven_body_specification": _bind_at4_specification(body_specification(), "body", context),
         "design_variables": (CandidateDesignVariable(name="selected-output-shaft-diameter", value=12.0),),
     }
     if architecture is DriveArchitecture.EXTERNAL_SPUR_REDUCTION:
         values.update(
             {
                 "driver_gear_instance_id": "driver-gear",
-                "driver_gear_specification": gear_specification(20),
+                "driver_gear_specification": _bind_at4_specification(gear_specification(20), "gear", context),
                 "driven_gear_instance_id": "driven-gear",
-                "driven_gear_specification": gear_specification(100),
+                "driven_gear_specification": _bind_at4_specification(gear_specification(100), "gear", context),
                 "support_mount_instance_ids": ("support-mount-a", "support-mount-b"),
-                "support_mount_specifications": (support_mount_specification(), support_mount_specification()),
+                "support_mount_specifications": (
+                    _bind_at4_specification(support_mount_specification(), "support-mount", context),
+                    _bind_at4_specification(support_mount_specification(), "support-mount", context),
+                ),
             }
         )
     values.update(overrides)
@@ -439,27 +535,14 @@ def test_source_scalar_retaining_old_hash_is_rejected_before_production_evaluati
 
 def test_recomputed_scalar_against_old_composite_source_record_fails_closed(tmp_path):
     application = build_application(tmp_path)
-    state = production_state()
-    source_binding = CandidateSourceBinding(
-        project_id=PROJECT_ID,
-        source_revision=state.revision,
-        source_state_hash=state_hash(state),
-        consumed_authority=(
-            CandidateSourceReference(
-                path="/requirements/0",
-                value_hash="pending",
-                authority=CandidateSourceAuthority.CANONICAL_REQUIREMENT,
-            ),
-        ),
-    ).bound_to(state)
-    old_composite_hash = source_binding.consumed_authority[0].value_hash
-    old_composite_request = CandidateSynthesisRequest(
-        source_binding=source_binding,
-        required_joint_ids=("J-1",),
-        requested_joint_ids=("J-1",),
+    synthesis_request = make_request(application)
+    old_composite_hash = next(
+        reference.value_hash
+        for reference in synthesis_request.source_binding.consumed_authority
+        if reference.path == _P_SPEED
     )
     forged_requirements = requirements(
-        required_output_speed=scalar(150.0, "rpm", "/requirements/0"),
+        required_output_speed=scalar(150.0, "rpm", _P_SPEED),
         design_load_case=StaticOutputShaftDesignLoadCase(
             design_torque=scalar(10.0, "N*m", None),
             transverse_force_y=scalar(0.0, "N", None),
@@ -475,7 +558,7 @@ def test_recomputed_scalar_against_old_composite_source_record_fails_closed(tmp_
         ),
         trusted_source_scalar_bindings=(
             TrustedCanonicalScalarSourceBinding(
-                source_path="/requirements/0",
+                source_path=_P_SPEED,
                 source_record_hash=old_composite_hash,
                 value=150.0,
                 unit="rpm",
@@ -485,7 +568,7 @@ def test_recomputed_scalar_against_old_composite_source_record_fails_closed(tmp_
     )
 
     outcome = application.realize_and_evaluate_revolute_drive(
-        request=old_composite_request,
+        request=synthesis_request,
         policy=policy_for(DriveArchitecture.DIRECT_DRIVE),
         template_input=template(DriveArchitecture.DIRECT_DRIVE),
         requirements=forged_requirements,
@@ -493,7 +576,7 @@ def test_recomputed_scalar_against_old_composite_source_record_fails_closed(tmp_
 
     assert outcome.evaluation is not None
     assert outcome.evaluation.status is DriveAdmissibility.UNRESOLVED
-    assert "explicit scalar record" in " ".join(
+    assert "source authority canonical scalar value mismatch" in " ".join(
         check.reason or "" for check in outcome.evaluation.checks
     )
 
@@ -677,7 +760,7 @@ def test_production_precedence_is_inadmissible_with_violation_and_unresolved_che
         policy=policy_for(DriveArchitecture.DIRECT_DRIVE),
         template_input=template(
             DriveArchitecture.DIRECT_DRIVE,
-            motor_specification=motor_specification(continuous=6.0),
+            motor_specification=_bind_at4_specification(motor_specification(continuous=6.0), "motor", _ARTIFACT_CONTEXT),
         ),
         requirements=requirements(shaft_yield_strength=None),
     )
@@ -753,13 +836,21 @@ def test_structural_incompleteness_returns_no_candidate_without_consulting_trust
 def test_forged_candidate_fails_closed_before_currentness_or_evaluation(tmp_path, monkeypatch):
     application = build_application(tmp_path)
     request = make_request(application)
+    from mechcad_harness.candidates.services import bind_candidate_synthesis_request_semantic_identity
+
+    bound_request = bind_candidate_synthesis_request_semantic_identity(
+        request,
+        state_manager=application.state_manager,
+        store=application.candidate_publication_service.store,
+        project_id=application.project_id,
+    )
     other_policy = CandidateSynthesisPolicy(entries=(
         ("allow-direct_drive", "direct_drive", "hard_admissibility"),
         ("allow-design-variable:selected-output-shaft-diameter", '{"value":12.0}', "hard_admissibility"),
         ("extra-preference", "unused", "preference"),
     ))
     constructed_under_other_policy = application.revolute_drive_service.construct_candidate(
-        request,
+        bound_request,
         other_policy,
         template(DriveArchitecture.DIRECT_DRIVE),
     )
@@ -812,18 +903,18 @@ def test_non_current_candidate_fails_closed_operationally_before_evaluation(tmp_
         )
 
 
-def test_stale_source_binding_fails_closed_before_any_construction(tmp_path, monkeypatch):
+def test_stale_source_binding_fails_closed_at_currentness_before_evaluation(tmp_path, monkeypatch):
     application = build_application(tmp_path)
     stale_request = make_request(application)
     advanced = production_state().model_copy(update={"revision": 2})
     application.state_manager.create_revision(application.project_id, advanced)
 
-    def refuse_construction(*args, **kwargs):
-        raise AssertionError("pure construction must not run against a stale source binding")
+    def refuse_evaluation(*args, **kwargs):
+        raise AssertionError("evaluation must not run against a stale source binding")
 
-    monkeypatch.setattr(application.revolute_drive_service, "construct_candidate", refuse_construction)
+    monkeypatch.setattr(application.revolute_drive_service, "evaluate", refuse_evaluation)
 
-    with pytest.raises(ValueError, match="mismatch"):
+    with pytest.raises(CandidateIntegrityError, match="currentness"):
         application.realize_and_evaluate_revolute_drive(
             request=stale_request,
             policy=policy_for(DriveArchitecture.DIRECT_DRIVE),

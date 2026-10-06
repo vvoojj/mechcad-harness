@@ -17,6 +17,9 @@ from .component_property import (
 from .geometry_identity import (
     GeometryArtifactIdentity,
     canonical_geometry_reference_payload,
+    canonical_geometry_reference_wire_payload,
+    reference_hash_payload,
+    semantic_reference_hash,
 )
 from .quaternion import rotate_vector
 from .supplied_component_interface import (
@@ -204,32 +207,63 @@ class CanonicalGeometrySourceReference(CanonicalModel):
     format: Literal["step"] = "step"
     coordinate_system_id: str | None = None
     reference_hash: str = "pending"
+    content_identity: str | None = None
+    content_identity_algorithm: Literal["step-content-identity@1"] | None = None
+    semantic_reference_hash: str | None = None
 
     _validate_text = field_validator("artifact_id", "source_identity")(_nonblank)
     _validate_artifact_hash = field_validator("artifact_hash")(_require_hash)
     _validate_reference_hash = field_validator("reference_hash")(_hash_or_pending)
+    _validate_content_identity = field_validator("content_identity")(
+        lambda value: value if value in (None, "pending") else _require_hash(value)
+    )
+    _validate_semantic_reference_hash = field_validator("semantic_reference_hash")(
+        lambda value: value if value in (None, "pending") else _hash_or_pending(value)
+    )
     _validate_coordinate_system = field_validator("coordinate_system_id")(_nonblank)
 
     @model_serializer(mode="wrap")
     def serialize_reference(self, handler):
-        from .geometry_identity import canonical_geometry_reference_payload
-
         del handler
-        return canonical_geometry_reference_payload(
+        return canonical_geometry_reference_wire_payload(
             self, m13=self.coordinate_system_id is not None
         )
 
     @model_validator(mode="after")
     def validate_reference(self) -> "CanonicalGeometrySourceReference":
-        from .geometry_identity import reference_hash_payload
-
-        payload = reference_hash_payload(self.model_dump(mode="json"))
+        trio = (
+            self.content_identity,
+            self.content_identity_algorithm,
+            self.semantic_reference_hash,
+        )
+        if self.content_identity is not None and self.content_identity_algorithm is None:
+            raise ValueError("semantic geometry reference fields must be all present or absent")
+        if self.content_identity is None and any(value is not None for value in trio[1:]):
+            raise ValueError("semantic geometry reference fields must be all present or absent")
+        pending_content_identity = self.content_identity == "pending"
+        if pending_content_identity:
+            if self.semantic_reference_hash not in (None, "pending"):
+                raise ValueError("pending semantic geometry content cannot have a concrete reference hash")
+            object.__setattr__(self, "semantic_reference_hash", "pending")
+        payload = reference_hash_payload(
+            canonical_geometry_reference_payload(
+                self, m13=self.coordinate_system_id is not None
+            )
+        )
         encoded = canonical_json_bytes(payload)
         expected = f"sha256:{hashlib.sha256(encoded).hexdigest()}"
         if self.reference_hash == "pending":
             object.__setattr__(self, "reference_hash", expected)
         elif self.reference_hash != expected:
             raise ValueError("geometry source reference hash mismatch")
+        if self.content_identity is not None and self.semantic_reference_hash is None:
+            object.__setattr__(self, "semantic_reference_hash", "pending")
+        if self.content_identity is not None and not pending_content_identity:
+            expected_semantic = semantic_reference_hash(self)
+            if self.semantic_reference_hash == "pending":
+                object.__setattr__(self, "semantic_reference_hash", expected_semantic)
+            elif self.semantic_reference_hash != expected_semantic:
+                raise ValueError("semantic geometry reference hash mismatch")
         return self
 
 
@@ -272,6 +306,7 @@ class CanonicalComponentSpecification(CanonicalModel):
         "canonical-component-specification@1",
         "canonical-component-specification@2",
         "canonical-component-specification@3",
+        "canonical-component-specification@4",
     ] = "canonical-component-specification@1"
     component_type: str = Field(min_length=1)
     manufacturer: str | None = None
@@ -303,20 +338,31 @@ class CanonicalComponentSpecification(CanonicalModel):
             "geometry_source": (
                 None
                 if self.geometry_source is None
-                else canonical_geometry_reference_payload(
-                    self.geometry_source, m13=self.schema_version.endswith("@2")
+                else (
+                    canonical_geometry_reference_wire_payload(
+                        self.geometry_source,
+                        m13=True,
+                    )
+                    if self.schema_version == "canonical-component-specification@4"
+                    else canonical_geometry_reference_payload(
+                        self.geometry_source,
+                        m13=self.schema_version == "canonical-component-specification@2",
+                    )
                 )
             ),
             "interfaces": list(self.interfaces),
             "compatibility_declarations": list(self.compatibility_declarations),
         }
-        if self.schema_version.endswith("@3"):
+        if self.schema_version == "canonical-component-specification@3":
             payload["generated_part"] = (
                 None
                 if self.generated_part is None
                 else self.generated_part.model_dump(mode="json")
             )
-        if self.schema_version.endswith("@2"):
+        if self.schema_version in {
+            "canonical-component-specification@2",
+            "canonical-component-specification@4",
+        }:
             payload.update({
                 "supplied_reference_frames": [
                     frame.model_dump(mode="json") for frame in self.supplied_reference_frames
@@ -330,6 +376,8 @@ class CanonicalComponentSpecification(CanonicalModel):
                     for transform in self.geometry_derivation_transforms
                 ],
             })
+        if self.schema_version == "canonical-component-specification@4" and self.generated_part is not None:
+            payload["generated_part"] = self.generated_part.model_dump(mode="json")
         payload["specification_hash"] = self.specification_hash
         return payload
 
@@ -345,13 +393,25 @@ class CanonicalComponentSpecification(CanonicalModel):
 
     @model_validator(mode="after")
     def validate_specification(self) -> "CanonicalComponentSpecification":
+        if self.schema_version != "canonical-component-specification@4" and self.geometry_source is not None:
+            if any(
+                value is not None
+                for value in (
+                    self.geometry_source.content_identity,
+                    self.geometry_source.content_identity_algorithm,
+                    self.geometry_source.semantic_reference_hash,
+                )
+            ):
+                raise ValueError(
+                    "legacy canonical component specifications must not contain semantic geometry fields"
+                )
         keys = tuple(property.key for property in self.properties)
         if len(set(keys)) != len(keys):
             raise ValueError("component property keys must be unique")
         declarations = self.interfaces + self.compatibility_declarations
         if any(not value.strip() for value in declarations):
             raise ValueError("component declarations must not be empty")
-        if self.schema_version.endswith("@1"):
+        if self.schema_version == "canonical-component-specification@1":
             if self.generated_part is not None:
                 raise ValueError(
                     "canonical-component-specification@1 must not contain generated_part"
@@ -364,7 +424,7 @@ class CanonicalComponentSpecification(CanonicalModel):
                 raise ValueError("canonical-component-specification@1 must not contain M13 records")
             if self.geometry_source is not None and self.geometry_source.coordinate_system_id is not None:
                 raise ValueError("canonical-component-specification@1 requires no coordinate system")
-        elif self.schema_version.endswith("@2"):
+        elif self.schema_version == "canonical-component-specification@2":
             if self.generated_part is not None:
                 raise ValueError(
                     "canonical-component-specification@2 must not contain generated_part"
@@ -380,7 +440,7 @@ class CanonicalComponentSpecification(CanonicalModel):
                 or self.geometry_source.coordinate_system_id is None
             ):
                 raise ValueError("canonical-component-specification@2 M13 records require a coordinate system")
-        else:
+        elif self.schema_version == "canonical-component-specification@3":
             if self.generated_part is None:
                 raise ValueError("canonical-component-specification@3 requires generated_part")
             if self.geometry_source is not None or any((
@@ -392,6 +452,27 @@ class CanonicalComponentSpecification(CanonicalModel):
                     "canonical-component-specification@3 generated representation is exclusive"
                 )
             validate_generated_interface_registry(self.generated_part, self.interfaces)
+        else:
+            has_m13 = any((
+                self.supplied_reference_frames,
+                self.supplied_interface_definitions,
+                self.geometry_derivation_transforms,
+            ))
+            if self.generated_part is not None:
+                if self.geometry_source is not None or has_m13:
+                    raise ValueError(
+                        "canonical-component-specification@4 generated representation is exclusive"
+                    )
+                validate_generated_interface_registry(self.generated_part, self.interfaces)
+            else:
+                if self.geometry_source is None:
+                    raise ValueError(
+                        "canonical-component-specification@4 supplied representation requires geometry_source"
+                    )
+                if has_m13 and self.geometry_source.coordinate_system_id is None:
+                    raise ValueError(
+                        "canonical-component-specification@4 M13 records require a coordinate system"
+                    )
 
         frames = tuple(sorted(self.supplied_reference_frames, key=lambda frame: frame.frame_id))
         definitions = tuple(sorted(
@@ -449,14 +530,16 @@ class CanonicalComponentSpecification(CanonicalModel):
             if isinstance(definition.mounting_face, MountingFaceInterface) and frame is not None:
                 _validate_canonical_mounting_face_frame(definition.mounting_face, frame)
 
-        encoded = canonical_json_bytes(
-            self._specification_hash_payload()
-        )
-        expected = f"sha256:{hashlib.sha256(encoded).hexdigest()}"
-        if self.specification_hash == "pending":
-            object.__setattr__(self, "specification_hash", expected)
-        elif self.specification_hash != expected:
-            raise ValueError("component specification hash mismatch")
+        if self.schema_version == "canonical-component-specification@4":
+            if self.specification_hash != "pending":
+                _hash_or_pending(self.specification_hash)
+        else:
+            encoded = canonical_json_bytes(self._specification_hash_payload())
+            expected = f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+            if self.specification_hash == "pending":
+                object.__setattr__(self, "specification_hash", expected)
+            elif self.specification_hash != expected:
+                raise ValueError("component specification hash mismatch")
         return self
 
 
@@ -1042,6 +1125,7 @@ class CanonicalPhysicalMechanism(CanonicalModel):
         "canonical-physical-mechanism@1",
         "canonical-physical-mechanism@2",
         "canonical-physical-mechanism@3",
+        "canonical-physical-mechanism@4",
     ] = (
         "canonical-physical-mechanism@1"
     )
@@ -1097,12 +1181,16 @@ class CanonicalPhysicalMechanism(CanonicalModel):
         if self.schema_version in (
             "canonical-physical-mechanism@2",
             "canonical-physical-mechanism@3",
+            "canonical-physical-mechanism@4",
         ):
             payload["generated_placement_derivations"] = [
                 derivation.model_dump(mode="json")
                 for derivation in self.generated_placement_derivations
             ]
-        if self.schema_version.endswith("@3"):
+        if self.schema_version in {
+            "canonical-physical-mechanism@3",
+            "canonical-physical-mechanism@4",
+        }:
             payload.update(
                 {
                     "physical_rigid_body_bindings": [
@@ -1132,6 +1220,8 @@ class CanonicalPhysicalMechanism(CanonicalModel):
         return payload
 
     def _mechanism_hash_payload(self) -> dict[str, Any]:
+        if self.schema_version == "canonical-physical-mechanism@4":
+            return canonical_physical_mechanism_hash_payload_v4(self)
         payload = self._mechanism_payload_for_schema()
         payload.pop("mechanism_hash")
         return payload
@@ -1162,6 +1252,26 @@ class CanonicalPhysicalMechanism(CanonicalModel):
                 )
         elif supplied_m13_3_fields != m13_3_fields:
             raise ValueError("canonical-physical-mechanism@3 requires all M13-3 fields")
+
+        if self.schema_version == "canonical-physical-mechanism@4":
+            if any(
+                specification.schema_version
+                != "canonical-component-specification@4"
+                for specification in self.component_specifications
+            ):
+                raise ValueError(
+                    "canonical-physical-mechanism@4 requires canonical component specification@4"
+                )
+            if self.kinematic_root_physical_body_id is None:
+                raise ValueError(
+                    "canonical-physical-mechanism@4 requires a kinematic root body"
+                )
+            if self.kinematic_root_binding_hash != physical_kinematic_root_hash(
+                self.kinematic_root_physical_body_id
+            ):
+                raise ValueError(
+                    "canonical-physical-mechanism@4 kinematic root binding hash mismatch"
+                )
 
         component_ids = tuple(component.instance_id for component in self.components)
         if len(set(component_ids)) != len(component_ids):
@@ -1256,7 +1366,10 @@ class CanonicalPhysicalMechanism(CanonicalModel):
         )
         if len(set(derivation_ids)) != len(derivation_ids):
             raise ValueError("generated placement derivation IDs must be unique")
-        if self.schema_version.endswith("@3"):
+        if self.schema_version in {
+            "canonical-physical-mechanism@3",
+            "canonical-physical-mechanism@4",
+        }:
             body_ids = tuple(
                 binding.physical_body_id for binding in self.physical_rigid_body_bindings
             )
@@ -1347,9 +1460,17 @@ class CanonicalPhysicalMechanism(CanonicalModel):
                 )
             ):
                 raise ValueError("canonical physical pair classification instance is missing")
-            if len(self.multi_joint_verification_obligations) != 1:
+            if self.schema_version == "canonical-physical-mechanism@3" and len(
+                self.multi_joint_verification_obligations
+            ) != 1:
                 raise ValueError(
                     "canonical multi-joint verification requires exactly one obligation"
+                )
+            if self.schema_version == "canonical-physical-mechanism@4" and len(
+                self.multi_joint_verification_obligations
+            ) > 1:
+                raise ValueError(
+                    "canonical mechanism@4 supports at most one multi-joint obligation"
                 )
         encoded = canonical_json_bytes(
             self._mechanism_hash_payload()
@@ -1360,6 +1481,208 @@ class CanonicalPhysicalMechanism(CanonicalModel):
         elif self.mechanism_hash != expected:
             raise ValueError("canonical physical mechanism hash mismatch")
         return self
+
+
+def canonical_physical_mechanism_hash_payload_v4(
+    mechanism: CanonicalPhysicalMechanism,
+) -> dict[str, Any]:
+    """Return the raw-free semantic mechanism payload pinned by Spec §11.
+
+    Nested canonical component specifications are included as complete
+    semantic @4 records: the closed type-directed @4 projection plus its
+    independently recomputed specification hash. Raw artifact IDs/SHA,
+    legacy reference hashes, promotion provenance, and the mechanism's own
+    hash are excluded. The retained @4 wire model continues to serialize the
+    raw replay/provenance siblings unchanged.
+    """
+
+    if mechanism.schema_version != "canonical-physical-mechanism@4":
+        raise ValueError(
+            "canonical_physical_mechanism_hash_payload_v4 requires mechanism@4"
+        )
+
+    from .semantic_component import semantic_component_specification_projection
+
+    geometry_bindings: dict[tuple[str, str, str, str, str | None], dict[str, str]] = {}
+    for specification in mechanism.component_specifications:
+        reference = specification.geometry_source
+        if reference is None:
+            continue
+        if (
+            reference.content_identity in (None, "pending")
+            or reference.content_identity_algorithm != "step-content-identity@1"
+            or reference.semantic_reference_hash in (None, "pending")
+        ):
+            raise ValueError(
+                "canonical mechanism@4 requires verified semantic geometry fields"
+            )
+        key = (
+            reference.artifact_id,
+            reference.artifact_hash,
+            reference.source_identity,
+            reference.format,
+            reference.coordinate_system_id,
+        )
+        binding = {
+            "algorithm": reference.content_identity_algorithm,
+            "content_hash": reference.content_identity,
+        }
+        prior = geometry_bindings.setdefault(key, binding)
+        if prior != binding:
+            raise ValueError("canonical mechanism geometry semantic bindings conflict")
+
+    specifications_by_hash = {
+        specification.specification_hash: specification
+        for specification in mechanism.component_specifications
+    }
+    components_by_id = {
+        component.instance_id: component for component in mechanism.components
+    }
+    specifications_by_instance = {
+        instance_id: specifications_by_hash[component.specification_hash]
+        for instance_id, component in components_by_id.items()
+    }
+
+    semantic_specifications = []
+    for specification in mechanism.component_specifications:
+        projection = semantic_component_specification_projection(
+            specification, geometry_bindings
+        )
+        projection["specification_hash"] = specification.specification_hash
+        semantic_specifications.append(projection)
+
+    content_by_raw: dict[str, str] = {}
+    for key, binding in geometry_bindings.items():
+        for raw in (key[0], key[1]):
+            previous = content_by_raw.setdefault(raw, binding["content_hash"])
+            if previous != binding["content_hash"]:
+                raise ValueError("canonical raw geometry token maps to conflicting content")
+
+    def semantic_source_tokens(values):
+        transformed = []
+        for value in values:
+            if value.startswith("ART-") and value not in content_by_raw:
+                raise ValueError("canonical mechanism source artifact token is unbound")
+            transformed.append(content_by_raw.get(value, value))
+        return tuple(transformed)
+
+    semantic_placements = []
+    for placement in mechanism.placements:
+        semantic_placements.append(
+            {
+                "placement_id": placement.placement_id,
+                "instance_id": placement.instance_id,
+                "origin": placement.origin.value,
+                "input_identities": list(
+                    semantic_source_tokens(placement.input_identities)
+                ),
+                "relation": placement.relation,
+                "x_mm": placement.x_mm,
+                "y_mm": placement.y_mm,
+                "z_mm": placement.z_mm,
+                "rotation_quaternion": list(placement.rotation_quaternion),
+            }
+        )
+    semantic_choices = [
+        {
+            "key": choice.key,
+            "value": choice.value,
+            "origin": choice.origin.value,
+            "source_identities": list(semantic_source_tokens(choice.source_identities)),
+        }
+        for choice in mechanism.accepted_design_choices
+    ]
+
+    semantic_joints = []
+    for joint in mechanism.physical_revolute_joint_bindings:
+        data = joint.model_dump(mode="json")
+        axis = data["axis_source"]
+        source_type = axis["source_kind"]
+        source_instance = axis["source_physical_instance_id"]
+        specification = specifications_by_instance.get(source_instance)
+        if specification is None:
+            raise ValueError("canonical mechanism@4 axis source instance is missing")
+        if source_type in {
+            "supplied_rotational_interface",
+            "supplied_reference_frame",
+        }:
+            if specification.geometry_source is None:
+                raise ValueError(
+                    "canonical supplied axis source requires a supplied @4 specification"
+                )
+            semantic_axis = {
+                "schema_version": axis["schema_version"],
+                "source_kind": source_type,
+                "source_physical_instance_id": source_instance,
+                "specification_hash": specification.specification_hash,
+                "semantic_reference_hash": specification.geometry_source.semantic_reference_hash,
+            }
+            if source_type == "supplied_rotational_interface":
+                semantic_axis["interface_id"] = axis["interface_id"]
+            else:
+                semantic_axis["frame_id"] = axis["frame_id"]
+        elif source_type in {
+            "generated_rotational_interface",
+            "generated_reference_frame",
+        }:
+            if specification.generated_part is None:
+                raise ValueError(
+                    "canonical generated axis source requires a generated @4 specification"
+                )
+            semantic_axis = {
+                "schema_version": axis["schema_version"],
+                "source_kind": source_type,
+                "source_physical_instance_id": source_instance,
+                "generated_specification_hash": axis["generated_specification_hash"],
+            }
+            if source_type == "generated_rotational_interface":
+                semantic_axis["interface_id"] = axis["interface_id"]
+                semantic_axis["interface_hash"] = axis["interface_hash"]
+            else:
+                semantic_axis["frame_id"] = axis["frame_id"]
+                semantic_axis["frame_hash"] = axis["frame_hash"]
+        else:  # pragma: no cover - Literal/discriminated union is closed
+            raise ValueError("unknown canonical physical axis source kind")
+        data["axis_source"] = semantic_axis
+        data.pop("binding_hash", None)
+        semantic_joints.append(data)
+
+    payload = {
+        "schema_version": "canonical-physical-mechanism@4",
+        "id": mechanism.id,
+        "name": mechanism.name,
+        "component_specifications": semantic_specifications,
+        "components": [item.model_dump(mode="json") for item in mechanism.components],
+        "accepted_design_choices": semantic_choices,
+        "placements": semantic_placements,
+        "connections": [item.model_dump(mode="json") for item in mechanism.connections],
+        "joint_bindings": [item.model_dump(mode="json") for item in mechanism.joint_bindings],
+        "m10_obligations": [
+            item.model_dump(mode="json") for item in mechanism.m10_obligations
+        ],
+        "generated_placement_derivations": [
+            item.model_dump(mode="json")
+            for item in mechanism.generated_placement_derivations
+        ],
+        "physical_rigid_body_bindings": [
+            item.model_dump(mode="json")
+            for item in mechanism.physical_rigid_body_bindings
+        ],
+        "physical_revolute_joint_bindings": semantic_joints,
+        "kinematic_root_physical_body_id": mechanism.kinematic_root_physical_body_id,
+        "kinematic_root_binding_hash": physical_kinematic_root_hash(
+            mechanism.kinematic_root_physical_body_id
+        ),
+        "physical_pair_classification_bindings": [
+            item.model_dump(mode="json")
+            for item in mechanism.physical_pair_classification_bindings
+        ],
+        "multi_joint_verification_obligations": [
+            item.model_dump(mode="json")
+            for item in mechanism.multi_joint_verification_obligations
+        ],
+    }
+    return payload
 
 
 __all__ = [name for name in globals() if name.startswith("Canonical")]

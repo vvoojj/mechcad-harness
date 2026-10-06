@@ -493,6 +493,77 @@ def test_same_artifact_id_with_changed_bytes_fails_closed(tmp_path):
         CanonicalPhysicalCadCompiler(resolver).realize(reconstruction)
 
 
+def test_canonical_compilers_use_exact_source_snapshot_when_project_lookup_is_ambiguous(
+    tmp_path,
+):
+    manager, source, mechanism, snapshot, _, resolver = _fixture(tmp_path)
+    duplicate = ArtifactStore(
+        tmp_path,
+        project_id=source.project_id,
+        run_id="DUPLICATE-SOURCE",
+        task_id="DUPLICATE-TASK",
+    ).publish(
+        source.artifact_id,
+        ArtifactType.STEP,
+        "duplicate.step",
+        (tmp_path / source.relative_path).read_bytes(),
+        source.producer_tool_name,
+        source.producer_tool_version,
+        source.bound_revision,
+        source.bound_state_hash,
+    )
+    assert duplicate.sha256 == source.sha256
+
+    exact_sources = (TrustedSourceArtifact.from_artifact(source),)
+    reconstruction = CanonicalPhysicalMechanismCompiler(
+        manager,
+        lambda project_id: resolver,
+    ).reconstruct(
+        source.project_id,
+        snapshot.revision,
+        snapshot.state_hash,
+        mechanism.id,
+        trusted_source_references=exact_sources,
+    )
+    realization = CanonicalPhysicalCadCompiler(resolver).realize(
+        reconstruction,
+        trusted_source_references=exact_sources,
+    )
+
+    assert reconstruction.trusted_source_references == exact_sources
+    assert realization.selected_source_provenance[0].run_id == source.run_id
+
+
+def test_canonical_reconstruction_rejects_wrong_scope_exact_source_snapshot(tmp_path):
+    manager, source, mechanism, snapshot, _, resolver = _fixture(tmp_path)
+    foreign = ArtifactStore(
+        tmp_path,
+        project_id="PRJ-FOREIGN",
+        run_id="FOREIGN-SOURCE",
+    ).publish(
+        source.artifact_id,
+        ArtifactType.STEP,
+        "foreign.step",
+        (tmp_path / source.relative_path).read_bytes(),
+        source.producer_tool_name,
+        source.producer_tool_version,
+        source.bound_revision,
+        source.bound_state_hash,
+    )
+
+    with pytest.raises(ValueError, match="project scope"):
+        CanonicalPhysicalMechanismCompiler(
+            manager,
+            lambda project_id: resolver,
+        ).reconstruct(
+            source.project_id,
+            snapshot.revision,
+            snapshot.state_hash,
+            mechanism.id,
+            trusted_source_references=(TrustedSourceArtifact.from_artifact(foreign),),
+        )
+
+
 def test_non_selected_old_source_is_not_accepted_as_canonical_input(tmp_path):
     _, _, _, _, reconstruction, resolver = _fixture(tmp_path)
     store = ArtifactStore(tmp_path, project_id="PRJ-CAD", run_id="OTHER-SOURCE")

@@ -17,6 +17,7 @@ from mechcad_harness.candidates.models import (
     PhysicalComponentRole,
     PhysicalMechanismRealization,
     PolicyEntrySemantics,
+    candidate_synthesis_request_hash_v2,
 )
 from mechcad_harness.engineering.scalar_projection import verify_canonical_scalar_projection
 from mechcad_harness.revolute_drive.calculations import (
@@ -557,7 +558,17 @@ class RevoluteDriveRealizationService:
         )
 
         candidate = MechanicalDesignCandidate(
+            schema_version=(
+                "mechanical-design-candidate@2"
+                if request.schema_version == "candidate-synthesis-request@2"
+                else "mechanical-design-candidate@1"
+            ),
             source_binding=request.source_binding,
+            semantic_source_binding_hash=(
+                request.semantic_source_binding_hash
+                if request.schema_version == "candidate-synthesis-request@2"
+                else "pending"
+            ),
             synthesis_request_hash=request.request_hash,
             synthesis_policy_hash=policy.policy_hash,
             component_specifications=tuple(ordered_specs),
@@ -581,7 +592,39 @@ class RevoluteDriveRealizationService:
         *,
         source_state=None,
     ) -> RevoluteDriveAdmissibilityResult:
+        if type(request) is not CandidateSynthesisRequest:
+            raise TypeError("M12-3 evaluation requires a typed CandidateSynthesisRequest")
+        if type(candidate) is not MechanicalDesignCandidate:
+            raise TypeError("M12-3 evaluation requires a typed MechanicalDesignCandidate")
         request, policy = _revalidate_synthesis_inputs(request, policy)
+        candidate_schema = candidate.schema_version
+        request_schema = request.schema_version
+        if candidate_schema not in (
+            "mechanical-design-candidate@1",
+            "mechanical-design-candidate@2",
+        ):
+            raise ValueError("unsupported mechanical design candidate family")
+        if request_schema not in (
+            "candidate-synthesis-request@1",
+            "candidate-synthesis-request@2",
+        ):
+            raise ValueError("unsupported candidate synthesis request family")
+        if candidate_schema != "mechanical-design-candidate@2" and request_schema == "candidate-synthesis-request@2":
+            raise ValueError("legacy candidate cannot admit request@2")
+        if candidate_schema == "mechanical-design-candidate@2" and request_schema != "candidate-synthesis-request@2":
+            raise ValueError("candidate@2 requires candidate-synthesis-request@2")
+        if candidate_schema == "mechanical-design-candidate@2":
+            candidate = MechanicalDesignCandidate.model_validate(
+                candidate.model_dump(mode="json")
+            )
+            if candidate_synthesis_request_hash_v2(request) != request.request_hash:
+                raise ValueError("candidate synthesis request@2 hash is not verified")
+            if candidate.synthesis_request_hash != request.request_hash:
+                raise ValueError("candidate synthesis request@2 identity mismatch")
+            if candidate.source_binding != request.source_binding:
+                raise ValueError("candidate request source binding mismatch")
+            if candidate.semantic_source_binding_hash != request.semantic_source_binding_hash:
+                raise ValueError("candidate semantic source binding does not match request")
         requirements = _revalidate_requirements(requirements)
         if candidate.synthesis_request_hash != request.request_hash:
             raise ValueError("candidate was synthesized from a different synthesis request")
@@ -599,8 +642,17 @@ class RevoluteDriveRealizationService:
             if any("not consumed" in defect or "no scalar value binding" in defect for defect in source_path_defects):
                 raise ValueError("; ".join(source_path_defects))
             return RevoluteDriveAdmissibilityResult(
+                schema_version=(
+                    "revolute-drive-admissibility@2"
+                    if candidate_schema == "mechanical-design-candidate@2"
+                    else "revolute-drive-admissibility@1"
+                ),
                 candidate_hash=candidate.candidate_hash,
-                source_binding_hash=_hash_source_binding(candidate.source_binding),
+                source_binding_hash=(
+                    candidate.semantic_source_binding_hash
+                    if candidate_schema == "mechanical-design-candidate@2"
+                    else _hash_source_binding(candidate.source_binding)
+                ),
                 synthesis_request_hash=request.request_hash,
                 synthesis_policy_hash=policy.policy_hash,
                 requirements_hash=requirements.requirements_hash,
@@ -772,8 +824,17 @@ class RevoluteDriveRealizationService:
                 consumed.append(property_binding)
 
         return RevoluteDriveAdmissibilityResult(
+            schema_version=(
+                "revolute-drive-admissibility@2"
+                if candidate_schema == "mechanical-design-candidate@2"
+                else "revolute-drive-admissibility@1"
+            ),
             candidate_hash=candidate.candidate_hash,
-            source_binding_hash=_hash_source_binding(candidate.source_binding),
+            source_binding_hash=(
+                candidate.semantic_source_binding_hash
+                if candidate_schema == "mechanical-design-candidate@2"
+                else _hash_source_binding(candidate.source_binding)
+            ),
             synthesis_request_hash=request.request_hash,
             synthesis_policy_hash=policy.policy_hash,
             requirements_hash=requirements.requirements_hash,

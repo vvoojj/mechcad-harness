@@ -6,8 +6,15 @@ from enum import StrEnum
 
 from pydantic import Field, model_validator
 
-from mechcad_harness.cad_assembly import CadComponentInstance, CadRigidTransform, assembly_hash
-from mechcad_harness.cad_assembly import CadAssemblyProgram
+from mechcad_harness.cad_assembly import (
+    M10_EXECUTION_SEMANTICS_VERSION,
+    CadAssemblyProgram,
+    CadComponentInstance,
+    CadRigidTransform,
+    _require_semantic_fields,
+    assembly_hash,
+    verified_semantic_assembly_hash,
+)
 from mechcad_harness.core.canonical import canonical_json_bytes
 from mechcad_harness.models.common import Model
 from mechcad_harness.transient_assembly_analysis import TransientAssemblyAnalysisRequest
@@ -156,6 +163,155 @@ class CadKinematicSweepRequest(Model):
         elif self.request_hash != digest:
             raise ValueError("request hash does not match canonical request")
         return self
+
+
+def _semantic_sweep_request_hash_from_assembly_identity(
+    request: CadKinematicSweepRequest,
+    semantic_assembly_hash: str,
+) -> str:
+    _require_semantic_fields(
+        request,
+        CadKinematicSweepRequest,
+        {
+            "source_assembly_id", "source_assembly_hash", "axis",
+            "sample_angles_deg", "moving_instance_ids", "stationary_instance_ids",
+            "volume_tolerance_mm3", "distance_tolerance_mm", "sweep_version",
+            "request_hash",
+        },
+        "CadKinematicSweepRequest",
+    )
+    _require_semantic_fields(
+        request.axis,
+        RevoluteAxis,
+        {
+            "origin_x_mm", "origin_y_mm", "origin_z_mm", "direction_x",
+            "direction_y", "direction_z", "frame_id",
+        },
+        "RevoluteAxis",
+    )
+    if request.sweep_version != RIGID_BODY_COLLISION_SWEEP_VERSION:
+        raise ValueError("sweep request contract is not trusted")
+    payload = {
+        "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+        "axis": request.axis.model_dump(mode="json"),
+        "sample_angles_deg": list(request.sample_angles_deg),
+        "moving_instance_ids": list(request.moving_instance_ids),
+        "stationary_instance_ids": list(request.stationary_instance_ids),
+        "volume_tolerance_mm3": request.volume_tolerance_mm3,
+        "distance_tolerance_mm": request.distance_tolerance_mm,
+        "sweep_version": RIGID_BODY_COLLISION_SWEEP_VERSION,
+        "semantic_assembly_hash": semantic_assembly_hash,
+    }
+    return f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
+
+
+def semantic_sweep_request_hash(
+    request: CadKinematicSweepRequest,
+    assembly: CadAssemblyProgram,
+    mappings,
+) -> str:
+    """Project P3 onto its engineering sweep inputs and semantic assembly."""
+    if request.source_assembly_id != assembly.assembly_id:
+        raise ValueError("sweep request source assembly ID mismatch")
+    semantic_assembly = verified_semantic_assembly_hash(
+        assembly, mappings, request.source_assembly_hash
+    )
+    return _semantic_sweep_request_hash_from_assembly_identity(
+        request, semantic_assembly
+    )
+
+
+def _semantic_sweep_result_hash_from_assembly_identity(
+    result: CadKinematicSweepResult,
+    request: CadKinematicSweepRequest,
+    semantic_assembly_hash: str,
+) -> str:
+    _require_semantic_fields(
+        result,
+        CadKinematicSweepResult,
+        {
+            "request_hash", "source_assembly_hash", "sweep_version", "samples",
+            "aggregate_classification", "first_collision_angle_deg",
+            "worst_interference_angle_deg", "worst_interference_volume_mm3",
+            "minimum_clearance_angle_deg", "minimum_clearance_mm",
+            "continuous_sweep_verified", "result_hash",
+        },
+        "CadKinematicSweepResult",
+    )
+    semantic_request = _semantic_sweep_request_hash_from_assembly_identity(
+        request, semantic_assembly_hash
+    )
+    if result.request_hash != request.request_hash:
+        raise ValueError("sweep result request hash mismatch")
+    if result.source_assembly_hash != request.source_assembly_hash:
+        raise ValueError("sweep result source assembly hash mismatch")
+    if result.sweep_version != RIGID_BODY_COLLISION_SWEEP_VERSION:
+        raise ValueError("sweep result contract is not trusted")
+    if tuple(sample.angle_deg for sample in result.samples) != request.sample_angles_deg:
+        raise ValueError("sweep result samples do not preserve request order")
+
+    pair_fields = {
+        "moving_instance_id", "stationary_instance_id", "interference_volume_mm3",
+        "exact_distance_mm", "classification",
+    }
+    sample_fields = {
+        "angle_deg", "transformed_assembly_hash", "pair_results",
+        "maximum_interference_volume_mm3", "minimum_exact_distance_mm",
+        "classification",
+    }
+    samples = []
+    for sample in result.samples:
+        _require_semantic_fields(
+            sample, CadKinematicSweepSample, sample_fields,
+            "CadKinematicSweepSample",
+        )
+        pairs = []
+        for pair in sample.pair_results:
+            _require_semantic_fields(
+                pair, CadKinematicCollisionPairResult, pair_fields,
+                "CadKinematicCollisionPairResult",
+            )
+            pairs.append(pair.model_dump(mode="json"))
+        samples.append(
+            {
+                "angle_deg": sample.angle_deg,
+                "pair_results": pairs,
+                "maximum_interference_volume_mm3": sample.maximum_interference_volume_mm3,
+                "minimum_exact_distance_mm": sample.minimum_exact_distance_mm,
+                "classification": sample.classification.value,
+            }
+        )
+    payload = {
+        "semantic_projection_version": M10_EXECUTION_SEMANTICS_VERSION,
+        "semantic_sweep_request_hash": semantic_request,
+        "sweep_version": RIGID_BODY_COLLISION_SWEEP_VERSION,
+        "samples": samples,
+        "aggregate_classification": result.aggregate_classification.value,
+        "first_collision_angle_deg": result.first_collision_angle_deg,
+        "worst_interference_angle_deg": result.worst_interference_angle_deg,
+        "worst_interference_volume_mm3": result.worst_interference_volume_mm3,
+        "minimum_clearance_angle_deg": result.minimum_clearance_angle_deg,
+        "minimum_clearance_mm": result.minimum_clearance_mm,
+        "continuous_sweep_verified": result.continuous_sweep_verified,
+        "semantic_assembly_hash": semantic_assembly_hash,
+    }
+    return f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
+
+
+def semantic_sweep_result_hash(
+    result: CadKinematicSweepResult,
+    request: CadKinematicSweepRequest,
+    assembly: CadAssemblyProgram,
+    mappings,
+) -> str:
+    """Project P4 measurements while excluding raw transformed-assembly hashes."""
+    semantic_sweep_request_hash(request, assembly, mappings)
+    semantic_assembly = verified_semantic_assembly_hash(
+        assembly, mappings, result.source_assembly_hash
+    )
+    return _semantic_sweep_result_hash_from_assembly_identity(
+        result, request, semantic_assembly
+    )
 
 
 def _quaternion_multiply(first, second):
