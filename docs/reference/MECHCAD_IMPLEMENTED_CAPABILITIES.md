@@ -324,6 +324,10 @@ or M11 execution.
 - `candidates/canonical_cad.py` creates fresh canonical physical-to-CAD mappings
   and CAD identities bound to the promoted revision while preserving original
   source-artifact provenance.
+- Canonical source provenance publication and resolution are identity-keyed by
+  source artifact ID, while retaining strict full-snapshot equality for hashes,
+  project/revision/state, execution scope, and producer/task metadata. Canonical
+  CAD serialization remains deterministic and sorted by source identity.
 - `candidates/canonical_m10.py` derives fresh M10 scope, pair inventory, and
   request identities from canonical physical semantics and invokes the unchanged
   bounded M10 services. Candidate CAD/M10 records are not reused as canonical
