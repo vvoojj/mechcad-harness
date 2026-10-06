@@ -8,3 +8,8 @@ __pycache__/
 .venv/
 dist/
 build/
+.superpowers
+.tmp-live-m12
+err.txt
+test_output.txt
+src/mechcad-harness/
