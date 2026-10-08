@@ -39,16 +39,19 @@ from m12_6_acceptance_fixtures import (
 )
 from test_m12_candidate_cad_m10_production import (
     FREECAD_CANDIDATE,
-    _evaluate_real_candidate,
-    _real_candidate,
 )
 from test_m12_6_end_to_end_direct_drive import (
     _DIRECT_CANDIDATE_POSITIONS,
+    _candidate_synthesis_inputs,
     _candidate_cad_request,
     _candidate_m10_inputs,
     promotion_classifications,
 )
-from test_m12_revolute_drive_production import PROJECT_ID, policy_for
+from test_m12_revolute_drive_production import (
+    PROJECT_ID,
+    DriveArchitecture,
+    policy_for,
+)
 from mechcad_harness.application import ProductionApplication
 from mechcad_harness.state import StateManager
 
@@ -67,31 +70,53 @@ def _configure_freecad(monkeypatch):
     assert discover_freecad().require_available().executable == executable
 
 
-def _direct_candidate_stage(fixture, positions, *, not_proven=False):
-    candidate, synthesis_request, synthesis_policy, m12_result = _real_candidate(
-        fixture.app,
-        fixture.source_artifacts,
-        positions,
+def _direct_candidate_stage(
+    fixture, positions, *, not_proven=False, collision=False
+):
+    candidate, synthesis_request, synthesis_policy, m12_result = (
+        _legacy_direct_m12_candidate(
+            fixture.app,
+            fixture.source,
+            fixture.source_artifacts,
+            positions,
+        )
     )
-    evaluation, cad_request, scope, binding, m10_request = _evaluate_real_candidate(
+    stage = _evaluate_promotion_candidate(
         fixture.app,
         candidate,
         synthesis_request,
         synthesis_policy,
         m12_result,
         not_proven=not_proven,
+        collision=collision,
     )
-    return {
-        "candidate": candidate,
-        "synthesis_request": synthesis_request,
-        "synthesis_policy": synthesis_policy,
-        "m12_result": m12_result,
-        "evaluation": evaluation,
-        "cad_request": cad_request,
-        "scope": scope,
-        "binding": binding,
-        "m10_request": m10_request,
-    }
+    return stage
+
+
+def _legacy_direct_m12_candidate(app, source, source_artifacts, positions):
+    fixture = SimpleNamespace(
+        synthesis_request=build_synthesis_request(app, source),
+        synthesis_policy=policy_for(DriveArchitecture.DIRECT_DRIVE),
+        template_input=build_direct_template(source_artifacts),
+    )
+    synthesis_request, synthesis_policy, candidate_template = _candidate_synthesis_inputs(
+        fixture, positions
+    )
+    construction = app.revolute_drive_service.construct_candidate(
+        synthesis_request, synthesis_policy, candidate_template
+    )
+    if construction.candidate is None:
+        raise AssertionError(
+            f"legacy M12-3 candidate construction failed: {construction.reason}"
+        )
+    m12_result = app.revolute_drive_service.evaluate(
+        construction.candidate,
+        synthesis_request,
+        synthesis_policy,
+        build_direct_requirements(source, synthesis_request.source_binding),
+        source_state=source.state,
+    )
+    return construction.candidate, synthesis_request, synthesis_policy, m12_result
 
 
 def _selection_for(stage, selector="m12-6-failure-selector"):
@@ -162,64 +187,43 @@ def _apply_allowed_proposal(
 
 def _fresh_direct_stage(app, source_artifacts):
     source = app.load_state()
-    synthesis_request = build_synthesis_request(app, source)
-    candidate_template = build_direct_template(source_artifacts)
-    variables = list(candidate_template.design_variables)
-    variables.extend(
-        CandidateDesignVariable(
-            name=f"{instance_id}.placement.{axis}",
-            value=value,
+    candidate, synthesis_request, synthesis_policy, m12_result = (
+        _legacy_direct_m12_candidate(
+            app,
+            source,
+            source_artifacts,
+            _DIRECT_CANDIDATE_POSITIONS,
         )
-        for instance_id, position in _DIRECT_CANDIDATE_POSITIONS.items()
-        for axis, value in zip(("x_mm", "y_mm", "z_mm"), position, strict=True)
     )
-    variables.extend(
-        CandidateDesignVariable(name=f"{instance_id}.{axis}", value=value)
-        for instance_id, dimensions in {
-            "motor-mount": (30.0, 30.0, 5.0),
-            "payload-body": (20.0, 20.0, 5.0),
-        }.items()
-        for axis, value in zip(("length_mm", "width_mm", "thickness_mm"), dimensions, strict=True)
-    )
-    candidate_template = candidate_template.model_copy(update={"design_variables": tuple(variables)})
-    entries = list(policy_for(candidate_template.architecture).entries)
-    declared = {entry[0] for entry in entries}
-    for variable in variables:
-        key = f"allow-design-variable:{variable.name}"
-        if key not in declared:
-            entries.append(
-                (
-                    key,
-                    json.dumps({"value": variable.value}, sort_keys=True, separators=(",", ":")),
-                    "hard_admissibility",
-                )
-            )
-    synthesis_policy = CandidateSynthesisPolicy(entries=tuple(entries))
-    m12_outcome = app.realize_and_evaluate_revolute_drive(
-        request=synthesis_request,
-        policy=synthesis_policy,
-        template_input=candidate_template,
-        requirements=build_direct_requirements(source, synthesis_request.source_binding),
-    )
-    assert m12_outcome.construction.candidate is not None
-    assert m12_outcome.evaluation is not None
     return _evaluate_promotion_candidate(
         app,
-        m12_outcome.construction.candidate,
+        candidate,
         synthesis_request,
         synthesis_policy,
-        m12_outcome.evaluation,
+        m12_result,
     )
 
 
 def _evaluate_promotion_candidate(
-    app, candidate, synthesis_request, synthesis_policy, m12_result
+    app,
+    candidate,
+    synthesis_request,
+    synthesis_policy,
+    m12_result,
+    *,
+    not_proven=False,
+    collision=False,
 ):
     cad_request = _candidate_cad_request(candidate)
     cad_stage = app.realize_candidate_cad(
         candidate, synthesis_request, synthesis_policy, cad_request
     )
-    scope, binding, m10_request = _candidate_m10_inputs(candidate, cad_stage)
+    scope, binding, m10_request = _candidate_m10_inputs(
+        candidate, cad_stage, collision=collision, not_proven=not_proven
+    )
+    if not_proven:
+        app.candidate_m10_evaluation_service.max_exact_evaluations = 2
+        app.candidate_m10_evaluation_service.max_depth = 1
     evaluation = app.evaluate_candidate(
         candidate,
         synthesis_request,
@@ -244,8 +248,9 @@ def _evaluate_promotion_candidate(
 
 
 def _promote_direct_fixture(fixture, mechanism_id="PM-m12-6-failure"):
-    candidate, synthesis_request, synthesis_policy, m12_result = _real_candidate(
+    candidate, synthesis_request, synthesis_policy, m12_result = _legacy_direct_m12_candidate(
         fixture.app,
+        fixture.source,
         fixture.source_artifacts,
         dict(_DIRECT_CANDIDATE_POSITIONS),
     )
@@ -314,18 +319,28 @@ def test_m12_6_m12_3_insufficient_input_retains_real_inadmissible_outcome(
             "specification_hash": "pending",
         }
     )
-
-    outcome = fixture.app.realize_and_evaluate_revolute_drive(
-        request=fixture.synthesis_request,
-        policy=fixture.synthesis_policy,
-        template_input=fixture.template_input.model_copy(
-            update={"motor_specification": insufficient_motor}
-        ),
-        requirements=fixture.requirements,
+    insufficient_motor = type(insufficient_motor).model_validate(
+        insufficient_motor.model_dump(mode="json")
+    )
+    template_input = type(fixture.template_input).model_validate(
+        fixture.template_input.model_dump(mode="json")
+        | {"motor_specification": insufficient_motor.model_dump(mode="json")}
+    )
+    construction = fixture.app.revolute_drive_service.construct_candidate(
+        fixture.synthesis_request,
+        fixture.synthesis_policy,
+        template_input,
+    )
+    assert construction.candidate is not None
+    outcome = fixture.app.revolute_drive_service.evaluate(
+        construction.candidate,
+        fixture.synthesis_request,
+        fixture.synthesis_policy,
+        fixture.requirements,
+        source_state=fixture.source.state,
     )
 
-    assert outcome.evaluation is not None
-    assert outcome.evaluation.status is DriveAdmissibility.INADMISSIBLE
+    assert outcome.status is DriveAdmissibility.INADMISSIBLE
 
 
 @pytest.mark.skipif(not FREECAD_AVAILABLE, reason="FreeCAD is not available")
@@ -343,7 +358,7 @@ def test_m12_6_candidate_collision_is_infeasible_with_collision_witness(
         }
     )
 
-    stage = _direct_candidate_stage(fixture, positions)
+    stage = _direct_candidate_stage(fixture, positions, collision=True)
     evaluation = stage["evaluation"]
 
     assert evaluation.outcome is CandidateEvaluationOutcome.INFEASIBLE

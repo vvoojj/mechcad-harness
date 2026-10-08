@@ -10,8 +10,6 @@ import pytest
 from mechcad_harness.artifacts import ArtifactStore, ArtifactType
 from mechcad_harness.backends.freecad import FreeCADBackend, discover_freecad
 from mechcad_harness.candidates import (
-    CandidateCadInstanceMapping,
-    CandidateCadRealizationRequest,
     CandidateCadStageStatus,
     CandidateDesignVariable,
     CandidateGeometryFidelity,
@@ -51,7 +49,7 @@ from m12_6_acceptance_fixtures import (
 )
 from mechcad_harness.revolute_drive import DriveAdmissibility
 
-from test_m12_candidate_cad_m10_production import _m10_inputs
+from test_m12_candidate_cad_m10_production import _cad_request, _m10_inputs
 
 
 _DIRECT_CANDIDATE_POSITIONS = {
@@ -198,110 +196,18 @@ def promotion_classifications(candidate) -> tuple[PromotionClassification, ...]:
     return tuple(values)
 
 
-def _candidate_cad_request(candidate) -> CandidateCadRealizationRequest:
-    specifications = {
-        specification.specification_hash: specification
-        for specification in candidate.component_specifications
-    }
-    source_artifacts = {
-        specification.geometry_source.artifact_id: specification.geometry_source
-        for specification in candidate.component_specifications
-        if specification.geometry_source is not None
-    }
-    bounded_dimensions = {
-        "motor-mount": (30.0, 30.0, 5.0),
-        "payload-body": (20.0, 20.0, 5.0),
-    }
-    mappings = []
-    design_variable_identities = set()
-    for component in candidate.realization.components:
-        instance_id = component.instance_id
-        x_mm, y_mm, z_mm = _DIRECT_CANDIDATE_POSITIONS[instance_id]
-        placement = CadRigidTransform(x_mm=x_mm, y_mm=y_mm, z_mm=z_mm)
-        placement_inputs = tuple(
-            f"candidate:design-variable:{instance_id}.placement.{axis}"
-            for axis in ("x_mm", "y_mm", "z_mm")
-        )
-        placement_origin = CandidatePlacementOrigin(
-            authority="candidate_design_variable",
-            input_identities=placement_inputs,
-            derivation="m12-6-direct-placement@1",
-            transform=placement,
-        )
-        design_variable_identities.update(placement_inputs)
-        specification = specifications[component.specification_hash]
-        cad_instance_id = f"cad-{instance_id}"
-        if specification.geometry_source is not None:
-            source = source_artifacts[specification.geometry_source.artifact_id]
-            imported = ImportedCadComponent(
-                component_id=cad_instance_id,
-                artifact_id=source.artifact_id,
-                artifact_hash=source.artifact_hash,
-                source_revision=candidate.source_binding.source_revision,
-                source_state_hash=candidate.source_binding.source_state_hash,
-            )
-            mappings.append(
-                CandidateCadInstanceMapping(
-                    candidate_hash=candidate.candidate_hash,
-                    physical_instance_id=instance_id,
-                    cad_instance_id=cad_instance_id,
-                    fidelity=CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY,
-                    representation_identity=imported_component_hash(imported),
-                    source_geometry_identity=source.artifact_hash,
-                    geometry_definition_identities=(source.artifact_id,),
-                    placement=placement,
-                    placement_origin=placement_origin,
-                )
-            )
-            continue
-
-        dimensions = bounded_dimensions[instance_id]
-        program = compile_mounting_plate(
-            MountingPlateDesignSpec(
-                part_id=cad_instance_id,
-                plate_length_mm=dimensions[0],
-                plate_width_mm=dimensions[1],
-                plate_thickness_mm=dimensions[2],
-            )
-        )
-        geometry_inputs = tuple(
-            f"candidate:design-variable:{instance_id}.{axis}"
-            for axis in ("length_mm", "width_mm", "thickness_mm")
-        )
-        design_variable_identities.update(geometry_inputs)
-        mappings.append(
-            CandidateCadInstanceMapping(
-                candidate_hash=candidate.candidate_hash,
-                physical_instance_id=instance_id,
-                cad_instance_id=cad_instance_id,
-                fidelity=CandidateGeometryFidelity.DECLARED_BOUNDED_COLLISION_REPRESENTATION,
-                representation_identity=cad_program_hash(program),
-                geometry_definition_identities=geometry_inputs,
-                placement=placement,
-                placement_origin=placement_origin,
-            )
-        )
-    return CandidateCadRealizationRequest(
-        candidate_hash=candidate.candidate_hash,
-        source_binding=candidate.source_binding,
-        representation_policy_version="m12-6-direct-candidate-cad@1",
-        compiler_identity="m12-6-direct-candidate-cad-fixture",
-        compiler_version="1",
-        candidate_instance_ids=tuple(
-            component.instance_id for component in candidate.realization.components
-        ),
-        mappings=tuple(mappings),
-        design_variable_identities=tuple(sorted(design_variable_identities)),
-    )
+def _candidate_cad_request(candidate):
+    return _cad_request(candidate)
 
 
-def _candidate_synthesis_inputs(fixture):
+def _candidate_synthesis_inputs(fixture, positions=None):
+    positions = _DIRECT_CANDIDATE_POSITIONS if positions is None else positions
     variables = [
         CandidateDesignVariable(
             name=f"{instance_id}.placement.{axis}",
             value=value,
         )
-        for instance_id, position in _DIRECT_CANDIDATE_POSITIONS.items()
+        for instance_id, position in positions.items()
         for axis, value in zip(("x_mm", "y_mm", "z_mm"), position, strict=True)
     ]
     variables.extend(
@@ -342,23 +248,49 @@ def _candidate_synthesis_inputs(fixture):
     )
 
 
-def _candidate_m10_inputs(candidate, candidate_cad_stage):
-    scope, binding, request = _m10_inputs(candidate, candidate_cad_stage)
+def _candidate_m10_inputs(
+    candidate, candidate_cad_stage, *, collision=False, not_proven=False
+):
+    scope, binding, request = _m10_inputs(
+        candidate, candidate_cad_stage, home=not_proven
+    )
+    if not_proven:
+        return scope, binding, request
+    pair = (
+        ("output-hub", "motor-mount")
+        if collision
+        else ("output-shaft", "drive-motor")
+    )
+    fidelity = (
+        (
+            ("output-hub", CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY),
+            (
+                "motor-mount",
+                CandidateGeometryFidelity.DECLARED_BOUNDED_COLLISION_REPRESENTATION,
+            ),
+        )
+        if collision
+        else (
+            ("output-shaft", CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY),
+            ("drive-motor", CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY),
+        )
+    )
     scope = type(scope).model_validate(
         scope.model_dump(mode="json")
         | {
             "pair_scope_requirements": [
                 CandidateM10PairScopeRequirement(
-                    requirement_key="shaft-motor-clearance",
-                    first_constituent_key="output-shaft",
-                    second_constituent_key="drive-motor",
+                    requirement_key=(
+                        "hub-mount-clearance"
+                        if collision
+                        else "shaft-motor-clearance"
+                    ),
+                    first_constituent_key=pair[0],
+                    second_constituent_key=pair[1],
                     required_classification=CandidateM10PairClassification.CHECK_CLEARANCE,
                 ).model_dump(mode="json")
             ],
-            "fidelity_requirements": [
-                ["output-shaft", CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY],
-                ["drive-motor", CandidateGeometryFidelity.TRUSTED_SOURCE_GEOMETRY],
-            ],
+            "fidelity_requirements": [list(item) for item in fidelity],
             "scope_hash": "pending",
         }
     )
@@ -451,17 +383,19 @@ def _promote_direct_drive_and_return_locators(
     }
 
     synthesis_request, synthesis_policy, template_input = _candidate_synthesis_inputs(fixture)
-    outcome = app.realize_and_evaluate_revolute_drive(
-        request=synthesis_request,
-        policy=synthesis_policy,
-        template_input=template_input,
-        requirements=fixture.requirements,
+    construction = app.revolute_drive_service.construct_candidate(
+        synthesis_request, synthesis_policy, template_input
     )
-    candidate = outcome.construction.candidate
-    m12_result = outcome.evaluation
-    assert outcome.construction.status is DriveAdmissibility.ADMISSIBLE
+    candidate = construction.candidate
+    assert construction.status is DriveAdmissibility.ADMISSIBLE
     assert candidate is not None
-    assert m12_result is not None
+    m12_result = app.revolute_drive_service.evaluate(
+        candidate,
+        synthesis_request,
+        synthesis_policy,
+        fixture.requirements,
+        source_state=source.state,
+    )
     assert m12_result.status is DriveAdmissibility.ADMISSIBLE
     assert m12_result.candidate_hash == candidate.candidate_hash
     assert m12_result.result_hash
@@ -641,6 +575,7 @@ def _promote_direct_drive_and_return_locators(
     assert decision_artifact.run_id != fixture.source_artifact_run_id
     assert promotion_run_dirs == {
         fixture.source_artifact_run_id,
+        "PUBLISH",
         decision_artifact.run_id,
     }
 
@@ -1109,15 +1044,23 @@ def test_direct_drive_fixture_stays_at_source_boundary(tmp_path, monkeypatch):
         fixture.source_artifact_run_id
     }
 
-    outcome = fixture.app.realize_and_evaluate_revolute_drive(
-        request=fixture.synthesis_request,
-        policy=fixture.synthesis_policy,
-        template_input=fixture.template_input,
-        requirements=fixture.requirements,
+    construction = fixture.app.revolute_drive_service.construct_candidate(
+        fixture.synthesis_request,
+        fixture.synthesis_policy,
+        fixture.template_input,
+    )
+    assert construction.candidate is not None
+    assert construction.candidate.schema_version == "mechanical-design-candidate@1"
+    assert fixture.synthesis_request.schema_version == "candidate-synthesis-request@1"
+    evaluation = fixture.app.revolute_drive_service.evaluate(
+        construction.candidate,
+        fixture.synthesis_request,
+        fixture.synthesis_policy,
+        fixture.requirements,
+        source_state=fixture.source.state,
     )
 
-    assert outcome.evaluation is not None
-    assert outcome.evaluation.status is DriveAdmissibility.ADMISSIBLE
+    assert evaluation.status is DriveAdmissibility.ADMISSIBLE
     assert fixture.acceptance_adapter.call_count == 0
 
 

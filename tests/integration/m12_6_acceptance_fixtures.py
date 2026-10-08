@@ -10,7 +10,6 @@ from mechcad_harness.backends.freecad import FreeCADBackend
 from mechcad_harness.cad_program import BasePlateOperation, CadPartProgram
 from mechcad_harness.candidates import (
     CandidateSourceBinding,
-    CandidateSourceReference,
     CandidateSynthesisPolicy,
     CandidateSynthesisRequest,
 )
@@ -21,14 +20,21 @@ from mechcad_harness.revolute_drive import (
     RevoluteDriveTemplateInput,
 )
 from mechcad_harness.state import StateManager, state_hash
-from mechcad_harness.state import state_hash
 
 from test_m12_revolute_drive_production import (
-    _ALL_CONSUMED_PATHS,
+    _geometry_identities,
+    _publish_source_artifacts,
     PROJECT_ID,
+    bearing_specification,
+    body_specification,
+    hub_specification,
+    make_request,
+    mount_specification,
+    motor_specification,
     policy_for,
     production_state,
     requirements,
+    shaft_specification,
     template,
 )
 
@@ -101,10 +107,21 @@ def write_project_configuration(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 def direct_drive_state():
     """Return the real N=1 DesignState used as fixture source authority."""
-    return production_state()
+    state = production_state()
+    geometry_identities = [
+        identity.model_dump(mode="json") for identity in _geometry_identities(state)
+    ]
+    return state.model_copy(
+        update={
+            "yagi_payload_carrier_requirements": [
+                *state.yagi_payload_carrier_requirements,
+                *geometry_identities,
+            ]
+        }
+    )
 
 
-def _source_specification(specification, artifact):
+def source_specification(specification, artifact):
     reference = GeometrySourceReference(
         artifact_id=artifact.artifact_id,
         artifact_hash=artifact.sha256,
@@ -124,6 +141,9 @@ def publish_source_step_inputs(
     source: ProductionStateBinding,
 ) -> dict[str, EngineeringArtifact]:
     source_run = application.create_run().run
+    _publish_source_artifacts(
+        application, source.state, run_id=source_run.run_id
+    )
     dimensions = {
         "drive-motor": (30.0, 30.0, 5.0),
         "output-shaft": (20.0, 20.0, 5.0),
@@ -181,24 +201,16 @@ def build_synthesis_request(
     _validate_source(source)
     if application.project_id != source.project_id:
         raise ValueError("captured source belongs to a different project")
-    request = CandidateSynthesisRequest(
-        schema_version="candidate-synthesis-request@2",
-        source_binding=CandidateSourceBinding(
-            project_id=source.project_id,
-            source_revision=source.revision,
-            source_state_hash=source.state_hash,
-            consumed_authority=tuple(
-                CandidateSourceReference(
-                    path=path,
-                    value_hash="pending",
-                    authority=authority,
-                )
-                for path, authority in _ALL_CONSUMED_PATHS
-            ),
-        ).bound_to(source.state),
-        required_joint_ids=("J-1",),
-        requested_joint_ids=("J-1",),
-    )
+    request_payload = make_request(application).model_dump(mode="json")
+    request_payload["schema_version"] = "candidate-synthesis-request@1"
+    request_payload.pop("semantic_source_binding_hash", None)
+    request_payload["request_hash"] = "pending"
+    request = CandidateSynthesisRequest.model_validate(request_payload)
+    if (
+        request.source_binding.source_revision != source.revision
+        or request.source_binding.source_state_hash != source.state_hash
+    ):
+        raise ValueError("captured source differs from the application's current state")
     request.source_binding.validate_against(source.project_id, source.state)
     return request
 
@@ -211,21 +223,33 @@ def build_direct_template(
     source_artifacts: dict[str, EngineeringArtifact],
 ) -> RevoluteDriveTemplateInput:
     source_template = template(DriveArchitecture.DIRECT_DRIVE)
-    artifact_by_field = {
-        "motor_specification": "drive-motor",
-        "shaft_specification": "output-shaft",
-        "bearing_a_specification": "bearing-a",
-        "bearing_b_specification": "bearing-b",
-        "hub_specification": "output-hub",
+    legacy_specifications = {
+        "motor_specification": source_specification(
+            motor_specification(), source_artifacts["drive-motor"]
+        ),
+        "shaft_specification": source_specification(
+            shaft_specification(), source_artifacts["output-shaft"]
+        ),
+        "bearing_a_specification": source_specification(
+            bearing_specification(), source_artifacts["bearing-a"]
+        ),
+        "bearing_b_specification": source_specification(
+            bearing_specification(), source_artifacts["bearing-b"]
+        ),
+        "hub_specification": source_specification(
+            hub_specification(), source_artifacts["output-hub"]
+        ),
+        "mount_specification": mount_specification(),
+        "driven_body_specification": body_specification(),
     }
-    return source_template.model_copy(
-        update={
-            field: _source_specification(
-                getattr(source_template, field), source_artifacts[instance_id]
-            )
-            for field, instance_id in artifact_by_field.items()
+    payload = source_template.model_dump(mode="json")
+    payload.update(
+        {
+            field: specification.model_dump(mode="json")
+            for field, specification in legacy_specifications.items()
         }
     )
+    return RevoluteDriveTemplateInput.model_validate(payload)
 
 
 def build_direct_requirements(

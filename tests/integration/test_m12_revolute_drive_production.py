@@ -195,10 +195,16 @@ def build_application(tmp_path: Path) -> ProductionApplication:
     return application
 
 
-def _publish_source_artifacts(application: ProductionApplication, state) -> None:
+def _publish_source_artifacts(
+    application: ProductionApplication, state, *, run_id="SOURCE"
+) -> None:
     from mechcad_harness.artifacts import ArtifactStore, ArtifactType
 
-    store = ArtifactStore(application.state_manager.workspace, project_id=PROJECT_ID, run_id="SOURCE")
+    store = ArtifactStore(
+        application.state_manager.workspace,
+        project_id=application.project_id,
+        run_id=run_id,
+    )
     for slot in _GEOMETRY_SLOTS:
         store.publish(
             f"ART-{slot}",

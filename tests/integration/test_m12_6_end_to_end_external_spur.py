@@ -18,8 +18,8 @@ from mechcad_harness.candidates import (
     CandidateCadStageStatus,
     CandidateMetricKey,
     CandidatePromotionPolicy,
-    CandidateSynthesisPolicy,
     CandidatePromotionRequest,
+    CandidateSynthesisPolicy,
     PromotedMechanismVerificationStatus,
 )
 from mechcad_harness.models import CanonicalMechanicalConnectionKind
@@ -30,11 +30,12 @@ from mechcad_harness.candidates.models import GeometrySourceReference
 from m12_6_acceptance_fixtures import (
     SOURCE_LABEL,
     UninvokedAcceptanceAdapter,
+    build_synthesis_request,
     direct_drive_state,
+    source_specification,
     write_project_configuration,
 )
 from test_m12_candidate_cad_m10_production import (
-    _candidate_template,
     _cad_request,
     _publish_gear_step,
     _publish_source_step,
@@ -43,8 +44,21 @@ from test_m12_promotion_production import (
     _promotion_classifications,
     _task17_m10_inputs,
 )
-from test_m12_revolute_drive_production import DriveArchitecture
-from test_m12_revolute_drive_production import make_request, policy_for, spur_requirements
+from test_m12_revolute_drive_production import (
+    DriveArchitecture,
+    _publish_source_artifacts,
+    bearing_specification,
+    body_specification,
+    gear_specification,
+    hub_specification,
+    mount_specification,
+    motor_specification,
+    policy_for,
+    spur_requirements,
+    support_mount_specification,
+    template,
+    shaft_specification,
+)
 from mechcad_harness.application import ProductionApplication
 
 
@@ -88,6 +102,9 @@ def _bootstrap_external_spur(tmp_path, project_id):
             "driver-gear": _publish_gear_step(app, teeth=20),
             "driven-gear": _publish_gear_step(app, teeth=100),
         }
+    )
+    _publish_source_artifacts(
+        app, source.state, run_id=next(iter(source_artifacts.values())).run_id
     )
     source_run_ids = {artifact.run_id for artifact in source_artifacts.values()}
     assert source_run_ids
@@ -137,79 +154,77 @@ def _external_positions(output_x_mm):
     }
 
 
-def _external_spur_candidate(fixture, output_x_mm, tag):
-    synthesis_request = make_request(
-        fixture.app, DriveArchitecture.EXTERNAL_SPUR_REDUCTION
+def _legacy_external_spur_template(fixture, positions, tag):
+    base = template(DriveArchitecture.EXTERNAL_SPUR_REDUCTION)
+    specifications = {
+        "motor_specification": source_specification(
+            motor_specification(), fixture.source_artifacts["drive-motor"]
+        ),
+        "shaft_specification": source_specification(
+            shaft_specification(), fixture.source_artifacts["output-shaft"]
+        ),
+        "bearing_a_specification": source_specification(
+            bearing_specification(), fixture.source_artifacts["bearing-a"]
+        ),
+        "bearing_b_specification": source_specification(
+            bearing_specification(), fixture.source_artifacts["bearing-b"]
+        ),
+        "hub_specification": source_specification(
+            hub_specification(), fixture.source_artifacts["output-hub"]
+        ),
+        "mount_specification": mount_specification(),
+        "driven_body_specification": body_specification(),
+        "driver_gear_specification": source_specification(
+            gear_specification(20), fixture.source_artifacts["driver-gear"]
+        ),
+        "driven_gear_specification": source_specification(
+            gear_specification(100), fixture.source_artifacts["driven-gear"]
+        ),
+        "support_mount_specifications": tuple(
+            source_specification(
+                support_mount_specification(),
+                fixture.source_artifacts[instance_id],
+            )
+            for instance_id in ("support-mount-a", "support-mount-b")
+        ),
+    }
+    variables = list(base.design_variables)
+    variables.extend(
+        CandidateDesignVariable(
+            name=f"{instance_id}.placement.{axis}", value=value
+        )
+        for instance_id, position in positions.items()
+        for axis, value in zip(("x_mm", "y_mm", "z_mm"), position, strict=True)
     )
+    variables.extend(
+        CandidateDesignVariable(name=f"{instance_id}.{axis}", value=value)
+        for instance_id, dimensions in {
+            "motor-mount": (30.0, 30.0, 5.0),
+            "payload-body": (20.0, 20.0, 5.0),
+        }.items()
+        for axis, value in zip(
+            ("length_mm", "width_mm", "thickness_mm"), dimensions, strict=True
+        )
+    )
+    variables.append(CandidateDesignVariable(name="comparison-tag", value=tag))
+    payload = base.model_dump(mode="json")
+    payload.update(
+        {
+            field: specification.model_dump(mode="json")
+            if not isinstance(specification, tuple)
+            else [item.model_dump(mode="json") for item in specification]
+            for field, specification in specifications.items()
+        }
+    )
+    payload["design_variables"] = [item.model_dump(mode="json") for item in variables]
+    return type(base).model_validate(payload)
+
+
+def _external_spur_candidate(fixture, output_x_mm, tag):
+    synthesis_request = build_synthesis_request(fixture.app, fixture.source)
     synthesis_policy = policy_for(DriveArchitecture.EXTERNAL_SPUR_REDUCTION)
     positions = _external_positions(output_x_mm)
-    candidate_template = _candidate_template(
-        DriveArchitecture.EXTERNAL_SPUR_REDUCTION,
-        fixture.source_artifacts,
-        positions,
-        gear_artifact={
-            "driver-gear": fixture.source_artifacts["driver-gear"],
-            "driven-gear": fixture.source_artifacts["driven-gear"],
-        },
-        extra_design_variables=(CandidateDesignVariable(name="comparison-tag", value=tag),),
-    )
-
-    def relabel(specification, artifact):
-        source = GeometrySourceReference(
-            artifact_id=artifact.artifact_id,
-            artifact_hash=artifact.sha256,
-            source_identity=f"{fixture.source_label}:STEP:{artifact.artifact_id}",
-        )
-        return type(specification).model_validate(
-            specification.model_dump(mode="json")
-            | {"geometry_source": source.model_dump(mode="json"), "specification_hash": "pending"}
-        )
-
-    source_fields = {
-        "motor_specification": "drive-motor",
-        "shaft_specification": "output-shaft",
-        "bearing_a_specification": "bearing-a",
-        "bearing_b_specification": "bearing-b",
-        "hub_specification": "output-hub",
-        "driver_gear_specification": "driver-gear",
-        "driven_gear_specification": "driven-gear",
-    }
-    updates = {
-        field: relabel(getattr(candidate_template, field), fixture.source_artifacts[instance_id])
-        for field, instance_id in source_fields.items()
-    }
-    updates["support_mount_specifications"] = tuple(
-        relabel(specification, fixture.source_artifacts[instance_id])
-        for specification, instance_id in zip(
-            candidate_template.support_mount_specifications,
-            ("support-mount-a", "support-mount-b"),
-            strict=True,
-        )
-    )
-    candidate_template = candidate_template.model_copy(update=updates)
-    for specification, instance_id in (
-        *(
-            (getattr(candidate_template, field), instance_id)
-            for field, instance_id in source_fields.items()
-        ),
-        *zip(
-            candidate_template.support_mount_specifications,
-            ("support-mount-a", "support-mount-b"),
-            strict=True,
-        ),
-    ):
-        source = specification.geometry_source
-        expected_artifact = fixture.source_artifacts[instance_id]
-        assert source is not None
-        assert (
-            source.artifact_id,
-            source.artifact_hash,
-            source.source_identity,
-        ) == (
-            expected_artifact.artifact_id,
-            expected_artifact.sha256,
-            f"{fixture.source_label}:STEP:{expected_artifact.artifact_id}",
-        )
+    candidate_template = _legacy_external_spur_template(fixture, positions, tag)
 
     policy_entries = list(synthesis_policy.entries)
     declared_policy_keys = {entry[0] for entry in policy_entries}
@@ -224,17 +239,20 @@ def _external_spur_candidate(fixture, output_x_mm, tag):
                 )
             )
     synthesis_policy = CandidateSynthesisPolicy(entries=tuple(policy_entries))
-    outcome = fixture.app.realize_and_evaluate_revolute_drive(
-        request=synthesis_request,
-        policy=synthesis_policy,
-        template_input=candidate_template,
-        requirements=spur_requirements(require_nominal_interface_compatibility=True),
+    construction = fixture.app.revolute_drive_service.construct_candidate(
+        synthesis_request, synthesis_policy, candidate_template
     )
-    assert outcome.construction.status.value == "admissible"
-    assert outcome.construction.candidate is not None
-    assert outcome.evaluation is not None
-    assert outcome.evaluation.status.value == "admissible"
-    return outcome.construction.candidate, synthesis_request, synthesis_policy, outcome.evaluation
+    assert construction.status.value == "admissible"
+    assert construction.candidate is not None
+    m12_result = fixture.app.revolute_drive_service.evaluate(
+        construction.candidate,
+        synthesis_request,
+        synthesis_policy,
+        spur_requirements(require_nominal_interface_compatibility=True),
+        source_state=fixture.source.state,
+    )
+    assert m12_result.status.value == "admissible"
+    return construction.candidate, synthesis_request, synthesis_policy, m12_result
 
 
 def _candidate_and_evaluation(fixture, output_x_mm, tag):
@@ -272,8 +290,7 @@ def _candidate_and_evaluation(fixture, output_x_mm, tag):
                 "classification_hash": "pending",
             }
         )
-        if set(item.pair)
-        == {"cad-driver-gear", "cad-driven-gear"}
+        if set(item.pair) == {"cad-driver-gear", "cad-driven-gear"}
         else item
         for item in base_inventory.classifications
     )
@@ -556,7 +573,9 @@ def _comparison(fixture, first, second):
     second_metric = _verified_clearance_lower_bound(second.evaluation)
     request = CandidateComparisonRequest(
         project_id=fixture.app.project_id,
-        source_binding_hash=fixture.app._candidate_source_binding_hash(first.candidate),
+        source_binding_hash=fixture.app._candidate_source_binding_hash(
+            first.candidate
+        ),
         evaluation_scope_hash=first.scope.scope_hash,
         policy_hash=policy.policy_hash,
         candidate_evaluation_pairs=(
