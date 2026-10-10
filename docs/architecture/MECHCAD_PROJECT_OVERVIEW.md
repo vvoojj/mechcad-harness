@@ -26,6 +26,8 @@ External requirements become typed canonical state. Readiness and dependencies s
 
 Canonical serialization is deterministic. A complete state payload receives a SHA-256 hash and is persisted as an immutable revision snapshot. State-bound records carry the source revision and hash. A changed authority creates a new revision; external records are not silently folded into state.
 
+**State-hash version contract (bounded).** The canonical state hash is versioned as `state-hash@1` (frozen historical rule) and `state-hash@2` (current runtime rule). Both hash the complete serialized `DesignState`. `state-hash@1` always excludes the `joint_authority_declarations` collection. `state-hash@2` includes that collection's complete contents whenever it is non-empty and excludes it **only** when it is absent or empty. `state-hash@2` is byte-identical to `state-hash@1` for every state that has no admitted joint-authority declarations, so existing revisions, stored hashes, current pointers, manifests, replay identities, and historical evidence are preserved without rewriting or backfilling. The conditional exclusion in `state-hash@2` is narrowly restricted to the `joint_authority_declarations` collection and is not a generic omission of empty fields. Version selection and verification are fail-closed: a revision snapshot is always verified by recomputing both projections; a historical snapshot must satisfy `state-hash@1 == state-hash@2 == stored state hash`, and any mismatch fails closed.
+
 ## 7. ChangeProposal / ChangeSet Flow
 
 The normative path is:

@@ -15,6 +15,12 @@ from mechcad_harness.changes.constraint_resolution_admission import (
     ConstraintResolutionAdmissionPolicy,
     ConstraintResolutionAdmissionService,
 )
+from mechcad_harness.changes.joint_authority_admission import (
+    JointAuthorityAdmissionPolicy,
+    JointAuthorityAdmissionService,
+    JointAuthorityApproval,
+)
+from mechcad_harness.models.joint_authority import JointAuthorityDeclaration
 from mechcad_harness.dependency import DependencyGraph, EvidenceStore
 from mechcad_harness.dependency.errors import EvidenceIntegrityError
 from mechcad_harness.artifacts.models import ArtifactType
@@ -516,6 +522,7 @@ class ProductionApplication:
         change_engine: ChangeEngine,
         context_builder: ContextBuilder,
         constraint_resolution_policy: ConstraintResolutionAdmissionPolicy | None = None,
+        joint_authority_policy: JointAuthorityAdmissionPolicy | None = None,
         kinematic_measure: Callable[
             [TransientAssemblyAnalysisRequest, CadAssemblyProgram],
             tuple[tuple[str, str, float, float], ...],
@@ -539,6 +546,12 @@ class ProductionApplication:
             state_manager=state_manager,
             run_controller=run_controller,
             policy=self.constraint_resolution_policy,
+        )
+        self.joint_authority_admission_service = JointAuthorityAdmissionService(
+            project_id=project_id,
+            state_manager=state_manager,
+            run_controller=run_controller,
+            policy=joint_authority_policy or JointAuthorityAdmissionPolicy.deny_all(project_id),
         )
         self.candidate_integrity_verifier = CandidateIntegrityVerifier()
         self.candidate_currentness_service = CandidateCurrentnessService(state_manager)
@@ -847,6 +860,8 @@ class ProductionApplication:
         | None = None,
         constraint_resolution_policy_path: str | Path | None = None,
         constraint_resolution_policy: ConstraintResolutionAdmissionPolicy | None = None,
+        joint_authority_policy_path: str | Path | None = None,
+        joint_authority_policy: JointAuthorityAdmissionPolicy | None = None,
     ) -> "ProductionApplication":
         if not project_id.strip():
             raise ValueError("project_id must not be empty")
@@ -860,6 +875,8 @@ class ProductionApplication:
             raise ValueError("ownership and dependency configuration files are required")
         if constraint_resolution_policy_path is not None and constraint_resolution_policy is not None:
             raise ValueError("provide only one constraint resolution admission policy")
+        if joint_authority_policy_path is not None and joint_authority_policy is not None:
+            raise ValueError("provide only one joint authority admission policy")
         if constraint_resolution_policy_path is not None:
             admission_policy = ConstraintResolutionAdmissionPolicy.from_file(
                 constraint_resolution_policy_path,
@@ -869,6 +886,15 @@ class ProductionApplication:
             admission_policy = constraint_resolution_policy.for_project(project_id)
         else:
             admission_policy = ConstraintResolutionAdmissionPolicy.deny_all(project_id)
+        if joint_authority_policy_path is not None:
+            joint_authority_admission_policy = JointAuthorityAdmissionPolicy.from_file(
+                joint_authority_policy_path,
+                project_id=project_id,
+            )
+        elif joint_authority_policy is not None:
+            joint_authority_admission_policy = joint_authority_policy.for_project(project_id)
+        else:
+            joint_authority_admission_policy = JointAuthorityAdmissionPolicy.deny_all(project_id)
 
         state_manager = StateManager(workspace)
         graph = DependencyGraph.from_yaml(dependencies)
@@ -899,6 +925,7 @@ class ProductionApplication:
             change_engine=change_engine,
             context_builder=context_builder,
             constraint_resolution_policy=admission_policy,
+            joint_authority_policy=joint_authority_admission_policy,
             kinematic_measure=kinematic_measure,
         )
 
@@ -945,6 +972,23 @@ class ProductionApplication:
     ):
         return self.constraint_resolution_admission_service.admit_batch(
             resolution_run_id, command_id
+        )
+
+    def admit_joint_authority_declaration(
+        self,
+        declaration: JointAuthorityDeclaration,
+        approval: JointAuthorityApproval,
+        *,
+        admission_run_id: str,
+        source_revision: int,
+        source_state_hash: str,
+    ):
+        return self.joint_authority_admission_service.admit(
+            declaration,
+            approval,
+            admission_run_id=admission_run_id,
+            source_revision=source_revision,
+            source_state_hash=source_state_hash,
         )
 
     def run_transmission_round_trip(

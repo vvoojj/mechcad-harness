@@ -21,5 +21,7 @@ ownership:
     owner: mechcad-packaging
   - path: /physical_mechanisms/*
     owner: mechcad-physical-mechanism
+  - path: /joint_authority_declarations/*
+    owner: mechcad-joint-authority-admission
   - path: /authoritative_parameters/*
     owner: mechcad-authority-admission

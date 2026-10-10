@@ -21,7 +21,7 @@ else:
     import fcntl
 
 
-SCHEMA_VERSION = "m1"
+SCHEMA_VERSION = "m2"
 
 
 class RevisionSnapshot(Model):

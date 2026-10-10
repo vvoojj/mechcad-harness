@@ -6,6 +6,7 @@ from mechcad_harness.engineering.keys import SupportedConstraintKey
 from mechcad_harness.engineering.values import AuthoritativeValue, MotorCharacteristicsValue, OutputAngularSpeedValue, OutputInterfaceValue, PackagingEnvelopeValue
 
 from .common import Model, NamedModel, utc_now
+from .joint_authority import JointAuthorityDeclaration
 from .physical_mechanism import CanonicalPhysicalMechanism
 from .structural import StructuralAnalysisDefinition
 
@@ -84,6 +85,9 @@ class DesignState(Model):
         default_factory=list
     )
     physical_mechanisms: list[CanonicalPhysicalMechanism] = Field(default_factory=list)
+    joint_authority_declarations: list[JointAuthorityDeclaration] = Field(
+        default_factory=list
+    )
     authoritative_parameters: list[AuthoritativeParameter] = Field(default_factory=list)
     azimuth_mount_plates: list[dict] = Field(default_factory=list)
     yagi_payload_carrier_requirements: list[dict] = Field(default_factory=list)
@@ -109,4 +113,13 @@ class DesignState(Model):
         mechanism_ids = [mechanism.id for mechanism in self.physical_mechanisms]
         if len(set(mechanism_ids)) != len(mechanism_ids):
             raise ValueError("physical mechanism IDs must be unique")
+        return self
+
+    @model_validator(mode="after")
+    def validate_joint_authority_declaration_ids(self):
+        declaration_ids = [
+            declaration.id for declaration in self.joint_authority_declarations
+        ]
+        if len(set(declaration_ids)) != len(declaration_ids):
+            raise ValueError("joint authority declaration IDs must be unique")
         return self
